@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "Elite 5/3/1",
+    "slug": "elite-531",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {},
+    "plugins": ["expo-notifications"],
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}
