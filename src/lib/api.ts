@@ -1,7 +1,10 @@
 /** Obtiene la URL base de la API (vacío = mismo origen) */
 function getBaseUrl(): string {
   if (typeof window !== 'undefined') {
-    return (window as any).__API_BASE__ || '';
+    const base = (window as any).__API_BASE__;
+    if (base) return base;
+    // Fallback: usar origen actual cuando se carga desde el servidor
+    return window.location.origin;
   }
   return '';
 }
@@ -16,13 +19,15 @@ function getAuthHeaders(): Record<string, string> {
 }
 
 export async function apiGet<T>(path: string, params?: Record<string, string>): Promise<T> {
-  const url = new URL(path, getBaseUrl() || window.location.origin);
+  const base = getBaseUrl() || (typeof window !== 'undefined' ? window.location.origin : '');
+  const url = new URL(path, base || 'http://3.231.3.49:3000'); // API en EC2
   if (params) {
     Object.entries(params).forEach(([k, v]) => {
       if (v) url.searchParams.set(k, v);
     });
   }
-  const res = await fetch(url.pathname + url.search, {
+  const fetchUrl = base ? url.toString() : url.pathname + url.search;
+  const res = await fetch(fetchUrl, {
     headers: getAuthHeaders(),
   });
   if (!res.ok) {

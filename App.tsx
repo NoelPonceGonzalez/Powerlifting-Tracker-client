@@ -2,63 +2,18 @@ import { StatusBar } from 'expo-status-bar';
 import React, { useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Linking, Platform, Pressable, SafeAreaView, Text, View } from 'react-native';
 import { WebView } from 'react-native-webview';
-import Constants from 'expo-constants';
 
-const extractHostFromUri = (value?: string | null): string | null => {
-  if (!value) return null;
-  const withoutProtocol = value.replace(/^https?:\/\//, '');
-  const [host] = withoutProtocol.split(':');
-  return host || null;
-};
-
-const getExpoHost = (): string | null => {
-  const hostFromExpoConfig = extractHostFromUri((Constants.expoConfig as any)?.hostUri);
-  if (hostFromExpoConfig) return hostFromExpoConfig;
-
-  // Compat paths used by Expo Go manifests across SDKs.
-  const hostFromManifest2 = extractHostFromUri((Constants as any)?.manifest2?.extra?.expoGo?.debuggerHost);
-  if (hostFromManifest2) return hostFromManifest2;
-
-  const hostFromLegacyManifest = extractHostFromUri((Constants as any)?.manifest?.debuggerHost);
-  if (hostFromLegacyManifest) return hostFromLegacyManifest;
-
-  return null;
-};
-
-// Detectar URL según el entorno (prioridad: env -> host Expo -> fallback plataforma)
+/**
+ * URL donde la WebView carga el HTML/JS de la app.
+ * - Si EXPO_PUBLIC_WEB_APP_URL está definida, la usa (para prod o túnel).
+ * - Si no: en desarrollo, usa el servidor local (10.0.2.2 para Android emulador).
+ */
 const getWebAppUrl = (): string => {
-  // Si hay una URL configurada explícitamente, usarla
   const envUrl = process.env.EXPO_PUBLIC_WEB_APP_URL?.trim();
   if (envUrl) return envUrl;
-
-  const expoHost = getExpoHost();
-  
-  // Si detectamos que estamos usando tunnel (URL contiene .exp.direct)
-  // NO usar el host del túnel para el puerto 3000, porque el túnel solo expone Metro (8081)
-  // En su lugar, usar localhost o la IP local según la plataforma
-  if (expoHost && expoHost.includes('.exp.direct')) {
-    // Estamos usando tunnel, pero el servidor Express necesita estar accesible localmente
-    // En Android emulador, usar 10.0.2.2
-    if (Platform.OS === 'android') {
-      return 'http://10.0.2.2:3000';
-    }
-    // En iOS simulator o dispositivo físico con tunnel, necesitamos la IP local
-    // Por ahora usamos localhost (funciona en simulator)
-    return 'http://localhost:3000';
-  }
-  
-  // Si no es tunnel, usar el host de Expo normalmente (modo LAN)
-  // Esto funciona perfectamente cuando estás en la misma red WiFi
-  if (expoHost && !expoHost.includes('.exp.direct')) {
-    return `http://${expoHost}:3000`;
-  }
-
-  // Fallback por plataforma (si no se detecta host de Expo)
-  if (Platform.OS === 'android') {
-    return 'http://10.0.2.2:3000'; // Android emulador
-  }
-
-  return 'http://localhost:3000'; // iOS simulator o desarrollo local
+  // Desarrollo: servidor local. En Android emulador, 10.0.2.2 = localhost del host.
+  if (Platform.OS === 'android') return 'http://10.0.2.2:3000';
+  return 'http://localhost:3000';
 };
 
 const FALLBACK_WEB_URL = getWebAppUrl();

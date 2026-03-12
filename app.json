@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Elite 5/3/1",
-    "slug": "elite-531",
+    "slug": "powerlifting-tracker",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
@@ -9,12 +9,26 @@
       "**/*"
     ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.srhit.powerliftingtracker",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
-    "android": {},
-    "plugins": ["expo-notifications"],
+    "android": {
+      "package": "com.srhit.powerliftingtracker"
+    },
+    "plugins": [
+      "expo-notifications"
+    ],
     "web": {
       "bundler": "metro"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "db898e9f-ab8d-4ae3-a489-1af87dfea8a1"
+      }
+    },
+    "owner": "srhit"
   }
 }

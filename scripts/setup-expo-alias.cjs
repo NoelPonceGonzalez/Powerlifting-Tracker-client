@@ -15,6 +15,10 @@ function writeIfPossible(filePath, content) {
 }
 
 function main() {
+  // En EAS Build no parchear: usa el expo real para prebuild
+  if (process.env.EAS_BUILD === 'true' || process.env.CI === 'true') {
+    process.exit(0);
+  }
   if (!fs.existsSync(binDir)) {
     console.warn('No existe node_modules/.bin todavía. Omitiendo parche de expo.');
     process.exit(0);

@@ -21,7 +21,9 @@
     "start:tunnel": "concurrently -k \"npm run dev:server\" \"wait-on http://localhost:3000 -t 30000 && npm run expo:tunnel\" --names \"SERVER,EXPO\" --prefix-colors \"cyan,magenta\" --kill-others-on-fail",
     "tunnel:server": "node scripts/tunnel-server.cjs",
     "get-ip": "node scripts/get-local-ip.cjs",
-    "postinstall": "node scripts/setup-expo-alias.cjs"
+    "postinstall": "patch-package && node scripts/setup-expo-alias.cjs",
+    "android": "expo run:android",
+    "ios": "expo run:ios"
   },
   "dependencies": {
     "@expo/metro-runtime": "~5.0.5",
@@ -58,6 +60,7 @@
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
     "concurrently": "^9.2.1",
+    "patch-package": "^8.0.1",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",

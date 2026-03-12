@@ -6,6 +6,7 @@ import { Input } from '@/src/components/ui/Input';
 import { Card } from '@/src/components/ui/Card';
 import { User as AppUser } from '@/src/types';
 import { useToast } from '@/src/hooks/useToast';
+import { API_BASE_URL } from '@/src/config';
 
 interface LoginProps {
   onLogin: (user: AppUser) => void;
@@ -45,12 +46,11 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
         return;
       }
 
-      // Para emulador Android, SIEMPRE usar 10.0.2.2:3000
-      // No usar window.location.origin porque puede causar problemas en WebView
-      const baseUrl = 'http://10.0.2.2:3000';
+      // Usar la URL del servidor configurada en src/config.ts
+      const baseUrl = API_BASE_URL;
       const healthUrl = `${baseUrl}/health`;
       
-      console.log('[CLIENT-LOGIN] Usando baseUrl fijo para Android emulador:', baseUrl);
+      console.log('[CLIENT-LOGIN] Usando baseUrl:', baseUrl);
       console.log('[CLIENT-LOGIN] Health URL:', healthUrl);
       
       const healthController = new AbortController();
@@ -87,9 +87,9 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
         
         let errorMsg = 'No se pudo conectar al servidor. ';
         if (healthError.name === 'AbortError') {
-          errorMsg += 'El servidor tardó demasiado en responder. Verifica que esté corriendo en el puerto 3000 y accesible desde el emulador (usa 10.0.2.2:3000 para Android).';
+          errorMsg += `El servidor tardó demasiado en responder. Verifica que esté accesible en ${baseUrl}`;
         } else if (healthError.message?.includes('Failed to fetch') || healthError.message?.includes('NetworkError')) {
-          errorMsg += 'Error de red. Verifica que el servidor esté corriendo y que el emulador pueda acceder a 10.0.2.2:3000.';
+          errorMsg += `Error de red. Verifica que el servidor esté accesible en ${baseUrl}`;
         } else {
           errorMsg += healthError.message || 'Verifica que esté corriendo en el puerto 3000.';
         }
@@ -256,12 +256,11 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
       
       setEmail(normalizedEmail);
       
-      // Para emulador Android, SIEMPRE usar 10.0.2.2:3000
-      // No usar window.location.origin porque puede causar problemas en WebView
-      const baseUrl = 'http://10.0.2.2:3000';
+      // Usar la URL del servidor configurada en src/config.ts
+      const baseUrl = API_BASE_URL;
       const healthUrl = `${baseUrl}/health`;
       
-      console.log('[CLIENT-REGISTER] Usando baseUrl fijo para Android emulador:', baseUrl);
+      console.log('[CLIENT-REGISTER] Usando baseUrl:', baseUrl);
       console.log('[CLIENT-REGISTER] Health URL:', healthUrl);
       
       const healthController = new AbortController();
@@ -298,9 +297,9 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
         
         let errorMsg = 'No se pudo conectar al servidor. ';
         if (healthError.name === 'AbortError') {
-          errorMsg += 'El servidor tardó demasiado en responder. Verifica que esté corriendo en el puerto 3000 y accesible desde el emulador (usa 10.0.2.2:3000 para Android).';
+          errorMsg += `El servidor tardó demasiado en responder. Verifica que esté accesible en ${baseUrl}`;
         } else if (healthError.message?.includes('Failed to fetch') || healthError.message?.includes('NetworkError')) {
-          errorMsg += 'Error de red. Verifica que el servidor esté corriendo y que el emulador pueda acceder a 10.0.2.2:3000.';
+          errorMsg += `Error de red. Verifica que el servidor esté accesible en ${baseUrl}`;
         } else {
           errorMsg += healthError.message || 'Verifica que esté corriendo en el puerto 3000.';
         }
@@ -425,7 +424,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
           errorMsg = 'No se pudo conectar al servidor. Verifica que esté corriendo.';
         }
       } else if (err.name === 'TypeError' && err.message?.includes('fetch')) {
-        errorMsg = 'No se pudo conectar al servidor. Verifica que esté corriendo en http://localhost:3000';
+        errorMsg = `No se pudo conectar al servidor. Verifica que esté accesible en ${API_BASE_URL}`;
       } else if (err.name === 'NetworkError' || err.message?.includes('Failed to fetch')) {
         errorMsg = 'Error de red. Verifica tu conexión y que el servidor esté corriendo.';
       }
