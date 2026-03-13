@@ -46,7 +46,7 @@ interface SocialViewProps {
 
 const CHALLENGE_TYPE_LABELS: Record<ChallengeType, string> = {
   max_reps: 'Repeticiones',
-  weight: 'Fuerza (kg)',
+  weight: 'Fuerza (IPF GL)',
   seconds: 'Segundos',
 };
 
@@ -793,7 +793,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                     className="w-full rounded-xl border-2 border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-4 py-3 text-slate-900 dark:text-slate-100"
                   >
                     <option value="max_reps">Repeticiones</option>
-                    <option value="weight">Fuerza (kg)</option>
+                    <option value="weight">Fuerza (IPF GL)</option>
                     <option value="seconds">Segundos</option>
                   </select>
                 </div>
