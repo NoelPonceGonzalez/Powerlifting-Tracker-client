@@ -19,7 +19,8 @@
       "package": "com.srhit.powerliftingtracker"
     },
     "plugins": [
-      "expo-notifications"
+      "expo-notifications",
+      "./plugins/withAndroidCoreResolution.cjs"
     ],
     "web": {
       "bundler": "metro"
