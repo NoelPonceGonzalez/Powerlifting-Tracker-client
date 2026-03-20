@@ -2,6 +2,8 @@
   "expo": {
     "name": "Tracker",
     "slug": "powerlifting-tracker",
+    "icon": "./assets/icon.png",
+    "scheme": "powerliftingtracker",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
@@ -16,10 +18,20 @@
       }
     },
     "android": {
-      "package": "com.srhit.powerliftingtracker"
+      "package": "com.srhit.powerliftingtracker",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      }
     },
     "plugins": [
-      "expo-notifications",
+      [
+        "expo-notifications",
+        {
+          "enableBackgroundRemoteNotifications": true
+        }
+      ],
+      "./plugins/withBundleWebApp.cjs",
       "./plugins/withAndroidCoreResolution.cjs",
       [
         "expo-build-properties",

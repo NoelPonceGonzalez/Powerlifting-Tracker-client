@@ -1,12 +1,18 @@
-/** Obtiene la URL base de la API (vacío = mismo origen) */
+const API_BASE = 'http://3.231.3.49:3000';
+
+/** Obtiene la URL base de la API (siempre AWS) */
 function getBaseUrl(): string {
   if (typeof window !== 'undefined') {
     const base = (window as any).__API_BASE__;
-    if (base) return base;
-    // Fallback: usar origen actual cuando se carga desde el servidor
-    return window.location.origin;
+    return base || API_BASE;
   }
-  return '';
+  return API_BASE;
+}
+
+/** URL base de la API para uso directo (Login, health check, etc.) */
+export function getApiBaseUrl(): string {
+  const base = getBaseUrl();
+  return base.replace(/\/$/, '') || API_BASE;
 }
 
 function getAuthHeaders(): Record<string, string> {
@@ -19,8 +25,8 @@ function getAuthHeaders(): Record<string, string> {
 }
 
 export async function apiGet<T>(path: string, params?: Record<string, string>): Promise<T> {
-  const base = getBaseUrl() || (typeof window !== 'undefined' ? window.location.origin : '');
-  const url = new URL(path, base || 'http://3.231.3.49:3000'); // API en EC2
+  const base = getBaseUrl();
+  const url = new URL(path, base);
   if (params) {
     Object.entries(params).forEach(([k, v]) => {
       if (v) url.searchParams.set(k, v);
@@ -65,4 +71,14 @@ export async function apiPut<T>(path: string, body: object): Promise<T> {
     throw new Error(err.error || err.errors?.[0]?.msg || err.message || 'Error en la solicitud');
   }
   return res.json();
+}
+
+export async function apiDelete(path: string): Promise<void> {
+  const base = getBaseUrl();
+  const url = base ? base + path : path;
+  const res = await fetch(url, { method: 'DELETE', headers: getAuthHeaders() });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || err.message || 'Error en la solicitud');
+  }
 }

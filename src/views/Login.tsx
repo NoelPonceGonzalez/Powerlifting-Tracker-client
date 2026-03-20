@@ -6,7 +6,7 @@ import { Input } from '@/src/components/ui/Input';
 import { Card } from '@/src/components/ui/Card';
 import { User as AppUser } from '@/src/types';
 import { useToast } from '@/src/hooks/useToast';
-import { API_BASE_URL } from '@/src/config';
+import { getApiBaseUrl } from '@/src/lib/api';
 
 interface LoginProps {
   onLogin: (user: AppUser) => void;
@@ -14,10 +14,18 @@ interface LoginProps {
 }
 
 export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [mode, setMode] = useState<'login' | 'register' | 'complete'>('login');
+  const [registerStep, setRegisterStep] = useState<'email' | 'code'>('email');
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [name, setName] = useState('');
+  const [bodyWeight, setBodyWeight] = useState('');
+  const [gender, setGender] = useState<'hombre' | 'mujer' | ''>('');
+  const [completeToken, setCompleteToken] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [pendingVerificationEmail, setPendingVerificationEmail] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -31,6 +39,35 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
     if (!clean) return clean;
     return clean.includes('@') ? clean : `${clean}@gmail.com`;
   };
+
+  const activateCompleteMode = (token: string) => {
+    if (!token || token.trim().length < 6) return;
+    setCompleteToken(token.trim());
+    setMode('complete');
+    setError('');
+    if (typeof window !== 'undefined' && (window as any).ReactNativeWebView) {
+      (window as any).ReactNativeWebView.postMessage(JSON.stringify({ type: 'registration_token_consumed' }));
+    }
+  };
+
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const params = new URLSearchParams(window.location.search);
+    const fromQuery = params.get('token') || params.get('registrationToken');
+    if (fromQuery) activateCompleteMode(fromQuery);
+
+    const fromNative = (window as any).__REGISTRATION_TOKEN__ as string | undefined;
+    if (fromNative) activateCompleteMode(fromNative);
+
+    const onTokenReady = () => {
+      const token = (window as any).__REGISTRATION_TOKEN__ as string | undefined;
+      if (token) activateCompleteMode(token);
+    };
+
+    window.addEventListener('registrationTokenReady', onTokenReady);
+    return () => window.removeEventListener('registrationTokenReady', onTokenReady);
+  }, []);
 
   const handleStandardLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -47,7 +84,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
       }
 
       // Usar la URL del servidor configurada en src/config.ts
-      const baseUrl = API_BASE_URL;
+      const baseUrl = getApiBaseUrl();
       const healthUrl = `${baseUrl}/health`;
       
       console.log('[CLIENT-LOGIN] Usando baseUrl:', baseUrl);
@@ -210,7 +247,8 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
         email: data.user.email,
         avatar: data.user.avatar || 'https://picsum.photos/seed/user/200/200',
         bodyWeight: data.user.bodyWeight ?? 80,
-        theme: data.user.theme ?? 'light',
+        theme: (data.user.theme ?? (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) as 'light' | 'dark',
+        progressMode: data.user.progressMode === 'year' ? 'year' : data.user.progressMode === 'month' ? 'month' : undefined,
       });
     } catch (err: any) {
       console.error('[CLIENT-LOGIN] Error completo:', err);
@@ -257,7 +295,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
       setEmail(normalizedEmail);
       
       // Usar la URL del servidor configurada en src/config.ts
-      const baseUrl = API_BASE_URL;
+      const baseUrl = getApiBaseUrl();
       const healthUrl = `${baseUrl}/health`;
       
       console.log('[CLIENT-REGISTER] Usando baseUrl:', baseUrl);
@@ -409,8 +447,10 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
       }
 
       // Éxito
-      toast.success('Te enviamos un enlace de verificación por correo. Revisa tu bandeja y spam.');
-      setEmail('');
+      toast.success('Te enviamos un código de 6 dígitos por correo. Revisa bandeja y spam.');
+      setPendingVerificationEmail(normalizedEmail);
+      setVerificationCode('');
+      setRegisterStep('code');
     } catch (err: any) {
       console.error('[CLIENT-REGISTER] Error completo:', err);
       
@@ -424,7 +464,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
           errorMsg = 'No se pudo conectar al servidor. Verifica que esté corriendo.';
         }
       } else if (err.name === 'TypeError' && err.message?.includes('fetch')) {
-        errorMsg = `No se pudo conectar al servidor. Verifica que esté accesible en ${API_BASE_URL}`;
+        errorMsg = `No se pudo conectar al servidor. Verifica que esté accesible en ${getApiBaseUrl()}`;
       } else if (err.name === 'NetworkError' || err.message?.includes('Failed to fetch')) {
         errorMsg = 'Error de red. Verifica tu conexión y que el servidor esté corriendo.';
       }
@@ -436,20 +476,104 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
     }
   };
 
+  const handleVerifyCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setError('');
+    try {
+      const normalizedEmail = normalizeEmail(pendingVerificationEmail || email);
+      const cleanCode = verificationCode.replace(/\D/g, '').slice(0, 6);
+      if (!normalizedEmail || !normalizedEmail.includes('@')) throw new Error('Email inválido');
+      if (cleanCode.length !== 6) throw new Error('Introduce un código de 6 dígitos');
+
+      const baseUrl = getApiBaseUrl();
+      const res = await fetch(`${baseUrl}/api/auth/verify-registration-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: normalizedEmail, code: cleanCode }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || data?.errors?.[0]?.msg || 'Código inválido o expirado');
+      }
+
+      activateCompleteMode(data?.token || cleanCode);
+      toast.success('Código verificado. Completa tu registro.');
+    } catch (err: any) {
+      const msg = err?.message || 'No se pudo verificar el código';
+      setError(msg);
+      toast.error(msg);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCompleteRegistration = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setError('');
+
+    try {
+      if (!completeToken) throw new Error('Token de registro no encontrado.');
+      if (!name.trim() || name.trim().length < 2) throw new Error('El nombre debe tener al menos 2 caracteres.');
+      const bw = Number(bodyWeight);
+      if (!Number.isFinite(bw) || bw < 25 || bw > 400) throw new Error('Introduce un peso válido entre 25 y 400 kg.');
+      if (!gender) throw new Error('Selecciona tu género.');
+      if (!password || password.length < 6) throw new Error('La contraseña debe tener al menos 6 caracteres.');
+      if (password !== confirmPassword) throw new Error('Las contraseñas no coinciden.');
+
+      const baseUrl = getApiBaseUrl();
+      const res = await fetch(`${baseUrl}/api/auth/complete-registration`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: completeToken,
+          name: name.trim(),
+          bodyWeight: bw,
+          password,
+          gender,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        throw new Error(data?.error || data?.errors?.[0]?.msg || 'No se pudo completar el registro');
+      }
+
+      localStorage.setItem('auth_token', data.token);
+      toast.success('Cuenta creada. Bienvenido.');
+      onLogin({
+        id: String(data.user.id),
+        name: data.user.name || 'Atleta',
+        email: data.user.email,
+        avatar: data.user.avatar || 'https://picsum.photos/seed/user/200/200',
+        bodyWeight: data.user.bodyWeight ?? bw,
+        theme: (data.user.theme ?? (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) as 'light' | 'dark',
+        progressMode: data.user.progressMode === 'year' ? 'year' : data.user.progressMode === 'month' ? 'month' : undefined,
+      });
+    } catch (err: any) {
+      const msg = err?.message || 'Error al completar el registro';
+      setError(msg);
+      toast.error(msg);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center p-4">
       <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.4, ease: 'easeOut' }}
-        className="w-full max-w-md"
+        className="w-full max-w-md backdrop-blur-2xl bg-white/70 dark:bg-slate-900/70 rounded-3xl p-8 border border-white/40 dark:border-slate-700/40 shadow-2xl"
       >
         <div className="text-center mb-10">
           <motion.div
             initial={{ y: -20, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             transition={{ delay: 0.2 }}
-            className="inline-flex bg-indigo-600 p-4 rounded-3xl shadow-2xl shadow-indigo-200 mb-6"
+            className="inline-flex bg-indigo-600 dark:bg-indigo-500 p-4 rounded-3xl shadow-xl shadow-indigo-300/40 dark:shadow-indigo-500/20 dark:shadow-lg mb-6"
           >
             <Trophy className="text-white" size={32} />
           </motion.div>
@@ -457,50 +581,55 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
             initial={{ y: -10, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             transition={{ delay: 0.3 }}
-            className="text-4xl font-black tracking-tight text-slate-900 mb-2"
+            className="text-4xl font-black tracking-tight text-slate-900 dark:text-white mb-2"
           >
-            Powerlifting Tracker
+            Tracker
           </motion.h1>
           <motion.p
             initial={{ y: -10, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             transition={{ delay: 0.4 }}
-            className="text-slate-500 font-medium"
+            className="text-slate-500 dark:text-slate-400 font-medium"
           >
             Entrena como un profesional
           </motion.p>
         </div>
 
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
-          <Card padding="xl" rounded="2xl" className="shadow-2xl shadow-slate-200/50">
-            <div className="flex bg-slate-100 p-1 rounded-xl mb-6">
-              <button
-                type="button"
-                onClick={() => { 
-                  setMode('login'); 
-                  setError(''); 
-                  setEmail('');
-                  setPassword('');
-                  setUsername('');
-                }}
-                className={`flex-1 rounded-lg py-2 text-xs font-black uppercase tracking-wider ${mode === 'login' ? 'bg-white text-indigo-600' : 'text-slate-500'}`}
-              >
-                Login
-              </button>
-              <button
-                type="button"
-                onClick={() => { 
-                  setMode('register'); 
-                  setError(''); 
-                  setEmail('');
-                  setPassword('');
-                  setUsername('');
-                }}
-                className={`flex-1 rounded-lg py-2 text-xs font-black uppercase tracking-wider ${mode === 'register' ? 'bg-white text-indigo-600' : 'text-slate-500'}`}
-              >
-                Register
-              </button>
-            </div>
+          <Card padding="xl" rounded="2xl" className="shadow-xl shadow-slate-200/50 dark:shadow-xl dark:shadow-black/30 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border border-white/60 dark:border-slate-700/60">
+            {mode !== 'complete' && (
+              <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl mb-6">
+                <button
+                  type="button"
+                  onClick={() => { 
+                    setMode('login'); 
+                    setError(''); 
+                    setEmail('');
+                    setPassword('');
+                    setUsername('');
+                  }}
+                  className={`flex-1 rounded-lg py-2 text-xs font-black uppercase tracking-wider transition-colors ${mode === 'login' ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-sm dark:shadow-none' : 'text-slate-500 dark:text-slate-400'}`}
+                >
+                  Login
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { 
+                    setMode('register'); 
+                    setRegisterStep('email');
+                    setError(''); 
+                    setEmail('');
+                    setPassword('');
+                    setUsername('');
+                    setVerificationCode('');
+                    setPendingVerificationEmail('');
+                  }}
+                  className={`flex-1 rounded-lg py-2 text-xs font-black uppercase tracking-wider transition-colors ${mode === 'register' ? 'bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-sm dark:shadow-none' : 'text-slate-500 dark:text-slate-400'}`}
+                >
+                  Register
+                </button>
+              </div>
+            )}
 
             {mode === 'login' ? (
               <form onSubmit={handleStandardLogin} className="space-y-5">
@@ -525,36 +654,146 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
                   onChange={(e) => setPassword(e.target.value)}
                   icon={<Lock size={18} />}
                 />
-                {error && <p className="text-xs font-bold text-rose-500 uppercase tracking-wider">{error}</p>}
+                {error && <p className="text-xs font-bold text-rose-500 dark:text-rose-400 uppercase tracking-wider">{error}</p>}
                 <Button type="submit" className="w-full" size="lg" disabled={isLoading}>
                   {isLoading ? 'Iniciando sesión...' : 'Iniciar Sesión'}
                 </Button>
               </form>
+            ) : mode === 'register' ? (
+              registerStep === 'email' ? (
+                <form onSubmit={handleRegisterByEmail} className="space-y-5">
+                  <Input
+                    label="Correo Electrónico"
+                    placeholder="tu@email.com"
+                    type="text"
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    onBlur={() => setEmail((prev) => normalizeEmail(prev))}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    icon={<Mail size={18} />}
+                  />
+                  {error && <p className="text-xs font-bold text-rose-500 dark:text-rose-400 uppercase tracking-wider">{error}</p>}
+                  <Button type="submit" className="w-full" size="lg" disabled={isLoading}>
+                    {isLoading ? 'Enviando código...' : 'Enviar código'}
+                  </Button>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 font-semibold">
+                    Te enviaremos un código de 6 dígitos para verificar tu correo.
+                  </p>
+                  <p className="text-[11px] text-slate-400 dark:text-slate-500 font-semibold">
+                    Si escribes el correo sin @, se completará automáticamente con @gmail.com.
+                  </p>
+                </form>
+              ) : (
+                <form onSubmit={handleVerifyCode} className="space-y-5">
+                  <p className="text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">
+                    Revisa tu correo e introduce el código
+                  </p>
+                  <Input
+                    label="Correo"
+                    type="text"
+                    value={pendingVerificationEmail}
+                    readOnly
+                    className="bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
+                    icon={<Mail size={18} />}
+                  />
+                  <Input
+                    label="Código (6 dígitos)"
+                    placeholder="123456"
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={6}
+                    required
+                    value={verificationCode}
+                    onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                  />
+                  {error && <p className="text-xs font-bold text-rose-500 dark:text-rose-400 uppercase tracking-wider">{error}</p>}
+                  <Button type="submit" className="w-full" size="lg" disabled={isLoading}>
+                    {isLoading ? 'Verificando...' : 'Verificar código'}
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRegisterStep('email');
+                      setVerificationCode('');
+                      setError('');
+                    }}
+                    className="w-full text-sm font-bold text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors py-2"
+                  >
+                    Cambiar correo
+                  </button>
+                </form>
+              )
             ) : (
-              <form onSubmit={handleRegisterByEmail} className="space-y-5">
+              <form onSubmit={handleCompleteRegistration} className="space-y-5">
+                <p className="text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">
+                  Completa tu registro en la app
+                </p>
                 <Input
-                  label="Correo Electrónico"
-                  placeholder="tu@email.com"
+                  label="Nombre"
+                  placeholder="Tu nombre"
                   type="text"
                   required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  onBlur={() => setEmail((prev) => normalizeEmail(prev))}
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
-                  icon={<Mail size={18} />}
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  icon={<User size={18} />}
                 />
-                {error && <p className="text-xs font-bold text-rose-500 uppercase tracking-wider">{error}</p>}
+                <div>
+                  <label className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block mb-2">
+                    Género
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setGender('hombre')}
+                      className={`rounded-xl border px-3 py-2 text-sm font-bold ${gender === 'hombre' ? 'border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300' : 'border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300'}`}
+                    >
+                      Hombre
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGender('mujer')}
+                      className={`rounded-xl border px-3 py-2 text-sm font-bold ${gender === 'mujer' ? 'border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300' : 'border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300'}`}
+                    >
+                      Mujer
+                    </button>
+                  </div>
+                </div>
+                <Input
+                  label="Peso corporal (kg)"
+                  placeholder="Ej: 80"
+                  type="number"
+                  required
+                  value={bodyWeight}
+                  onChange={(e) => setBodyWeight(e.target.value)}
+                />
+                <Input
+                  label="Contraseña"
+                  placeholder="Mínimo 6 caracteres"
+                  type="password"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  icon={<Lock size={18} />}
+                />
+                <Input
+                  label="Confirmar contraseña"
+                  placeholder="Repite tu contraseña"
+                  type="password"
+                  required
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  icon={<Lock size={18} />}
+                />
+                {error && <p className="text-xs font-bold text-rose-500 dark:text-rose-400 uppercase tracking-wider">{error}</p>}
                 <Button type="submit" className="w-full" size="lg" disabled={isLoading}>
-                  {isLoading ? 'Enviando enlace...' : 'Enviar enlace de registro'}
+                  {isLoading ? 'Creando cuenta...' : 'Completar registro'}
                 </Button>
-                <p className="text-[11px] text-slate-500 font-semibold">
-                  Completarás nombre, género y contraseña desde el enlace del correo.
-                </p>
-                <p className="text-[11px] text-slate-400 font-semibold">
-                  Si escribes el correo sin @, se completará automáticamente con @gmail.com.
-                </p>
               </form>
             )}
           </Card>

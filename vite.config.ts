@@ -3,10 +3,23 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig, loadEnv} from 'vite';
 
+/** Quita crossorigin de scripts/links en producción para que carguen bien desde file:// en WebView */
+function stripCrossOrigin() {
+  return {
+    name: 'strip-crossorigin',
+    transformIndexHtml(html: string) {
+      return html
+        .replace(/\s+crossorigin="[^"]*"/g, '')
+        .replace(/\s+crossorigin/g, '');
+    },
+  };
+}
+
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
   return {
-    plugins: [react(), tailwindcss()],
+    base: mode === 'production' ? './' : '/',
+    plugins: [react(), tailwindcss(), stripCrossOrigin()],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
     },

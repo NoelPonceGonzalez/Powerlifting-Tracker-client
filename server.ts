@@ -20,7 +20,7 @@ dotenv.config({ path: path.join(__dirname, '..', 'server', '.env') });
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = parseInt(process.env.PORT || '3000', 10);
 
   // CORS headers para permitir conexiones desde WebView móvil (PRIMERO)
   app.use((req, res, next) => {
@@ -82,6 +82,8 @@ async function startServer() {
   console.log('   GET  /ping');
   console.log('   POST /api/auth/register');
   console.log('   POST /api/auth/login');
+  console.log('   POST /api/auth/verify-registration-code');
+  console.log('   POST /api/auth/complete-registration');
   console.log('   ... y otras rutas de API\n');
   
   // Middleware de logging para TODAS las peticiones (después de registrar rutas)

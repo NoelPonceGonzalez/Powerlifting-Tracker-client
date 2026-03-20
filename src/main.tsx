@@ -4,13 +4,17 @@ import App from './App.tsx';
 import './index.css';
 import { API_URL } from './config';
 
-// Todas las requests GET/POST van a la API en EC2
-if (typeof window !== 'undefined') {
+// API: siempre usar servidor AWS (EC2); WebView en APK puede inyectar __API_BASE__ antes
+if (typeof window !== 'undefined' && !(window as any).__API_BASE__) {
   (window as any).__API_BASE__ = API_URL;
+}
+
+function Root() {
+  return <App />;
 }
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <App />
+    <Root />
   </StrictMode>,
 );

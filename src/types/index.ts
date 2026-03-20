@@ -9,6 +9,7 @@ export interface User {
   avatar: string;
   bodyWeight: number;
   theme: 'light' | 'dark';
+  progressMode?: 'month' | 'year';
 }
 
 export type ChallengeType = 'max_reps' | 'weight' | 'seconds';
@@ -68,6 +69,8 @@ export interface LogEntry {
 
 export interface HistoryEntry {
   date: string;
+  week?: number;   // Semana del año (1-52) para ordenar por tramos
+  year?: number;   // Año para ordenar por tramos
   rms: RMData;
   total: number;
   trainingMaxes: Record<string, number>; // ID del TM -> valor
@@ -87,7 +90,8 @@ export interface TrainingMax {
   name: string;
   value: number;
   mode: ExerciseMode;
-  linkedExercise?: keyof RMData; 
+  linkedExercise?: keyof RMData;
+  sharedToSocial?: boolean;
 }
 
 export interface PlannedExercise {
@@ -95,7 +99,8 @@ export interface PlannedExercise {
   name: string;
   sets: number;
   reps: string | number;
-  pct?: number;
+  pct?: number; // fallback cuando no hay pctPerSet
+  pctPerSet?: number[]; // % por serie: [87, 90, 95, 80] para ramping + back-off
   weight?: number;
   mode: ExerciseMode;
   linkedTo?: string; // ID of a TrainingMax

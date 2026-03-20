@@ -25,7 +25,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
           <input
             ref={ref}
             className={cn(
-              'w-full bg-white border border-slate-200 rounded-2xl py-3 px-4 text-sm font-medium transition-all focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 outline-none disabled:opacity-50 disabled:bg-slate-50 dark:bg-slate-900 dark:border-slate-700 dark:text-slate-100 dark:focus:ring-indigo-900/40 dark:disabled:bg-slate-800',
+              'w-full bg-white border border-slate-200 rounded-2xl py-3 px-4 text-sm font-medium transition-all focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 outline-none disabled:opacity-50 disabled:bg-slate-50 shadow-md shadow-slate-200/50 dark:shadow-none dark:bg-slate-900 dark:border-slate-700 dark:text-slate-100 dark:focus:ring-indigo-900/40 dark:disabled:bg-slate-800',
               icon && 'pl-11',
               error && 'border-rose-500 focus:ring-rose-100 focus:border-rose-500',
               className

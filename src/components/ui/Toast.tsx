@@ -73,16 +73,6 @@ interface ToastContainerProps {
   onClose: (id: string) => void;
 }
 
-export const ToastContainer: React.FC<ToastContainerProps> = ({ toasts, onClose }) => {
-  return (
-    <div className="fixed top-3 right-3 sm:top-4 sm:right-4 z-[9999] flex flex-col gap-2 pointer-events-none max-w-[calc(100vw-1.5rem)] sm:max-w-none">
-      <AnimatePresence mode="popLayout">
-        {toasts.map((toast) => (
-          <div key={toast.id} className="pointer-events-auto">
-            <ToastItem toast={toast} onClose={onClose} />
-          </div>
-        ))}
-      </AnimatePresence>
-    </div>
-  );
+export const ToastContainer: React.FC<ToastContainerProps> = () => {
+  return null;
 };

@@ -1,7 +1,8 @@
 import React from 'react';
 import { motion } from 'motion/react';
-import { User as UserIcon, Camera, Weight, Moon, Sun, LogOut, ChevronRight } from 'lucide-react';
+import { User as UserIcon, Camera, Image as ImageIcon, Weight, Moon, Sun, LogOut } from 'lucide-react';
 import { Card } from '@/src/components/ui/Card';
+import { Avatar } from '@/src/components/ui/Avatar';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { User } from '@/src/types';
@@ -14,12 +15,47 @@ interface SettingsViewProps {
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({ user, onUpdateUser, onLogout }) => {
+  const galleryInputRef = React.useRef<HTMLInputElement | null>(null);
+  const cameraInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  const handleAvatarFile = (file?: File) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) return;
+    if (file.size > 3 * 1024 * 1024) return; // max 3MB para fotos de móvil
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : '';
+      if (!dataUrl) return;
+      // Recortar y redimensionar a cuadrado para que se vea bien en el avatar
+      const img = new Image();
+      img.onload = () => {
+        const size = Math.min(img.width, img.height, 400);
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          onUpdateUser({ avatar: dataUrl });
+          return;
+        }
+        const sx = (img.width - size) / 2;
+        const sy = (img.height - size) / 2;
+        ctx.drawImage(img, sx, sy, size, size, 0, 0, size, size);
+        const result = canvas.toDataURL('image/jpeg', 0.85);
+        onUpdateUser({ avatar: result });
+      };
+      img.onerror = () => onUpdateUser({ avatar: dataUrl });
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  };
+
   return (
     <motion.div 
       initial={{ opacity: 0, x: 20 }}
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: -20 }}
-      className="max-w-2xl mx-auto px-4 py-8 pb-32 text-slate-900 dark:text-slate-100"
+      className="max-w-2xl mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-28 sm:pb-32 text-slate-900 dark:text-slate-100"
     >
       <header className="mb-10">
         <h1 className="text-4xl font-black tracking-tight text-slate-900 dark:text-slate-100">Configuración</h1>
@@ -39,17 +75,58 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ user, onUpdateUser, 
           <Card padding="lg" rounded="2xl" className="space-y-6">
             <div className="flex items-center gap-6">
               <div className="relative group">
-                <img 
-                  src={user.avatar} 
-                  alt={user.name} 
-                  className="w-24 h-24 rounded-3xl object-cover border-4 border-white shadow-xl"
-                  referrerPolicy="no-referrer"
+                <Avatar 
+                  src={user.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'User')}`}
+                  name={user.name}
+                  className="w-24 h-24 rounded-3xl border-4 border-white dark:border-slate-700 shadow-xl"
                 />
-                <button className="absolute inset-0 bg-black/40 rounded-3xl flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                  <Camera className="text-white" size={24} />
-                </button>
               </div>
               <div className="flex-1 space-y-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Foto de perfil</label>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">Elige de la galería o hazte una foto con la cámara</p>
+                  <div className="flex flex-wrap gap-2">
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      onClick={() => galleryInputRef.current?.click()}
+                      className="rounded-xl"
+                    >
+                      <ImageIcon size={16} className="mr-1.5" />
+                      Galería
+                    </Button>
+                    <Button 
+                      variant="outline" 
+                      size="sm" 
+                      onClick={() => cameraInputRef.current?.click()}
+                      className="rounded-xl"
+                    >
+                      <Camera size={16} className="mr-1.5" />
+                      Hacer foto
+                    </Button>
+                    <input
+                      ref={galleryInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        handleAvatarFile(e.target.files?.[0]);
+                        e.target.value = '';
+                      }}
+                    />
+                    <input
+                      ref={cameraInputRef}
+                      type="file"
+                      accept="image/*"
+                      capture="user"
+                      className="hidden"
+                      onChange={(e) => {
+                        handleAvatarFile(e.target.files?.[0]);
+                        e.target.value = '';
+                      }}
+                    />
+                  </div>
+                </div>
                 <div className="space-y-1">
                   <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Nombre de Usuario</label>
                   <Input 
