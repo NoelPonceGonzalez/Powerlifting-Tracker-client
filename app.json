@@ -1,0 +1,55 @@
+{
+  "expo": {
+    "name": "Tracker",
+    "slug": "powerlifting-tracker",
+    "icon": "./assets/icon.png",
+    "scheme": "powerliftingtracker",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.srhit.powerliftingtracker",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.srhit.powerliftingtracker",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      }
+    },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "enableBackgroundRemoteNotifications": true
+        }
+      ],
+      "./plugins/withBundleWebApp.cjs",
+      "./plugins/withAndroidCoreResolution.cjs",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
+    ],
+    "web": {
+      "bundler": "metro"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "db898e9f-ab8d-4ae3-a489-1af87dfea8a1"
+      }
+    },
+    "owner": "srhit"
+  }
+}
