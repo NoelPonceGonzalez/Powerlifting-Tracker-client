@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { AnimatePresence, motion, useMotionValue } from 'motion/react';
 import * as XLSX from 'xlsx';
 import { LayoutDashboard, Dumbbell, Users, Settings } from 'lucide-react';
@@ -40,6 +40,10 @@ import {
 import { apiGet, apiPost, apiPut, apiDelete } from '@/src/lib/api';
 import { cn } from '@/src/lib/utils';
 import { normalizeExerciseNameKey } from '@/src/lib/normalizeExerciseName';
+import { computeRoutineProgressTotal } from '@/src/lib/routineProgressTotal';
+import { findDayIndexForLogId } from '@/src/lib/trainingMaxDayContext';
+import { parseRoutineLogsFromMongo, serializeRoutineLogsForMongo } from '@/src/lib/routineLogs';
+import { getWeekTypeSlot } from '@/src/lib/mesocycleWeek';
 import { usePushNotifications } from '@/src/hooks/usePushNotifications';
 
 // --- Constants & Mock Data ---
@@ -76,6 +80,17 @@ const INITIAL_TMS: TrainingMax[] = [
   { id: 'tm-4', name: 'Dominadas', value: 15, mode: 'reps' },
   { id: 'tm-5', name: 'Plancha', value: 60, mode: 'seconds' },
 ];
+
+/** Si el GET de TMs llega tarde, no pisa un TM ya subido al registrar series en el plan. */
+function mergeTrainingMaxesFromServer(prev: TrainingMax[], server: TrainingMax[]): TrainingMax[] {
+  if (!server.length) return prev;
+  if (!prev.length) return server;
+  return server.map(tm => {
+    const p = prev.find(x => x.id === tm.id);
+    if (p && p.value > tm.value) return { ...tm, value: p.value };
+    return tm;
+  });
+}
 
 const generateWeeks = (): TrainingWeek[] => {
   const weeks: TrainingWeek[] = [];
@@ -134,6 +149,33 @@ function getWeeksAt(routine: RoutinePlan, weekNumber: number): TrainingWeek[] {
   return best.weeks;
 }
 
+/** Plan completo a guardar en Mongo: la versión más reciente. No usar `getWeeksAt(..., semanaActual)` aquí: si editas una semana futura, eso devolvía una versión vieja y el PUT pisaba series/reps. */
+function getRoutineWeeksForPersistence(routine: RoutinePlan): TrainingWeek[] {
+  if (routine.versions?.length) {
+    const latest = routine.versions.reduce((a, b) =>
+      a.effectiveFromWeek >= b.effectiveFromWeek ? a : b
+    );
+    return latest.weeks;
+  }
+  return routine.weeks;
+}
+
+/**
+ * Semanas para enlazar `logs` con ejercicios al subir TM. Debe usar los mismos IDs que la UI (p. ej. w14-d0-e1).
+ * Si solo se usa `versions[last].weeks` con plantilla 1–4, las claves de log no coinciden y el TM no sube.
+ */
+function getWeeksForTrainingMaxScan(routine: RoutinePlan): TrainingWeek[] {
+  const versionWeeks =
+    routine.versions?.length > 0
+      ? routine.versions[routine.versions.length - 1].weeks
+      : [];
+  if (routine.weeks?.length > 0 && routine.weeks.length >= (versionWeeks?.length || 0)) {
+    return routine.weeks;
+  }
+  if (versionWeeks?.length > 0) return versionWeeks;
+  return routine.weeks || [];
+}
+
 /** Copia un día con nuevos IDs para la semana/día destino */
 function copyDayWithNewIds(
   srcDay: { id: string; name: string; type: DayType; exercises: PlannedExercise[] },
@@ -160,10 +202,6 @@ function deepCloneWeeks(weeks: TrainingWeek[]): TrainingWeek[] {
       exercises: d.exercises.map(e => ({ ...e })),
     })),
   }));
-}
-
-function getWeekTypeSlot(weekNumber: number): number {
-  return ((Math.max(1, weekNumber) - 1) % 4) + 1;
 }
 
 function normalizeTemplateWeek(week: TrainingWeek, weekType: number): TrainingWeek {
@@ -231,6 +269,9 @@ export default function App() {
   const [internalExerciseMaxes, setInternalExerciseMaxes] = useState<InternalExerciseMax[]>([]);
   const [routines, setRoutines] = useState<RoutinePlan[]>(INITIAL_ROUTINES);
   const [activeRoutineId, setActiveRoutineId] = useState<string>(INITIAL_ROUTINES[0].id);
+  /** Ref para ignorar respuestas de fetch de TM/historial si el usuario ya cambió de rutina. */
+  const activeRoutineIdRef = useRef(activeRoutineId);
+  activeRoutineIdRef.current = activeRoutineId;
   const [programScreen, setProgramScreen] = useState<'plan' | 'routines'>('plan');
   const [viewAsOfWeek, setViewAsOfWeek] = useState<number | null>(null); // null = presente, número = viaje en el tiempo
   const [friends, setFriends] = useState<FriendRequest[]>(INITIAL_FRIENDS);
@@ -238,27 +279,38 @@ export default function App() {
   const [challenges, setChallenges] = useState<Challenge[]>(INITIAL_CHALLENGES);
   const [checkIns, setCheckIns] = useState<GymCheckIn[]>(INITIAL_CHECKINS);
   const [socialTab, setSocialTab] = useState<'friends' | 'challenges' | 'checkins'>('friends');
+
+  const goToSocial = useCallback((tab?: 'friends' | 'challenges' | 'checkins') => {
+    setSocialTab(tab ?? 'friends');
+    setView('social');
+  }, []);
+
   const getYearAndWeek = (d = new Date()) => ({
     year: d.getFullYear(),
     week: getCurrentWeekOfYear(d),
   });
 
   // Función helper para crear entrada de historial con todos los TMs
-  const createHistoryEntry = (date: string, currentTms: TrainingMax[], currentRms: RMData, weekYear?: { week: number; year: number }): HistoryEntry => {
+  const createHistoryEntry = (
+    date: string,
+    currentTms: TrainingMax[],
+    currentRms: RMData,
+    weekYear?: { week: number; year: number; dayIndex?: number }
+  ): HistoryEntry => {
     const tmValues: Record<string, number> = {};
     currentTms.forEach(tm => {
       tmValues[tm.id] = tm.value;
     });
-    const total = currentTms
-      .filter(tm => tm.mode === 'weight')
-      .reduce((sum, tm) => sum + (tm.value || 0), 0);
+    const progress = computeRoutineProgressTotal(currentTms);
     const { week, year } = weekYear ?? getYearAndWeek();
     return {
       date,
       week,
       year,
+      ...(weekYear?.dayIndex !== undefined ? { dayIndex: weekYear.dayIndex } : {}),
       rms: { ...currentRms },
-      total,
+      total: progress.value,
+      progressKind: progress.kind,
       trainingMaxes: tmValues
     };
   };
@@ -296,7 +348,13 @@ export default function App() {
   /** Siempre la rutina activa más reciente: el flush del debounce de sync debe leer esto, no el closure del efecto (evita guardar sin logs nuevos). */
   const routineForSyncRef = useRef<RoutinePlan | null>(null);
   routineForSyncRef.current = activeRoutine ?? null;
-  const currentWeekOfYear = useMemo(() => getCurrentWeekOfYear(), []);
+  /** Evita guardar historial/TM en Mongo con `routineId` nuevo y `tms` aún de la rutina anterior. */
+  const tmsLoadedForRoutineRef = useRef<string | null>(null);
+  const tmHighlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Tarjetas TM que acaban de subir desde el registro de series (feedback visual). */
+  const [tmAutoHighlightIds, setTmAutoHighlightIds] = useState<string[]>([]);
+  /** Recalcula cada render para no quedar congelado en la semana del primer mount. */
+  const currentWeekOfYear = getCurrentWeekOfYear(new Date());
   const weeks = useMemo(() => {
     if (!activeRoutine) return [];
     const refWeek = viewAsOfWeek ?? currentWeekOfYear;
@@ -354,20 +412,34 @@ export default function App() {
     }
   }, [user?.id, user?.theme]);
 
-  // Notificar a la capa nativa cuando el usuario hace login (para re-inyectar token push)
+  // Notificar a la capa nativa al iniciar sesión (reinyectar token push en la WebView)
   useEffect(() => {
     if (user?.id && typeof window !== 'undefined' && (window as any).ReactNativeWebView) {
       (window as any).ReactNativeWebView.postMessage(JSON.stringify({ type: 'user_logged_in', userId: user.id }));
     }
-  }, [user?.id, currentWeekOfYear]);
+  }, [user?.id]);
 
-  // Al pulsar una notificación push: ir a Social > Actividad
+  // Si el token ya estaba en window antes del login, disparar registro en API
+  useEffect(() => {
+    if (!user?.id || typeof window === 'undefined') return;
+    const w = window as unknown as { __EXPO_PUSH_TOKEN__?: string };
+    if (w.__EXPO_PUSH_TOKEN__) {
+      queueMicrotask(() => window.dispatchEvent(new Event('expoPushTokenReady')));
+    }
+  }, [user?.id]);
+
+  // Al pulsar una notificación push: ir a Social (pestaña según `data.tab` del servidor)
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    const validTabs = ['friends', 'challenges', 'checkins'] as const;
     const handle = (d: { screen?: string; tab?: string }) => {
       if (d?.screen === 'social') {
+        const raw = String(d.tab ?? 'checkins');
+        const tab = (validTabs as readonly string[]).includes(raw)
+          ? (raw as 'friends' | 'challenges' | 'checkins')
+          : 'checkins';
+        setSocialTab(tab);
         setView('social');
-        setSocialTab((d.tab as 'friends' | 'challenges' | 'checkins') || 'checkins');
       }
     };
     const onNotificationOpened = (e: CustomEvent<{ screen?: string; tab?: string }>) => handle(e.detail || {});
@@ -437,12 +509,7 @@ export default function App() {
             versions: r.versions?.length ? r.versions : [{ effectiveFromWeek: 1, weeks: r.weeks || [] }],
             baseTemplate: r.baseTemplate?.length ? r.baseTemplate : deriveBaseTemplateFromWeeks(r.weeks || []),
             weekTypeOverrides: r.weekTypeOverrides || [],
-            logs: r.logs && typeof r.logs === 'object' && !Array.isArray(r.logs)
-              ? Object.fromEntries(Object.entries(r.logs).map(([k, v]: [string, any]) => [
-                  k,
-                  { rpe: v?.rpe ?? '', notes: v?.notes ?? '', completed: v?.completed ?? false, sets: v?.sets ?? [] },
-                ]))
-              : {},
+            logs: parseRoutineLogsFromMongo(r.logs),
           }));
           setRoutines(plans);
           const active = routinesRes.find((r: any) => r.isActive);
@@ -470,7 +537,16 @@ export default function App() {
 
   // Training Maxes ligados a la rutina activa (API: GET /api/training-maxes?routineId=…)
   useEffect(() => {
-    if (!user?.id || !activeRoutineId) return;
+    if (!user?.id) {
+      tmsLoadedForRoutineRef.current = null;
+      return;
+    }
+    if (!activeRoutineId) return;
+    if (tmHighlightTimerRef.current) {
+      clearTimeout(tmHighlightTimerRef.current);
+      tmHighlightTimerRef.current = null;
+    }
+    setTmAutoHighlightIds([]);
     const isLocalOnlyRoutine = activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20;
     if (isLocalOnlyRoutine) {
       setTms(INITIAL_TMS);
@@ -479,13 +555,25 @@ export default function App() {
         squat: INITIAL_TMS[1]?.value ?? 140,
         deadlift: INITIAL_TMS[2]?.value ?? 190,
       });
+      tmsLoadedForRoutineRef.current = activeRoutineId;
       return;
     }
+    tmsLoadedForRoutineRef.current = null;
+    const rid = activeRoutineId;
+    setTms([]);
+    setRms({ bench: 0, squat: 0, deadlift: 0 });
     let cancelled = false;
     (async () => {
       try {
-        const tmsRes = await apiGet<any[]>(`/api/training-maxes?routineId=${encodeURIComponent(activeRoutineId)}`).catch(() => []);
-        if (cancelled || !tmsRes?.length) return;
+        const tmsRes = await apiGet<any[]>(`/api/training-maxes?routineId=${encodeURIComponent(rid)}`).catch(() => []);
+        if (cancelled) return;
+        if (activeRoutineIdRef.current !== rid) return;
+        if (!tmsRes?.length) {
+          setTms([]);
+          setRms({ bench: 0, squat: 0, deadlift: 0 });
+          tmsLoadedForRoutineRef.current = rid;
+          return;
+        }
         const mapped: TrainingMax[] = tmsRes.map((t: any) => ({
           id: String(t._id || t.id),
           name: t.name,
@@ -494,16 +582,25 @@ export default function App() {
           linkedExercise: t.linkedExercise,
           sharedToSocial: !!t.sharedToSocial,
         }));
-        setTms(mapped);
-        const rmsFromTms: RMData = { bench: 0, squat: 0, deadlift: 0 };
-        mapped.forEach((tm) => {
-          if (tm.linkedExercise === 'bench' || tm.linkedExercise === 'squat' || tm.linkedExercise === 'deadlift') {
-            rmsFromTms[tm.linkedExercise] = tm.value;
-          }
+        if (activeRoutineIdRef.current !== rid) return;
+        setTms(prev => {
+          const merged = mergeTrainingMaxesFromServer(prev, mapped);
+          const rmsFromTms: RMData = { bench: 0, squat: 0, deadlift: 0 };
+          merged.forEach(tm => {
+            if (tm.linkedExercise === 'bench' || tm.linkedExercise === 'squat' || tm.linkedExercise === 'deadlift') {
+              rmsFromTms[tm.linkedExercise] = tm.value;
+            }
+          });
+          queueMicrotask(() => setRms(rmsFromTms));
+          return merged;
         });
-        setRms(rmsFromTms);
+        if (!cancelled && activeRoutineIdRef.current === rid) tmsLoadedForRoutineRef.current = rid;
       } catch (e) {
         console.error('[App] Error cargando TMs de la rutina:', e);
+        if (!cancelled && activeRoutineIdRef.current === rid) {
+          setTms([]);
+          setRms({ bench: 0, squat: 0, deadlift: 0 });
+        }
       }
     })();
     return () => {
@@ -511,17 +608,26 @@ export default function App() {
     };
   }, [user?.id, activeRoutineId]);
 
-  // TM internos (por nombre de ejercicio, sin vínculo a TM de rutina)
+  // TM internos por rutina activa (GET ?routineId= — mismos nombres en otra rutina = otros registros)
   useEffect(() => {
     if (!user?.id) {
       setInternalExerciseMaxes([]);
       return;
     }
+    if (!activeRoutineId) return;
+    const isLocalOnlyRoutine = activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20;
+    if (isLocalOnlyRoutine) {
+      setInternalExerciseMaxes([]);
+      return;
+    }
+    const rid = activeRoutineId;
+    setInternalExerciseMaxes([]);
     let cancelled = false;
     (async () => {
       try {
-        const rows = await apiGet<any[]>(`/api/internal-exercise-maxes`).catch(() => []);
-        if (cancelled || !Array.isArray(rows)) return;
+        const rows = await apiGet<any[]>(`/api/internal-exercise-maxes`, { routineId: rid }).catch(() => []);
+        if (cancelled || activeRoutineIdRef.current !== rid) return;
+        if (!Array.isArray(rows)) return;
         setInternalExerciseMaxes(
           rows.map((r: any) => ({
             id: String(r._id || r.id),
@@ -544,7 +650,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [user?.id]);
+  }, [user?.id, activeRoutineId]);
 
   // Historial de progreso por rutina activa (mismos TM que la rutina)
   useEffect(() => {
@@ -562,20 +668,24 @@ export default function App() {
       return;
     }
     setHistory([]);
+    const hid = activeRoutineId;
     let cancelled = false;
     (async () => {
       try {
-        const historyRes = await apiGet<any[]>(`/api/training-maxes/history?routineId=${encodeURIComponent(activeRoutineId)}`).catch(() => []);
-        if (cancelled || !historyRes?.length) return;
+        const historyRes = await apiGet<any[]>(`/api/training-maxes/history?routineId=${encodeURIComponent(hid)}`).catch(() => []);
+        if (cancelled || activeRoutineIdRef.current !== hid) return;
+        if (!historyRes?.length) return;
         setHistory(
           historyRes.map((h: any) => ({
             date: h.date,
             week: h.week,
             year: h.year,
+            dayIndex: h.dayIndex != null ? Number(h.dayIndex) : undefined,
             rms: h.rms || {},
             total: Number(h.total),
             trainingMaxes: h.trainingMaxes || {},
-            routineId: h.routineId ? String(h.routineId) : activeRoutineId,
+            progressKind: h.progressKind,
+            routineId: h.routineId ? String(h.routineId) : hid,
           }))
         );
       } catch (e) {
@@ -601,17 +711,23 @@ export default function App() {
         return;
       }
       try {
-        const weekRef = getCurrentWeekOfYear();
-        const weeks = getWeeksAt(toSync, weekRef);
+        const weeks = getRoutineWeeksForPersistence(toSync);
         const baseTemplate = toSync.baseTemplate?.length ? toSync.baseTemplate : deriveBaseTemplateFromWeeks(weeks);
         const weekTypeOverrides = toSync.weekTypeOverrides || [];
-        const logsObj = Object.fromEntries(
-          Object.entries(toSync.logs || {}).map(([k, v]) => [
-            k,
-            { rpe: v?.rpe ?? '', notes: v?.notes ?? '', completed: v?.completed ?? false, sets: v?.sets ?? [] },
-          ])
-        );
-        await apiPut(`/api/routines/${toSync.id}`, { weeks, baseTemplate, weekTypeOverrides, logs: logsObj, sameTemplateAllWeeks: toSync.sameTemplateAllWeeks, hiddenFromSocial: toSync.hiddenFromSocial });
+        const logsObj = serializeRoutineLogsForMongo(toSync.logs);
+        const versionsPayload =
+          toSync.versions?.length && toSync.versions.length > 0
+            ? toSync.versions
+            : [{ effectiveFromWeek: 1, weeks }];
+        await apiPut(`/api/routines/${toSync.id}`, {
+          weeks,
+          versions: versionsPayload,
+          baseTemplate,
+          weekTypeOverrides,
+          logs: logsObj,
+          sameTemplateAllWeeks: toSync.sameTemplateAllWeeks,
+          hiddenFromSocial: toSync.hiddenFromSocial,
+        });
       } catch (e) {
         console.error('[Routine] Error sincronizando:', e);
       }
@@ -630,25 +746,44 @@ export default function App() {
     };
   }, [routines, activeRoutineId, user?.id, activeRoutine]);
 
-  // Cargar datos sociales cuando el usuario entra en Social; check-ins en Social y Dashboard
+  /** Enviar rutina pendiente al salir de la pestaña / cerrar (el debounce 2s podría no dispararse). */
+  useEffect(() => {
+    const flushPendingRoutine = () => {
+      if (routineSyncRef.current) {
+        clearTimeout(routineSyncRef.current);
+        routineSyncRef.current = null;
+      }
+      void routineSyncFlush.current?.();
+    };
+    const onVis = () => {
+      if (document.visibilityState === 'hidden') flushPendingRoutine();
+    };
+    window.addEventListener('pagehide', flushPendingRoutine);
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('pagehide', flushPendingRoutine);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, []);
+
+  // Check-ins en Social y Dashboard; torneos siempre en ambas vistas (así los amigos ven torneos creados sin depender solo de Social)
   useEffect(() => {
     if (!user || (view !== 'social' && view !== 'dashboard')) return;
     const loadData = async () => {
       try {
         const toFetch: Promise<any>[] = [
           apiGet<any[]>('/api/checkins'),
-          apiGet<{ count: number }>('/api/notifications/unread-count').catch(() => ({ count: 0 })),
+          apiGet<Challenge[]>('/api/challenges'),
         ];
         if (view === 'social') {
           toFetch.push(
-          apiGet<Friend[]>('/api/social/friends'),
-          apiGet<FriendRequest[]>('/api/social/requests'),
-            apiGet<Challenge[]>('/api/challenges')
+            apiGet<Friend[]>('/api/social/friends'),
+            apiGet<FriendRequest[]>('/api/social/requests'),
           );
         }
         const results = await Promise.all(toFetch.map(p => p.catch(() => null)));
         const checkInsRes = results[0];
-        const unreadRes = results[1];
+        const challengesRes = results[1];
         if (checkInsRes?.length) {
           setCheckIns(checkInsRes.map((c: any) => ({
             id: c.id || String(c._id),
@@ -660,16 +795,13 @@ export default function App() {
             timestamp: c.timestamp,
           })));
         }
-        // Si hay notificaciones no leídas de check-in, abrir pestaña Actividad para que vea los avisos
-        const unreadCount = (unreadRes as any)?.count ?? 0;
-        if (view === 'social' && unreadCount > 0) {
-          setSocialTab('checkins');
+        if (Array.isArray(challengesRes)) {
+          setChallenges(challengesRes);
         }
-        if (view === 'social' && results.length >= 5) {
+        if (view === 'social') {
           const friendsRes = results[2] || [];
           setFriendsList(friendsRes.filter((f: { id: string }) => f.id !== user?.id));
           setFriends((results[3] || []).map((r: any) => ({ ...r, status: 'pending' as const })));
-          setChallenges(results[4] || []);
         }
       } catch (e) {
         console.error('[App] Error cargando datos:', e);
@@ -686,9 +818,13 @@ export default function App() {
   const handleDragEnd = (event: any, info: any) => {
     const threshold = 50;
     if (info.offset.x > threshold && currentIndex > 0) {
-      setView(views[currentIndex - 1]);
+      const next = views[currentIndex - 1];
+      if (next === 'social') setSocialTab('friends');
+      setView(next);
     } else if (info.offset.x < -threshold && currentIndex < views.length - 1) {
-      setView(views[currentIndex + 1]);
+      const next = views[currentIndex + 1];
+      if (next === 'social') setSocialTab('friends');
+      setView(next);
     }
   };
 
@@ -933,11 +1069,11 @@ export default function App() {
         const last = prev[prev.length - 1];
         const newTmsRecord = { ...last.trainingMaxes, [newTm.id]: newTm.value };
         const updatedTmsList = [...tms, newTm];
-        const newTotal = updatedTmsList
-          .filter(tm => tm.mode === 'weight')
-          .reduce((sum, tm) => sum + (tm.value || 0), 0);
+        const progNew = computeRoutineProgressTotal(updatedTmsList);
+        const newTotal = progNew.value;
+        const newKind = progNew.kind;
         if (last.date === currentDate) {
-          return [...prev.slice(0, -1), { ...last, trainingMaxes: newTmsRecord, total: newTotal }];
+          return [...prev.slice(0, -1), { ...last, trainingMaxes: newTmsRecord, total: newTotal, progressKind: newKind }];
         }
         const entry = createHistoryEntry(currentDate, updatedTmsList, rms, getYearAndWeek());
         return [...prev, entry];
@@ -950,8 +1086,11 @@ export default function App() {
   const handleRemoveTM = async (id: string) => {
     setTms(prev => prev.filter(tm => tm.id !== id));
     if (!/^[a-f0-9]{24}$/i.test(id)) return;
+    if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) return;
     try {
-      await apiDelete(`/api/training-maxes/${id}`);
+      await apiDelete(
+        `/api/training-maxes/${id}?routineId=${encodeURIComponent(activeRoutineId)}`
+      );
     } catch (e) {
       console.error('[TM] Error eliminando:', e);
     }
@@ -975,11 +1114,11 @@ export default function App() {
         const newTms = { ...last.trainingMaxes, [id]: updates.value! };
         const newRms = linked ? { ...rms, [linked]: updates.value! } : rms;
         const updatedTmsList = tms.map(t => t.id === id ? { ...t, value: updates.value! } : t);
-        const newTotal = updatedTmsList
-          .filter(tm => tm.mode === 'weight')
-          .reduce((sum, tm) => sum + (tm.value || 0), 0);
+        const progUp = computeRoutineProgressTotal(updatedTmsList);
+        const newTotal = progUp.value;
+        const newKind = progUp.kind;
         if (last.date === currentDate) {
-          return [...prev.slice(0, -1), { ...last, trainingMaxes: newTms, rms: newRms, total: newTotal }];
+          return [...prev.slice(0, -1), { ...last, trainingMaxes: newTms, rms: newRms, total: newTotal, progressKind: newKind }];
         }
         const entry = createHistoryEntry(currentDate, updatedTmsList, newRms, getYearAndWeek());
         return [...prev, entry];
@@ -987,8 +1126,9 @@ export default function App() {
     }
     (async () => {
       if (!/^[a-f0-9]{24}$/i.test(id)) return;
+      if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) return;
       try {
-        await apiPut(`/api/training-maxes/${id}`, updates);
+        await apiPut(`/api/training-maxes/${id}`, { ...updates, routineId: activeRoutineId });
       } catch (e) {
         console.error('[TM] Error actualizando:', e);
         // rollback si no persiste en DB
@@ -1012,7 +1152,8 @@ export default function App() {
         versions: newRoutine.versions,
         baseTemplate: newRoutine.baseTemplate,
         weekTypeOverrides: newRoutine.weekTypeOverrides,
-        isActive: routines.length === 0,
+        /** La rutina nueva pasa a ser la activa en Mongo (desactiva el resto): TM, gráficos e historial van ligados a ella. */
+        isActive: true,
       });
       const plan: RoutinePlan = {
         id: String(created._id || created.id),
@@ -1023,11 +1164,16 @@ export default function App() {
         versions: created.versions?.length ? created.versions : [{ effectiveFromWeek: 1, weeks: created.weeks || [] }],
         baseTemplate: created.baseTemplate?.length ? created.baseTemplate : deriveBaseTemplateFromWeeks(created.weeks || []),
         weekTypeOverrides: created.weekTypeOverrides || [],
-        logs: created.logs ? Object.fromEntries(Object.entries(created.logs)) : {},
+        logs: parseRoutineLogsFromMongo(created.logs),
       };
       setRoutines(prev => [...prev, plan]);
       setActiveRoutineId(plan.id);
       setProgramScreen('plan');
+      try {
+        await apiPut(`/api/routines/${plan.id}/activate`, {});
+      } catch (activateErr) {
+        console.error('[Routine] Error activando rutina recién creada:', activateErr);
+      }
     } catch (e) {
       console.error('[Routine] Error creando:', e);
     }
@@ -1106,7 +1252,15 @@ export default function App() {
       const remaining = routines.filter((r) => r.id !== routineId);
       setRoutines(remaining);
       if (activeRoutineId === routineId) {
-        setActiveRoutineId(remaining[0].id);
+        const nextId = remaining[0].id;
+        setActiveRoutineId(nextId);
+        if (!nextId.startsWith('routine-') || nextId.length >= 20) {
+          try {
+            await apiPut(`/api/routines/${nextId}/activate`, {});
+          } catch (activateErr) {
+            console.error('[Routine] Error activando rutina restante:', activateErr);
+          }
+        }
       }
     } catch (e) {
       console.error('[Routine] Error eliminando:', e);
@@ -1222,10 +1376,9 @@ export default function App() {
   };
 
   const roundTo25 = (n: number) => Math.round(n / 2.5) * 2.5;
-  const e1rm = (w: number, r: number) => r <= 1 ? w : Math.round(w * (1 + r / 30) * 10) / 10;
 
   const resolveLinkedTM = (exercise: PlannedExercise): TrainingMax | undefined => {
-    if (!exercise.linkedTo) return undefined;
+    if (!exercise.linkedTo?.trim()) return undefined;
     const byId = tms.find(tm => tm.id === exercise.linkedTo);
     if (byId) return byId;
     const byLinked = tms.find(tm => tm.linkedExercise === (exercise.linkedTo as keyof RMData));
@@ -1260,6 +1413,7 @@ export default function App() {
       prevTmsSnapshot: TrainingMax[];
       w: number;
       y: number;
+      dayIndex: number;
       currentDate: string;
       newTmsRecord: Record<string, number>;
       newTotal: number;
@@ -1274,7 +1428,16 @@ export default function App() {
         currentSets.push({ id: `${currentSets.length}`, weight: null, reps: null, completed: false });
       }
       
-      currentSets[setIdx] = { ...currentSets[setIdx], ...updates };
+      const merged = { ...currentSets[setIdx], ...updates };
+      if (merged.reps != null) {
+        const n = typeof merged.reps === 'number' ? merged.reps : parseInt(String(merged.reps), 10);
+        merged.reps = Number.isFinite(n) ? n : null;
+      }
+      if (merged.weight != null) {
+        const w = typeof merged.weight === 'number' ? merged.weight : parseFloat(String(merged.weight));
+        merged.weight = Number.isFinite(w) ? w : null;
+      }
+      currentSets[setIdx] = merged;
       
       const updatedLogs = {
         ...routine.logs,
@@ -1283,7 +1446,7 @@ export default function App() {
       const updatedRoutine = { ...routine, logs: updatedLogs };
 
       if (!isHistoryMode && user) {
-        const baseWeeks = routine.versions?.length ? routine.versions[routine.versions.length - 1].weeks : routine.weeks;
+        const baseWeeks = getWeeksForTrainingMaxScan(routine);
         let didBump = false;
         const newTms = [...tms];
         baseWeeks.forEach((week: TrainingWeek) => {
@@ -1291,6 +1454,8 @@ export default function App() {
             day.exercises.forEach((ex: PlannedExercise) => {
               const linkedTM = resolveLinkedTM(ex);
               if (!linkedTM) return;
+              const idxTm = newTms.findIndex(t => t.id === linkedTM.id);
+              if (idxTm < 0) return;
               const lid = `${week.id}-${day.id}-${ex.id}`;
               const l = updatedLogs[lid];
               if (!l?.sets) return;
@@ -1299,25 +1464,18 @@ export default function App() {
                   const w = set.weight ?? 0;
                   const r = set.reps ?? 0;
                   if (w <= 0 || r <= 0) return;
-                  const eff = e1rm(w, r);
-                  const candidate = roundTo25(eff);
-                  if (candidate > linkedTM.value) {
-                    const idx = newTms.findIndex(t => t.id === linkedTM.id);
-                    if (idx >= 0 && candidate > newTms[idx].value) {
-                      newTms[idx] = { ...newTms[idx], value: candidate };
-                      didBump = true;
-                    }
+                  const candidate = roundTo25(w);
+                  if (candidate > newTms[idxTm].value) {
+                    newTms[idxTm] = { ...newTms[idxTm], value: candidate };
+                    didBump = true;
                   }
                 } else if (linkedTM.mode === 'reps' || linkedTM.mode === 'seconds') {
                   const val = set.reps ?? 0;
                   if (val <= 0) return;
                   const candidate = Math.round(val);
-                  if (candidate > linkedTM.value) {
-                    const idx = newTms.findIndex(t => t.id === linkedTM.id);
-                    if (idx >= 0 && candidate > newTms[idx].value) {
-                      newTms[idx] = { ...newTms[idx], value: candidate };
-                      didBump = true;
-                    }
+                  if (candidate > newTms[idxTm].value) {
+                    newTms[idxTm] = { ...newTms[idxTm], value: candidate };
+                    didBump = true;
                   }
                 }
               });
@@ -1325,12 +1483,13 @@ export default function App() {
           });
         });
 
-        // TM interno: sin linkedTo — peso (E1RM), reps o segundos por campo independiente en Mongo
+        // TM interno: sin linkedTo — peso = máximo kg apuntado en serie (tu «100 %»), no e1RM; reps/seg por campo en Mongo
         const maxByKey = new Map<string, { name: string; mode: 'weight' | 'reps' | 'seconds'; candidateValue: number }>();
         baseWeeks.forEach((week: TrainingWeek) => {
           week.days.forEach((day: { id: string; exercises: PlannedExercise[] }) => {
             day.exercises.forEach((ex: PlannedExercise) => {
-              if (ex.linkedTo) return;
+              // Solo saltar si hay TM de rutina real; si linkedTo es huérfano, el TM interno aplica y debe actualizarse
+              if (resolveLinkedTM(ex)) return;
               const lid = `${week.id}-${day.id}-${ex.id}`;
               const l = updatedLogs[lid];
               if (!l?.sets?.length) return;
@@ -1339,9 +1498,8 @@ export default function App() {
                 let best = 0;
                 l.sets.forEach((set: SetLog) => {
                   const w = set.weight ?? 0;
-                  const r = set.reps ?? 0;
-                  if (w <= 0 || r <= 0) return;
-                  const cand = roundTo25(e1rm(w, r));
+                  if (w <= 0) return;
+                  const cand = roundTo25(w);
                   if (cand > best) best = cand;
                 });
                 if (best <= 0) return;
@@ -1391,14 +1549,16 @@ export default function App() {
           linked.forEach(tm => { if (tm.linkedExercise) newRms[tm.linkedExercise] = tm.value; });
           const { week: w, year: y } = getYearAndWeek();
           const newTmsRecord = newTms.reduce((acc, tm) => ({ ...acc, [tm.id]: tm.value }), {} as Record<string, number>);
-          const newTotal = newTms.filter(tm => tm.mode === 'weight').reduce((sum, tm) => sum + (tm.value || 0), 0);
+          const newTotal = computeRoutineProgressTotal(newTms).value;
           const currentDate = new Date().toLocaleDateString('es-ES', { month: 'short' });
+          const dayIndex = findDayIndexForLogId(updatedRoutine, logId) ?? 0;
           tmBump = {
             newTms,
             newRms,
             prevTmsSnapshot: tms,
             w,
             y,
+            dayIndex,
             currentDate,
             newTmsRecord,
             newTotal,
@@ -1442,7 +1602,13 @@ export default function App() {
           return next;
         });
         pendingInternalUpserts.forEach(({ name, mode, candidateValue }) => {
-          apiPost<any>('/api/internal-exercise-maxes/upsert', { name, mode, candidateValue })
+          if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) return;
+          apiPost<any>('/api/internal-exercise-maxes/upsert', {
+            routineId: activeRoutineId,
+            name,
+            mode,
+            candidateValue,
+          })
             .then((doc: any) => {
               const id = String(doc._id || doc.id);
               setInternalExerciseMaxes(prev =>
@@ -1466,23 +1632,49 @@ export default function App() {
     if (tmBump) {
       const b = tmBump;
       queueMicrotask(() => {
+        const bumpedIds = b.newTms
+          .filter(t => t.value !== b.prevTmsSnapshot.find(ot => ot.id === t.id)?.value)
+          .map(t => t.id);
+        if (bumpedIds.length) {
+          if (tmHighlightTimerRef.current) clearTimeout(tmHighlightTimerRef.current);
+          setTmAutoHighlightIds(bumpedIds);
+          tmHighlightTimerRef.current = setTimeout(() => {
+            setTmAutoHighlightIds([]);
+            tmHighlightTimerRef.current = null;
+          }, 4000);
+        }
         setTms(b.newTms);
         setRms(b.newRms);
         setHistory(prev => {
-          const sameWeek = (e: HistoryEntry) => e.year === b.y && e.week === b.w;
-          const filtered = prev.filter(e => !sameWeek(e));
           const entry: HistoryEntry = {
-          ...createHistoryEntry(b.currentDate, b.newTms, b.newRms, { week: b.w, year: b.y }),
-          routineId: activeRoutineId,
-        };
+            ...createHistoryEntry(b.currentDate, b.newTms, b.newRms, {
+              week: b.w,
+              year: b.y,
+              dayIndex: b.dayIndex,
+            }),
+            routineId: activeRoutineId,
+          };
+          const filtered = prev.filter(
+            e =>
+              !(
+                e.year === entry.year &&
+                e.week === entry.week &&
+                (e.dayIndex ?? -1) === (entry.dayIndex ?? -1)
+              )
+          );
           return [...filtered, entry].sort((a, b) => {
-            const ya = a.year ?? 0, yb = b.year ?? 0;
-            if (ya !== yb) return ya - yb;
-            return (a.week ?? 0) - (b.week ?? 0);
+            const ya = (a.year ?? 0) - (b.year ?? 0);
+            if (ya !== 0) return ya;
+            const wa = (a.week ?? 0) - (b.week ?? 0);
+            if (wa !== 0) return wa;
+            return (a.dayIndex ?? 999) - (b.dayIndex ?? 999);
           });
         });
         b.newTms.filter(t => t.value !== b.prevTmsSnapshot.find(ot => ot.id === t.id)?.value).forEach(tm => {
-          apiPut(`/api/training-maxes/${tm.id}`, { value: tm.value }).catch(() => {});
+          apiPut(`/api/training-maxes/${tm.id}`, {
+            value: tm.value,
+            routineId: activeRoutineId,
+          }).catch(() => {});
         });
         const isPersistedRoutine = !(activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20);
         if (isPersistedRoutine) {
@@ -1491,9 +1683,11 @@ export default function App() {
             date: b.currentDate,
             week: b.w,
             year: b.y,
+            dayIndex: b.dayIndex,
             rms: b.newRms,
             total: b.newTotal,
             trainingMaxes: b.newTmsRecord,
+            progressKind: computeRoutineProgressTotal(b.newTms).kind,
           }).catch(() => {});
         }
       });
@@ -1665,6 +1859,7 @@ export default function App() {
   // Función para guardar el período actual en el historial (local + DB)
   const saveCurrentPeriod = async (silent = false) => {
     if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) return;
+    if (tmsLoadedForRoutineRef.current !== activeRoutineId) return;
     if (!tms.length) return;
     const now = new Date();
     const currentDate = now.toLocaleDateString('es-ES', { month: 'short' });
@@ -1672,12 +1867,15 @@ export default function App() {
     const entry = createHistoryEntry(currentDate, tms, rms, { week, year });
     const entryWithRoutine: HistoryEntry = { ...entry, routineId: activeRoutineId };
     setHistory(prev => {
-      const sameWeek = (e: HistoryEntry) => e.year === year && e.week === week;
-      const filtered = prev.filter(e => !sameWeek(e));
+      const filtered = prev.filter(
+        e => !(e.year === year && e.week === week && e.dayIndex == null)
+      );
       return [...filtered, entryWithRoutine].sort((a, b) => {
-        const ya = a.year ?? 0, yb = b.year ?? 0;
-        if (ya !== yb) return ya - yb;
-        return (a.week ?? 0) - (b.week ?? 0);
+        const ya = (a.year ?? 0) - (b.year ?? 0);
+        if (ya !== 0) return ya;
+        const wa = (a.week ?? 0) - (b.week ?? 0);
+        if (wa !== 0) return wa;
+        return (a.dayIndex ?? 999) - (b.dayIndex ?? 999);
       });
     });
     try {
@@ -1689,6 +1887,7 @@ export default function App() {
         rms: entry.rms,
         total: entry.total,
         trainingMaxes: entry.trainingMaxes,
+        progressKind: entry.progressKind,
       });
       if (!silent) alert(`✅ Período guardado: ${currentDate}`);
     } catch (e) {
@@ -1709,29 +1908,6 @@ export default function App() {
       if (periodSaveRef.current) clearTimeout(periodSaveRef.current);
     };
   }, [tms, rms, routines, activeRoutineId, user?.id]);
-
-  const nextCycle = async () => {
-    await saveCurrentPeriod(true);
-    const newTms = tms.map(tm => {
-      if (tm.linkedExercise === 'bench') return { ...tm, value: tm.value + 2.5 };
-      if (tm.linkedExercise === 'squat' || tm.linkedExercise === 'deadlift') return { ...tm, value: tm.value + 5 };
-      if (tm.mode === 'weight') return { ...tm, value: tm.value + 2.5 };
-      if (tm.mode === 'reps') return { ...tm, value: tm.value + 1 };
-      if (tm.mode === 'seconds') return { ...tm, value: tm.value + 5 };
-      return tm;
-    });
-    setTms(newTms);
-    const updatedRms: RMData = { ...rms };
-    newTms.forEach(tm => { if (tm.linkedExercise) updatedRms[tm.linkedExercise] = tm.value; });
-    setRms(updatedRms);
-    updateActiveRoutine((r) => ({ ...r, logs: {} }));
-    try {
-      await Promise.all(newTms.map(tm => apiPut(`/api/training-maxes/${tm.id}`, { value: tm.value })));
-    } catch (e) {
-      console.error('[TM] Error actualizando ciclo:', e);
-    }
-    alert("¡Ciclo actualizado! Se han incrementado tus Training Maxes.");
-  };
 
   if (isCheckingSession) {
     return (
@@ -1811,6 +1987,8 @@ export default function App() {
               history={sortedHistory}
               rms={rms}
               trainingMaxes={tms}
+              activeRoutineName={activeRoutine?.name || 'Rutina activa'}
+              activeRoutineId={activeRoutineId}
               challenges={challenges}
               checkIns={checkIns}
               onUpdateUser={handleUpdateUser}
@@ -1818,10 +1996,7 @@ export default function App() {
                 setProgramScreen('plan');
                 setView('program');
               }}
-              onOpenSocial={(tab) => {
-                if (tab) setSocialTab(tab);
-                setView('social');
-              }}
+              onOpenSocial={(tab) => goToSocial(tab)}
               onJoinFriendCheckIn={handleJoinFriendCheckIn}
             />
           )}
@@ -1850,7 +2025,13 @@ export default function App() {
                 activeRoutineName={activeRoutine?.name || 'Rutina activa'}
                 sameTemplateAllWeeks={activeRoutine?.sameTemplateAllWeeks !== false}
                 onToggleSameTemplateAllWeeks={handleToggleSameTemplateAllWeeks}
-                trainingMaxes={(viewAsOfWeek ?? currentWeekOfYear) === currentWeekOfYear ? tms : getTMsForWeek(viewAsOfWeek ?? currentWeekOfYear, new Date().getFullYear())}
+                trainingMaxes={tms}
+                history={history}
+                referenceCalendarWeek={viewAsOfWeek ?? currentWeekOfYear}
+                calendarYear={new Date().getFullYear()}
+                tmAutoHighlightIds={
+                  (viewAsOfWeek ?? currentWeekOfYear) === currentWeekOfYear ? tmAutoHighlightIds : []
+                }
                 internalExerciseMaxes={internalExerciseMaxes}
                 weeks={weeks}
                 logs={logs}
@@ -1871,7 +2052,6 @@ export default function App() {
                 onMarkCompleted={isHistoryMode ? () => {} : handleMarkCompleted}
                 onOpenRoutineManager={() => setProgramScreen('routines')}
                 onExport={exportToExcel}
-                onNextCycle={nextCycle}
               />
             )
           )}
@@ -1934,7 +2114,8 @@ export default function App() {
           <span className="text-[7px] max-[360px]:text-[6px] sm:text-[10px] font-black tracking-widest uppercase truncate w-full text-center">Rutina</span>
         </button>
         <button 
-          onClick={() => setView('social')} 
+          type="button"
+          onClick={() => goToSocial('friends')} 
           className={cn(
             "flex flex-col items-center gap-0.5 sm:gap-1 transition-all min-w-0 flex-1 min-h-[44px] justify-center py-1",
             view === 'social' ? "text-indigo-600 scale-105 sm:scale-110" : "text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-200"

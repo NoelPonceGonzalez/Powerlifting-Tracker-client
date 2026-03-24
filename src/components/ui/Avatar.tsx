@@ -23,14 +23,21 @@ export const Avatar: React.FC<AvatarProps> = ({ src, name, fallback, className, 
   };
 
   return (
-    <div className={cn('overflow-hidden flex-shrink-0', className)}>
+    <div
+      className={cn(
+        'relative overflow-hidden flex-shrink-0',
+        /** Tamaño y radio vienen en `className`; la foto rellena el recuadro sin deformarse */
+        className
+      )}
+    >
       <img
         {...props}
         src={imgSrc}
         alt={alt ?? name ?? 'Avatar'}
-        className="w-full h-full object-cover object-center block"
+        className="absolute inset-0 h-full w-full min-h-0 min-w-0 object-cover object-center"
         referrerPolicy="no-referrer"
         onError={handleError}
+        draggable={false}
       />
     </div>
   );

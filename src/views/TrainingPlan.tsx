@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -24,16 +24,14 @@ import {
 import { Card } from '@/src/components/ui/Card';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
-import { RMData, LogEntry, TrainingMax, TrainingWeek, PlannedExercise, ExerciseMode, DayType, SetLog, InternalExerciseMax, getInternalValueForMode } from '@/src/types';
+import { RMData, LogEntry, TrainingMax, TrainingWeek, PlannedExercise, ExerciseMode, DayType, SetLog, InternalExerciseMax, getInternalValueForMode, HistoryEntry } from '@/src/types';
 import { cn } from '@/src/lib/utils';
+import { getMesocycleWeekIndex } from '@/src/lib/mesocycleWeek';
 import { normalizeExerciseNameKey } from '@/src/lib/normalizeExerciseName';
-
-/** E1RM estimado (Epley): peso × (1 + reps/30). Para reps=1 devuelve el peso. */
-function estimateE1RM(weight: number, reps: number): number {
-  if (reps <= 0 || weight <= 0) return 0;
-  if (reps === 1) return weight;
-  return Math.round(weight * (1 + reps / 30) * 10) / 10;
-}
+import {
+  computeDisplayTrainingMaxesForPlanDay,
+  resolveCalendarWeekForWeekRow,
+} from '@/src/lib/trainingMaxDayContext';
 
 /** Colores RPE según valor: soporta escalas 0-10 y 0-100, y decimales (ej. 8.5) */
 const getRPEColor = (val: string): string => {
@@ -77,6 +75,13 @@ interface TrainingPlanViewProps {
   sameTemplateAllWeeks?: boolean;
   onToggleSameTemplateAllWeeks?: () => void;
   trainingMaxes: TrainingMax[];
+  /** Snapshots de TM por semana/día (para mostrar el TM vigente en cada día del plan). */
+  history?: HistoryEntry[];
+  /** Semana del calendario (1–52) que ancla la plantilla 1–4 al historial. */
+  referenceCalendarWeek?: number;
+  calendarYear?: number;
+  /** IDs de TM recién subidos desde el registro de series (resaltado en tarjetas). */
+  tmAutoHighlightIds?: string[];
   /** TM inferidos por nombre (registro de series); desbloquean % como TM de rutina. */
   internalExerciseMaxes: InternalExerciseMax[];
   weeks: TrainingWeek[];
@@ -98,7 +103,6 @@ interface TrainingPlanViewProps {
   onMarkCompleted: (logId: string, completed: boolean) => void;
   onOpenRoutineManager: () => void;
   onExport: () => void;
-  onNextCycle: () => void;
 }
 
 export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({ 
@@ -106,6 +110,10 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   sameTemplateAllWeeks = true,
   onToggleSameTemplateAllWeeks,
   trainingMaxes,
+  history = [],
+  referenceCalendarWeek: referenceCalendarWeekProp,
+  calendarYear: calendarYearProp,
+  tmAutoHighlightIds = [],
   internalExerciseMaxes = [],
   weeks,
   logs,
@@ -125,8 +133,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   onSetLogChange,
   onMarkCompleted,
   onOpenRoutineManager,
-  onExport, 
-  onNextCycle
+  onExport
 }) => {
   const displayWeekNum = viewAsOfWeek ?? currentWeekOfYear;
   const initialWeekIdx = Math.max(0, Math.min((weeks?.length || 52) - 1, displayWeekNum - 1));
@@ -143,8 +150,6 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingTM, setEditingTM] = useState<TrainingMax | null>(null);
   const [loggingExercise, setLoggingExercise] = useState<{ weekId: string, dayId: string, exercise: PlannedExercise } | null>(null);
-  const [weightInputMode, setWeightInputMode] = useState<Record<string, 'pct' | 'kg'>>({});
-  const clearWeightInputMode = () => setWeightInputMode({});
 
   // Bloquear scroll del body cuando el modal de ejercicio está abierto
   useEffect(() => {
@@ -184,14 +189,36 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     return target;
   };
   const getMonthForWeek = (weekNum: number): string => months[getDateForWeekOfYear(weekNum).getMonth()];
-  const getWeekOfMonth = (weekNum: number): number => {
-    const d = getDateForWeekOfYear(weekNum);
-    return Math.ceil(d.getDate() / 7);
-  };
   const currentWeek = weeks[activeWeekIdx];
   const currentDay = currentWeek?.days[activeDayIdx];
   const currentMonth = getMonthForWeek(displayWeekNum);
-  const weekOfMonth = getWeekOfMonth(currentWeek?.number ?? displayWeekNum);
+  const refCalendarWeek = referenceCalendarWeekProp ?? displayWeekNum;
+  const calendarYear = calendarYearProp ?? new Date().getFullYear();
+  const displayTrainingMaxes = useMemo(
+    () =>
+      computeDisplayTrainingMaxesForPlanDay(
+        trainingMaxes,
+        history,
+        currentWeek,
+        activeDayIdx,
+        logs,
+        resolveCalendarWeekForWeekRow(currentWeek, refCalendarWeek),
+        calendarYear
+      ),
+    [trainingMaxes, history, currentWeek, activeDayIdx, logs, refCalendarWeek, calendarYear]
+  );
+  /**
+   * Semana 1–4 del bloque (mesociclo), alineada con `getWeekTypeSlot` en la app.
+   * No usar “semana del mes” calendario (meses con 5 tramos de ~7 días desalineaban el 1–4).
+   */
+  const mesocycleWeek = useMemo(() => {
+    const w = weeks[activeWeekIdx];
+    if (!w) return getMesocycleWeekIndex(displayWeekNum);
+    if (weeks.length > 4) {
+      return getMesocycleWeekIndex(w.number);
+    }
+    return Math.max(1, Math.min(4, w.number));
+  }, [weeks, activeWeekIdx, displayWeekNum]);
 
   useEffect(() => {
     const targetIdx = Math.max(0, Math.min(weeks.length - 1, displayWeekNum - 1));
@@ -200,14 +227,14 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
 
   const roundTo25 = (num: number) => Math.round(num / 2.5) * 2.5;
   const resolveLinkedTM = (exercise: PlannedExercise): TrainingMax | undefined => {
-    if (!exercise.linkedTo) return undefined;
-    const byId = trainingMaxes.find(tm => tm.id === exercise.linkedTo);
+    if (!exercise.linkedTo?.trim()) return undefined;
+    const byId = displayTrainingMaxes.find(tm => tm.id === exercise.linkedTo);
     if (byId) return byId;
     // Compat: algunas rutinas antiguas guardaban linkedTo como linkedExercise (bench/squat/deadlift)
-    const byLinkedExercise = trainingMaxes.find(tm => tm.linkedExercise === (exercise.linkedTo as keyof RMData));
+    const byLinkedExercise = displayTrainingMaxes.find(tm => tm.linkedExercise === (exercise.linkedTo as keyof RMData));
     if (byLinkedExercise) return byLinkedExercise;
     // Compat: vinculación por nombre (sin hardcode), usando datos reales de la DB del usuario
-    const byName = trainingMaxes.find(tm =>
+    const byName = displayTrainingMaxes.find(tm =>
       normalizeExerciseNameKey(tm.name) === normalizeExerciseNameKey(exercise.linkedTo) ||
       normalizeExerciseNameKey(tm.name) === normalizeExerciseNameKey(exercise.name)
     );
@@ -374,13 +401,18 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
         </div>
         
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4">
-          {trainingMaxes.map(tm => (
+          {displayTrainingMaxes.map(tm => (
             <Card 
               key={tm.id} 
               padding="md" 
               rounded="xl" 
-              className="border-2 border-slate-100 relative group cursor-pointer hover:border-indigo-200 hover:shadow-md transition-all active:scale-[0.98]"
-              onClick={() => setEditingTM(tm)}
+              className={cn(
+                'border-2 relative group cursor-pointer hover:border-indigo-200 hover:shadow-md transition-all duration-500 active:scale-[0.98]',
+                tmAutoHighlightIds.includes(tm.id)
+                  ? 'border-emerald-400 dark:border-emerald-500 ring-2 ring-emerald-400/70 ring-offset-2 ring-offset-slate-50 dark:ring-offset-slate-900 shadow-lg shadow-emerald-500/15'
+                  : 'border-slate-100'
+              )}
+              onClick={() => setEditingTM(trainingMaxes.find(t => t.id === tm.id) ?? tm)}
             >
               <div className="flex flex-col gap-1">
                 <span className="font-black text-slate-400 uppercase text-[10px] tracking-widest">
@@ -407,7 +439,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
             </div>
             <div>
               <h2 className="text-base sm:text-xl font-black text-slate-800 dark:text-white uppercase tracking-tight">
-                Semana {weekOfMonth} {viewMode === 'daily' && <span className="hidden sm:inline">— {currentDay.name}</span>}
+                Semana {mesocycleWeek} {viewMode === 'daily' && <span className="hidden sm:inline">— {currentDay.name}</span>}
               </h2>
               {viewMode === 'daily' && (
                 <span className="text-sm sm:hidden text-slate-500 font-medium">{currentDay.name}</span>
@@ -416,7 +448,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 <p className="mt-1 text-[10px] sm:text-xs font-semibold text-indigo-600 dark:text-indigo-400">
                   {sameTemplateAllWeeks
                     ? "Los cambios se aplican a todas las semanas futuras."
-                    : `Los cambios se aplican a futuras semanas tipo ${weekOfMonth} (1-4).`}
+                    : `Los cambios se aplican a futuras semanas tipo ${mesocycleWeek} (1-4 del bloque).`}
                 </p>
               )}
             </div>
@@ -924,28 +956,25 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
         </AnimatePresence>
       </section>
 
-      <div className="mt-8 sm:mt-12 flex flex-col sm:flex-row gap-3 sm:gap-4">
-        <Button variant="outline" className="flex-1 w-full sm:w-auto" onClick={onExport}>
+      <div className="mt-8 sm:mt-12">
+        <Button variant="outline" className="w-full sm:w-auto" onClick={onExport}>
           <Download size={18} />
           <span className="text-sm sm:text-base">Exportar</span>
-        </Button>
-        <Button variant="primary" className="flex-1 w-full sm:w-auto" onClick={onNextCycle}>
-          <span className="text-sm sm:text-base">Siguiente Ciclo</span>
         </Button>
       </div>
 
       {loggingExercise && typeof document !== 'undefined' && createPortal(
         <AnimatePresence>
           <div 
-            className="fixed inset-0 z-[100000] overflow-y-auto overscroll-contain [touch-action:pan-y]"
+            className="fixed inset-0 z-[100000] overflow-y-auto overflow-x-hidden overscroll-y-contain overscroll-x-none [touch-action:pan-y]"
             style={{ WebkitOverflowScrolling: 'touch' as const }}
           >
-            <div className="flex min-h-[100dvh] flex-col items-center justify-start p-3 py-4 sm:justify-center sm:p-4 sm:py-6">
+            <div className="flex min-h-[100dvh] w-full max-w-[100vw] min-w-0 flex-col items-stretch justify-start px-1.5 pt-10 pb-6 sm:items-center sm:justify-center sm:px-4 sm:py-5 box-border">
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={() => { setLoggingExercise(null); clearWeightInputMode(); }}
+              onClick={() => setLoggingExercise(null)}
               className="fixed inset-0 min-h-[100dvh] bg-black/75 backdrop-blur-sm"
             />
             <motion.div 
@@ -953,51 +982,54 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative z-10 flex w-full max-w-2xl flex-shrink-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900 sm:rounded-[2.5rem] max-h-[min(92dvh,calc(100dvh-2rem))] sm:max-h-[92vh] mx-auto"
+              className="relative z-10 mx-auto flex min-h-0 w-full min-w-0 max-w-[min(calc(100vw-0.75rem),42rem)] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900 max-h-[min(92dvh,calc(100dvh-2.75rem))] sm:max-h-[min(90vh,calc(100dvh-2.5rem))]"
             >
               <div
-                className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain overflow-x-hidden p-4 sm:p-6 md:p-10 [touch-action:pan-y]"
+                className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden overscroll-y-contain overscroll-x-none p-4 sm:p-5 [touch-action:pan-y]"
                 style={{ WebkitOverflowScrolling: 'touch' as const }}
               >
-                <div className="flex items-center justify-between mb-6 sm:mb-8">
-                  <div className="flex-1 mr-4">
+                <div className="flex items-center justify-between mb-4 sm:mb-5">
+                  <div className="flex-1 mr-3 min-w-0">
                     <input 
                       value={loggingExercise.exercise.name}
                       onChange={(e) => onUpdateExercise(loggingExercise.weekId, loggingExercise.dayId, loggingExercise.exercise.id, { name: e.target.value })}
-                      className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-slate-100 uppercase tracking-tight bg-transparent focus:outline-none w-full border-b-2 border-transparent focus:border-indigo-200 dark:focus:border-indigo-500"
+                      className="text-lg sm:text-2xl font-black text-slate-900 dark:text-slate-100 uppercase tracking-tight bg-transparent focus:outline-none w-full border-b-2 border-transparent focus:border-indigo-200 dark:focus:border-indigo-500"
                     />
-                    <p className="text-indigo-600 dark:text-indigo-400 font-black text-xs uppercase tracking-widest mt-1">
+                    <p className="text-indigo-600 dark:text-indigo-400 font-black text-[10px] sm:text-xs uppercase tracking-widest mt-1">
                       {loggingExercise.exercise.sets} × {loggingExercise.exercise.reps} •{' '}
-                      {resolveEffectiveTM(loggingExercise.exercise)
-                        ? (loggingExercise.exercise.linkedTo ? 'Objetivo vinculado' : 'TM interno · referencia')
-                        : 'Libre'}
+                      {(() => {
+                        const ex = loggingExercise.exercise;
+                        const eff = resolveEffectiveTM(ex);
+                        if (!eff) return 'Libre';
+                        return eff.isInternal ? 'TM interno · referencia' : 'Objetivo vinculado';
+                      })()}
                     </p>
                   </div>
                   <button 
-                    onClick={() => { setLoggingExercise(null); clearWeightInputMode(); }} 
+                    onClick={() => setLoggingExercise(null)} 
                     className="p-2 bg-slate-50 dark:bg-slate-800 text-slate-400 dark:text-slate-500 hover:text-rose-500 dark:hover:text-rose-400 rounded-full transition-colors"
                   >
                     <X size={24} />
                   </button>
                 </div>
 
-                <div className="space-y-8">
+                <div className="space-y-4 sm:space-y-5">
                   {/* Quick Notes */}
                   <div>
-                    <label className="text-[11px] font-black uppercase text-slate-400 mb-3 block tracking-[0.2em]">Nota Rápida / Sensaciones</label>
+                    <label className="text-[10px] font-black uppercase text-slate-400 mb-1.5 block tracking-[0.15em]">Nota rápida</label>
                     <textarea 
                       placeholder="¿Cómo te has sentido hoy?"
                       value={logs[`${loggingExercise.weekId}-${loggingExercise.dayId}-${loggingExercise.exercise.id}`]?.notes || ''}
                       onChange={(e) => onLogChange(`${loggingExercise.weekId}-${loggingExercise.dayId}-${loggingExercise.exercise.id}`, 'notes', e.target.value)}
-                      className="w-full h-24 p-6 text-sm font-bold rounded-3xl border-2 border-slate-100 dark:border-slate-700 focus:border-indigo-500 dark:focus:border-indigo-500 bg-slate-50 dark:bg-slate-800 focus:bg-white dark:focus:bg-slate-700 transition-all resize-none outline-none text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500"
+                      className="w-full h-16 sm:h-20 px-3 py-2.5 text-sm font-bold rounded-xl border-2 border-slate-100 dark:border-slate-700 focus:border-indigo-500 dark:focus:border-indigo-500 bg-slate-50 dark:bg-slate-800 focus:bg-white dark:focus:bg-slate-700 transition-all resize-none outline-none text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500"
                     />
                   </div>
 
                   {/* RPE */}
                   <div>
-                    <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-[0.2em]">RPE</label>
+                    <label className="text-[10px] font-black uppercase text-slate-400 mb-1.5 block tracking-[0.15em]">RPE</label>
                     <div className={cn(
-                      "flex items-center border-2 rounded-xl px-3 py-2 shadow-sm transition-all",
+                      "flex items-center border-2 rounded-xl px-2.5 py-1.5 shadow-sm transition-all",
                       getRPEColor(logs[`${loggingExercise.weekId}-${loggingExercise.dayId}-${loggingExercise.exercise.id}`]?.rpe || '')
                     )}>
                       <Gauge size={14} className="mr-2 opacity-80 shrink-0" />
@@ -1005,17 +1037,18 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                         placeholder="8, 8.5, 9…" 
                         value={logs[`${loggingExercise.weekId}-${loggingExercise.dayId}-${loggingExercise.exercise.id}`]?.rpe || ''}
                         onChange={(e) => onLogChange(`${loggingExercise.weekId}-${loggingExercise.dayId}-${loggingExercise.exercise.id}`, 'rpe', e.target.value)}
-                        className="flex-1 text-center font-bold text-sm bg-transparent focus:outline-none min-w-0 w-16"
+                        className="flex-1 text-center font-bold text-sm bg-transparent focus:outline-none min-w-0"
                       />
                     </div>
                   </div>
 
                   {/* Sets Logging - Minimalist Design */}
-                  <div className="flex-1 min-h-0 flex flex-col">
-                    <div className="space-y-2 overflow-x-hidden overscroll-contain">
+                  <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                    <div className="min-w-0 space-y-2 overflow-x-hidden overscroll-x-none">
                       {Array.from({ length: loggingExercise.exercise.sets }).map((_, idx) => {
                         const logId = `${loggingExercise.weekId}-${loggingExercise.dayId}-${loggingExercise.exercise.id}`;
                         const setLog = logs[logId]?.sets?.[idx] || { id: `${idx}`, weight: null, reps: null, completed: false };
+                        const effectiveMode = (setLog.inputMode ?? 'kg') as 'kg' | 'pct';
                         const effectiveTM = resolveEffectiveTM(loggingExercise.exercise);
                         const pctForSet = loggingExercise.exercise.pctPerSet?.[idx] ?? loggingExercise.exercise.pct ?? 75;
                         const exerciseMode = loggingExercise.exercise.mode;
@@ -1044,68 +1077,105 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                   : "bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-600";
 
                         const inputClass =
-                          'h-12 w-full min-h-[48px] rounded-xl border-2 border-slate-200 bg-white px-3 text-center text-base font-black text-slate-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 dark:focus:border-indigo-400 dark:focus:ring-indigo-900/40';
+                          'h-11 w-full min-h-[44px] rounded-lg border-2 border-slate-200 bg-white px-2 text-center text-sm font-black text-slate-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-200 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 dark:focus:border-indigo-400 dark:focus:ring-indigo-900/40';
+
+                        const setActionButtons = (
+                          <div className="absolute right-2 top-2 z-10 flex gap-0.5" role="group" aria-label="Acciones de la serie">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onSetLogChange(logId, idx, {
+                                  weight: null,
+                                  reps: null,
+                                  completed: false,
+                                  inputMode: 'kg',
+                                })
+                              }
+                              className={cn(
+                                'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-transparent transition-colors',
+                                hasData
+                                  ? 'text-slate-500 hover:border-rose-200 hover:bg-rose-50 hover:text-rose-600 dark:text-slate-400 dark:hover:border-rose-800 dark:hover:bg-rose-950/40'
+                                  : 'cursor-default text-slate-300 dark:text-slate-600'
+                              )}
+                              title="Borrar datos de la serie"
+                              aria-label="Borrar serie"
+                              disabled={!hasData}
+                            >
+                              <Trash2 size={17} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onSetLogChange(logId, idx, { completed: !setLog.completed })}
+                              className={cn(
+                                'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border-2 transition-all',
+                                setLog.completed
+                                  ? 'border-emerald-600 bg-emerald-600 text-white'
+                                  : 'border-slate-200 bg-white text-slate-400 hover:border-emerald-400 hover:text-emerald-600 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-500 dark:hover:border-emerald-600'
+                              )}
+                              aria-label={setLog.completed ? 'Marcar incompleto' : 'Marcar hecho'}
+                            >
+                              <CheckCircle2 size={17} className={setLog.completed ? 'fill-current' : ''} />
+                            </button>
+                          </div>
+                        );
 
                         return (
                           <div
                             key={idx}
                             className={cn(
-                              'flex flex-col gap-4 rounded-xl border p-4 transition-all',
+                              'relative min-w-0 max-w-full rounded-xl border p-3 pb-2.5 transition-all',
                               rowColors
                             )}
                           >
+                            {setActionButtons}
                             {exerciseMode === 'weight' ? (
                               <>
                                 {effectiveTM ? (
                                   <>
-                                    {/* Fila 1: título + % / kg (ancho completo, sin solapar con inputs) */}
-                                    <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-                                      <span className="shrink-0 text-sm font-black uppercase tracking-wide text-slate-700 dark:text-slate-200">
+                                    <div className="mb-2 flex min-w-0 items-center gap-2 pr-[4.5rem]">
+                                      <span className="shrink-0 text-[11px] font-black uppercase tracking-wide text-slate-700 dark:text-slate-200 sm:text-xs">
                                         Serie {idx + 1}
                                       </span>
-                                      <div
-                                        className="flex h-12 w-full shrink-0 overflow-hidden rounded-xl border-2 border-slate-200 bg-slate-100 p-1 shadow-inner dark:border-slate-600 dark:bg-slate-800 sm:ml-auto sm:w-auto sm:min-w-[11rem] sm:max-w-[14rem]"
-                                        role="group"
-                                        aria-label="Unidad de peso"
-                                      >
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            setWeightInputMode((m) => ({ ...m, [`${logId}-${idx}`]: 'pct' }))
-                                          }
-                                          className={cn(
-                                            'flex min-h-[44px] flex-1 items-center justify-center rounded-lg px-4 text-sm font-black transition-colors active:scale-[0.98]',
-                                            (weightInputMode[`${logId}-${idx}`] ?? 'kg') === 'pct'
-                                              ? 'bg-indigo-600 text-white shadow-sm'
-                                              : 'text-slate-600 dark:text-slate-400'
-                                          )}
+                                      <div className="flex min-w-0 flex-1 justify-center">
+                                        <div
+                                          className="inline-flex h-8 w-[7.25rem] shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-slate-100 p-[3px] shadow-inner dark:border-slate-600 dark:bg-slate-800"
+                                          role="group"
+                                          aria-label="Unidad de peso (kg o %)"
                                         >
-                                          %
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            setWeightInputMode((m) => ({ ...m, [`${logId}-${idx}`]: 'kg' }))
-                                          }
-                                          className={cn(
-                                            'flex min-h-[44px] flex-1 items-center justify-center rounded-lg px-4 text-sm font-black transition-colors active:scale-[0.98]',
-                                            (weightInputMode[`${logId}-${idx}`] ?? 'kg') === 'kg'
-                                              ? 'bg-indigo-600 text-white shadow-sm'
-                                              : 'text-slate-600 dark:text-slate-400'
-                                          )}
-                                        >
-                                          kg
-                                        </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => onSetLogChange(logId, idx, { inputMode: 'kg' })}
+                                            className={cn(
+                                              'flex h-7 flex-1 items-center justify-center rounded-md px-1.5 text-[10px] font-black uppercase tracking-wide transition-colors active:scale-[0.98]',
+                                              effectiveMode === 'kg'
+                                                ? 'bg-indigo-600 text-white shadow-sm'
+                                                : 'text-slate-600 dark:text-slate-400'
+                                            )}
+                                          >
+                                            kg
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => onSetLogChange(logId, idx, { inputMode: 'pct' })}
+                                            className={cn(
+                                              'flex h-7 flex-1 items-center justify-center rounded-md px-1.5 text-[10px] font-black uppercase tracking-wide transition-colors active:scale-[0.98]',
+                                              effectiveMode === 'pct'
+                                                ? 'bg-indigo-600 text-white shadow-sm'
+                                                : 'text-slate-600 dark:text-slate-400'
+                                            )}
+                                          >
+                                            %
+                                          </button>
+                                        </div>
                                       </div>
                                     </div>
 
-                                    {/* Fila 2: peso | reps | acciones (rejilla estable) */}
-                                    <div className="grid w-full grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
-                                      <div className="flex min-w-0 flex-col gap-2">
+                                    <div className="grid w-full min-w-0 grid-cols-2 gap-2 sm:gap-3">
+                                      <div className="flex min-w-0 flex-col gap-1">
                                         <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                                          {(weightInputMode[`${logId}-${idx}`] ?? 'kg') === 'pct' ? '% RM' : 'Peso (kg)'}
+                                          {effectiveMode === 'pct' ? '% RM' : 'Peso (kg)'}
                                         </span>
-                                        {(weightInputMode[`${logId}-${idx}`] ?? 'kg') === 'pct' ? (
+                                        {effectiveMode === 'pct' ? (
                                           <input
                                             type="number"
                                             min="0"
@@ -1145,18 +1215,8 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                             className={inputClass}
                                           />
                                         )}
-                                        <span className="min-h-[1.25rem] text-xs font-bold text-indigo-600 dark:text-indigo-400">
-                                          {(weightInputMode[`${logId}-${idx}`] ?? 'kg') === 'pct'
-                                            ? `= ${setLog.weight !== null ? roundTo25(setLog.weight) : '—'} kg`
-                                            : setLog.weight != null && setLog.reps != null && setLog.reps > 0
-                                              ? `= ${estimateE1RM(setLog.weight, setLog.reps)} kg`
-                                              : setLog.weight !== null && effectiveTM
-                                                ? `= ${Math.round((setLog.weight / effectiveTM.value) * 100)}%`
-                                                : '= —'}
-                                        </span>
                                       </div>
-
-                                      <div className="flex min-w-0 flex-col gap-2">
+                                      <div className="flex min-w-0 flex-col gap-1">
                                         <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
                                           Reps
                                         </span>
@@ -1173,278 +1233,187 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                           className={inputClass}
                                         />
                                       </div>
-
-                                      <div className="flex shrink-0 items-center justify-end gap-2 self-end pb-1 sm:pb-0">
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            onSetLogChange(logId, idx, {
-                                              weight: null,
-                                              reps: null,
-                                              completed: false,
-                                            })
-                                          }
-                                          className={cn(
-                                            'flex h-11 w-11 shrink-0 items-center justify-center rounded-xl transition-colors',
-                                            hasData
-                                              ? 'text-slate-400 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-900/30'
-                                              : 'cursor-default text-slate-300 dark:text-slate-600'
-                                          )}
-                                          title="Borrar datos de la serie"
-                                          aria-label="Borrar serie"
-                                          disabled={!hasData}
-                                        >
-                                          <Trash2 size={18} />
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            onSetLogChange(logId, idx, { completed: !setLog.completed })
-                                          }
-                                          className={cn(
-                                            'flex h-11 w-11 shrink-0 items-center justify-center rounded-xl transition-all',
-                                            setLog.completed
-                                              ? 'bg-emerald-600 text-white'
-                                              : 'border-2 border-slate-200 bg-white text-slate-400 hover:border-emerald-300 hover:text-emerald-600 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-500 dark:hover:border-emerald-600 dark:hover:text-emerald-400'
-                                          )}
-                                          aria-label={setLog.completed ? 'Marcar incompleto' : 'Marcar hecho'}
-                                        >
-                                          <CheckCircle2
-                                            size={18}
-                                            className={setLog.completed ? 'fill-current' : ''}
-                                          />
-                                        </button>
-                                      </div>
                                     </div>
+                                    <p className="mt-2 text-center text-xs font-bold leading-tight text-indigo-600 dark:text-indigo-400">
+                                      {effectiveMode === 'pct'
+                                        ? `= ${setLog.weight !== null ? roundTo25(setLog.weight) : '—'} kg`
+                                        : effectiveTM.isInternal && exerciseMode === 'weight'
+                                          ? setLog.weight != null && effectiveTM.value > 0
+                                            ? `${Math.round((setLog.weight / effectiveTM.value) * 100)}% de tu máx. (${roundTo25(effectiveTM.value)} kg)`
+                                            : '—'
+                                          : setLog.weight != null && setLog.reps != null && setLog.reps > 0
+                                            ? `${roundTo25(setLog.weight)} kg × ${setLog.reps} reps`
+                                            : setLog.weight !== null && effectiveTM
+                                              ? `${Math.round((setLog.weight / effectiveTM.value) * 100)}% RM`
+                                              : '—'}
+                                    </p>
                                   </>
                                 ) : (
-                                  <div className="grid w-full grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
-                                    <div className="flex min-w-0 flex-col gap-2">
-                                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                                        Serie {idx + 1} · Peso (kg)
-                                      </span>
-                                      <input
-                                        type="number"
-                                        step="0.5"
-                                        inputMode="decimal"
-                                        placeholder={(loggingExercise.exercise.weight || 0).toString()}
-                                        value={setLog.weight ?? ''}
-                                        onChange={(e) =>
-                                          onSetLogChange(logId, idx, {
-                                            weight: e.target.value === '' ? null : parseFloat(e.target.value),
-                                          })
-                                        }
-                                        className={inputClass}
-                                      />
-                                      <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400">
-                                        {setLog.weight != null && setLog.reps != null && setLog.reps > 0
-                                          ? `= ${estimateE1RM(setLog.weight, setLog.reps)} kg`
-                                          : '= — kg'}
+                                  <>
+                                    <div className="pr-[4.5rem] mb-2">
+                                      <span className="text-xs font-black uppercase tracking-wide text-slate-700 dark:text-slate-200">
+                                        Serie {idx + 1}
                                       </span>
                                     </div>
-                                    <div className="flex min-w-0 flex-col gap-2">
-                                      <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                                        Reps
-                                      </span>
-                                      <input
-                                        type="number"
-                                        inputMode="numeric"
-                                        placeholder={targetReps.toString()}
-                                        value={setLog.reps ?? ''}
-                                        onChange={(e) =>
-                                          onSetLogChange(logId, idx, {
-                                            reps: e.target.value === '' ? null : parseInt(e.target.value, 10),
-                                          })
-                                        }
-                                        className={inputClass}
-                                      />
+                                    <div className="grid w-full grid-cols-2 gap-2 sm:gap-3">
+                                      <div className="flex min-w-0 flex-col gap-1">
+                                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                          Peso (kg)
+                                        </span>
+                                        <input
+                                          type="number"
+                                          step="0.5"
+                                          inputMode="decimal"
+                                          placeholder={(loggingExercise.exercise.weight || 0).toString()}
+                                          value={setLog.weight ?? ''}
+                                          onChange={(e) =>
+                                            onSetLogChange(logId, idx, {
+                                              weight: e.target.value === '' ? null : parseFloat(e.target.value),
+                                            })
+                                          }
+                                          className={inputClass}
+                                        />
+                                      </div>
+                                      <div className="flex min-w-0 flex-col gap-1">
+                                        <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                          Reps
+                                        </span>
+                                        <input
+                                          type="number"
+                                          inputMode="numeric"
+                                          placeholder={targetReps.toString()}
+                                          value={setLog.reps ?? ''}
+                                          onChange={(e) =>
+                                            onSetLogChange(logId, idx, {
+                                              reps: e.target.value === '' ? null : parseInt(e.target.value, 10),
+                                            })
+                                          }
+                                          className={inputClass}
+                                        />
+                                      </div>
                                     </div>
-                                    <div className="flex shrink-0 items-center justify-end gap-2 self-end pb-1 sm:pb-0">
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          onSetLogChange(logId, idx, {
-                                            weight: null,
-                                            reps: null,
-                                            completed: false,
-                                          })
-                                        }
-                                        className={cn(
-                                          'flex h-11 w-11 items-center justify-center rounded-xl transition-colors',
-                                          hasData
-                                            ? 'text-slate-400 hover:bg-rose-50 hover:text-rose-600'
-                                            : 'cursor-default text-slate-300'
-                                        )}
-                                        disabled={!hasData}
-                                        aria-label="Borrar serie"
-                                      >
-                                        <Trash2 size={18} />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          onSetLogChange(logId, idx, { completed: !setLog.completed })
-                                        }
-                                        className={cn(
-                                          'flex h-11 w-11 items-center justify-center rounded-xl border-2 transition-all',
-                                          setLog.completed
-                                            ? 'bg-emerald-600 text-white'
-                                            : 'border-slate-200 bg-white text-slate-400 dark:border-slate-600 dark:bg-slate-700'
-                                        )}
-                                        aria-label="Completado"
-                                      >
-                                        <CheckCircle2 size={18} />
-                                      </button>
-                                    </div>
-                                  </div>
+                                    <p className="mt-2 text-center text-xs font-bold text-indigo-600 dark:text-indigo-400">
+                                      {setLog.weight != null && setLog.reps != null && setLog.reps > 0
+                                        ? `${roundTo25(setLog.weight)} kg × ${setLog.reps} reps`
+                                        : '—'}
+                                    </p>
+                                  </>
                                 )}
                               </>
                             ) : effectiveTM ? (
                               <>
-                                <div className="flex w-full flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-                                  <span className="shrink-0 text-sm font-black uppercase tracking-wide text-slate-700 dark:text-slate-200">
+                                <div className="mb-2 flex min-w-0 items-center gap-2 pr-[4.5rem]">
+                                  <span className="shrink-0 text-[11px] font-black uppercase tracking-wide text-slate-700 dark:text-slate-200 sm:text-xs">
                                     Serie {idx + 1}
                                   </span>
-                                  <div
-                                    className="flex h-12 w-full shrink-0 overflow-hidden rounded-xl border-2 border-slate-200 bg-slate-100 p-1 shadow-inner dark:border-slate-600 dark:bg-slate-800 sm:ml-auto sm:w-auto sm:min-w-[11rem] sm:max-w-[14rem]"
-                                    role="group"
-                                    aria-label="Unidad"
-                                  >
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setWeightInputMode((m) => ({ ...m, [`${logId}-${idx}`]: 'pct' }))
-                                      }
-                                      className={cn(
-                                        'flex min-h-[44px] flex-1 items-center justify-center rounded-lg px-4 text-sm font-black transition-colors active:scale-[0.98]',
-                                        (weightInputMode[`${logId}-${idx}`] ?? 'kg') === 'pct'
-                                          ? 'bg-indigo-600 text-white shadow-sm'
-                                          : 'text-slate-600 dark:text-slate-400'
-                                      )}
+                                  <div className="flex min-w-0 flex-1 justify-center">
+                                    <div
+                                      className="inline-flex h-8 w-[7.25rem] shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-slate-100 p-[3px] shadow-inner dark:border-slate-600 dark:bg-slate-800"
+                                      role="group"
+                                      aria-label="Unidad (reps, segundos o %)"
                                     >
-                                      %
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setWeightInputMode((m) => ({ ...m, [`${logId}-${idx}`]: 'kg' }))
-                                      }
-                                      className={cn(
-                                        'flex min-h-[44px] flex-1 items-center justify-center rounded-lg px-4 text-sm font-black transition-colors active:scale-[0.98]',
-                                        (weightInputMode[`${logId}-${idx}`] ?? 'kg') === 'kg'
-                                          ? 'bg-indigo-600 text-white shadow-sm'
-                                          : 'text-slate-600 dark:text-slate-400'
-                                      )}
-                                    >
-                                      {exerciseMode === 'reps' ? 'reps' : 's'}
-                                    </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => onSetLogChange(logId, idx, { inputMode: 'kg' })}
+                                        className={cn(
+                                          'flex h-7 flex-1 items-center justify-center rounded-md px-1 text-[10px] font-black uppercase tracking-wide transition-colors active:scale-[0.98]',
+                                          effectiveMode === 'kg'
+                                            ? 'bg-indigo-600 text-white shadow-sm'
+                                            : 'text-slate-600 dark:text-slate-400'
+                                        )}
+                                      >
+                                        {exerciseMode === 'reps' ? 'reps' : 's'}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => onSetLogChange(logId, idx, { inputMode: 'pct' })}
+                                        className={cn(
+                                          'flex h-7 flex-1 items-center justify-center rounded-md px-1 text-[10px] font-black uppercase tracking-wide transition-colors active:scale-[0.98]',
+                                          effectiveMode === 'pct'
+                                            ? 'bg-indigo-600 text-white shadow-sm'
+                                            : 'text-slate-600 dark:text-slate-400'
+                                        )}
+                                      >
+                                        %
+                                      </button>
+                                    </div>
                                   </div>
                                 </div>
-                                <div className="grid w-full grid-cols-1 gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-                                  <div className="flex min-w-0 flex-col gap-2">
-                                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                                      {(weightInputMode[`${logId}-${idx}`] ?? 'kg') === 'pct'
-                                        ? '% ref.'
-                                        : exerciseMode === 'reps'
-                                          ? 'Reps'
-                                          : 'Segundos'}
-                                    </span>
-                                    {(weightInputMode[`${logId}-${idx}`] ?? 'kg') === 'pct' ? (
-                                      <input
-                                        type="number"
-                                        min="0"
-                                        max="100"
-                                        inputMode="decimal"
-                                        placeholder={pctForSet.toString()}
-                                        value={
-                                          setLog.reps != null && effectiveTM.value > 0
-                                            ? Math.round((setLog.reps / effectiveTM.value) * 100).toString()
-                                            : ''
+                                <div className="flex w-full min-w-0 flex-col gap-1">
+                                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                    {effectiveMode === 'pct'
+                                      ? '% sobre referencia'
+                                      : exerciseMode === 'reps'
+                                        ? 'Reps'
+                                        : 'Segundos'}
+                                  </span>
+                                  {effectiveMode === 'pct' ? (
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      max="100"
+                                      inputMode="decimal"
+                                      placeholder={pctForSet.toString()}
+                                      value={
+                                        setLog.reps != null && effectiveTM.value > 0
+                                          ? Math.round((setLog.reps / effectiveTM.value) * 100).toString()
+                                          : ''
+                                      }
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        if (val === '') onSetLogChange(logId, idx, { reps: null });
+                                        else {
+                                          const pct = parseFloat(val);
+                                          if (!Number.isNaN(pct))
+                                            onSetLogChange(logId, idx, {
+                                              reps: Math.max(
+                                                1,
+                                                Math.round(effectiveTM.value * (pct / 100))
+                                              ),
+                                            });
                                         }
-                                        onChange={(e) => {
-                                          const val = e.target.value;
-                                          if (val === '') onSetLogChange(logId, idx, { reps: null });
-                                          else {
-                                            const pct = parseFloat(val);
-                                            if (!Number.isNaN(pct))
-                                              onSetLogChange(logId, idx, {
-                                                reps: Math.max(
-                                                  1,
-                                                  Math.round(effectiveTM.value * (pct / 100))
-                                                ),
-                                              });
-                                          }
-                                        }}
-                                        className={inputClass}
-                                      />
-                                    ) : (
-                                      <input
-                                        type="number"
-                                        step={exerciseMode === 'seconds' ? '1' : '1'}
-                                        inputMode="numeric"
-                                        placeholder={targetReps.toString()}
-                                        value={setLog.reps ?? ''}
-                                        onChange={(e) =>
-                                          onSetLogChange(logId, idx, {
-                                            reps:
-                                              e.target.value === '' ? null : parseInt(e.target.value, 10),
-                                          })
-                                        }
-                                        className={inputClass}
-                                      />
-                                    )}
-                                    <span className="min-h-[1.25rem] text-xs font-bold text-indigo-600 dark:text-indigo-400">
-                                      {(weightInputMode[`${logId}-${idx}`] ?? 'kg') === 'pct'
-                                        ? `= ${setLog.reps != null ? setLog.reps : '—'} ${exerciseMode === 'reps' ? 'reps' : 's'}`
-                                        : effectiveTM.value > 0 && setLog.reps != null
-                                          ? `= ${Math.round((setLog.reps / effectiveTM.value) * 100)}%`
-                                          : ''}
-                                    </span>
-                                  </div>
-                                  <div className="flex shrink-0 items-center gap-2 self-end pb-1">
-                                    <button
-                                      type="button"
-                                      onClick={() =>
+                                      }}
+                                      className={inputClass}
+                                    />
+                                  ) : (
+                                    <input
+                                      type="number"
+                                      step="1"
+                                      inputMode="numeric"
+                                      placeholder={targetReps.toString()}
+                                      value={setLog.reps ?? ''}
+                                      onChange={(e) =>
                                         onSetLogChange(logId, idx, {
-                                          weight: null,
-                                          reps: null,
-                                          completed: false,
+                                          reps:
+                                            e.target.value === '' ? null : parseInt(e.target.value, 10),
                                         })
                                       }
-                                      className={cn(
-                                        'flex h-11 w-11 items-center justify-center rounded-xl',
-                                        hasData ? 'text-slate-400 hover:text-rose-600' : 'text-slate-300'
-                                      )}
-                                      disabled={!hasData}
-                                    >
-                                      <Trash2 size={18} />
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        onSetLogChange(logId, idx, { completed: !setLog.completed })
-                                      }
-                                      className={cn(
-                                        'flex h-11 w-11 items-center justify-center rounded-xl border-2',
-                                        setLog.completed
-                                          ? 'bg-emerald-600 text-white'
-                                          : 'border-slate-200 dark:border-slate-600'
-                                      )}
-                                    >
-                                      <CheckCircle2 size={18} />
-                                    </button>
-                                  </div>
+                                      className={inputClass}
+                                    />
+                                  )}
                                 </div>
+                                <p className="mt-2 text-center text-xs font-bold text-indigo-600 dark:text-indigo-400">
+                                  {effectiveMode === 'pct'
+                                    ? `= ${setLog.reps != null ? setLog.reps : '—'} ${exerciseMode === 'reps' ? 'reps' : 's'}`
+                                    : effectiveTM.value > 0 && setLog.reps != null
+                                      ? `${Math.round((setLog.reps / effectiveTM.value) * 100)}% ref.`
+                                      : '—'}
+                                </p>
                               </>
                             ) : (
-                              <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                                <div className="flex min-w-0 flex-1 flex-col gap-2">
-                                  <span className="text-xs font-black uppercase text-slate-600 dark:text-slate-300">
+                              <>
+                                <div className="pr-[4.5rem] mb-2">
+                                  <span className="text-xs font-black uppercase text-slate-700 dark:text-slate-200">
                                     Serie {idx + 1}
+                                  </span>
+                                </div>
+                                <div className="flex flex-col gap-1">
+                                  <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                    {exerciseMode === 'reps' ? 'Reps' : 'Segundos'}
                                   </span>
                                   <input
                                     type="number"
-                                    step="0.5"
+                                    step="1"
                                     inputMode="numeric"
                                     placeholder={targetReps.toString()}
                                     value={setLog.reps ?? ''}
@@ -1455,42 +1424,11 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                     }
                                     className={inputClass}
                                   />
-                                  <span className="text-xs font-bold text-slate-400">{unitLabel.toLowerCase()}</span>
                                 </div>
-                                <div className="flex shrink-0 items-center gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      onSetLogChange(logId, idx, {
-                                        weight: null,
-                                        reps: null,
-                                        completed: false,
-                                      })
-                                    }
-                                    className={cn(
-                                      'flex h-11 w-11 items-center justify-center rounded-xl',
-                                      hasData ? 'text-slate-400 hover:text-rose-600' : 'text-slate-300'
-                                    )}
-                                    disabled={!hasData}
-                                  >
-                                    <Trash2 size={18} />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      onSetLogChange(logId, idx, { completed: !setLog.completed })
-                                    }
-                                    className={cn(
-                                      'flex h-11 w-11 items-center justify-center rounded-xl border-2',
-                                      setLog.completed
-                                        ? 'bg-emerald-600 text-white'
-                                        : 'border-slate-200 dark:border-slate-600'
-                                    )}
-                                  >
-                                    <CheckCircle2 size={18} />
-                                  </button>
-                                </div>
-                              </div>
+                                <p className="mt-2 text-center text-xs font-bold text-slate-500 dark:text-slate-400">
+                                  {unitLabel}
+                                </p>
+                              </>
                             )}
                           </div>
                         );
@@ -1499,25 +1437,30 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   </div>
                 </div>
 
-                <div className="mt-8 sm:mt-10 flex flex-col sm:flex-row gap-3">
+                <div className="mt-4 sm:mt-6 flex flex-col sm:flex-row gap-2 sm:gap-3">
                   {!isHistoryMode && (
                     <Button
                       variant="outline"
-                      className="w-full h-14 sm:h-16 rounded-2xl sm:rounded-3xl font-black uppercase tracking-widest text-rose-600 border-2 border-rose-200 hover:bg-rose-50 dark:text-rose-400 dark:border-rose-800 dark:hover:bg-rose-950/30"
+                      className="w-full h-11 sm:h-12 rounded-xl font-black uppercase tracking-wider text-xs sm:text-sm text-rose-600 border-2 border-rose-200 hover:bg-rose-50 dark:text-rose-400 dark:border-rose-800 dark:hover:bg-rose-950/30"
                       onClick={() => {
                         onRemoveExercise(loggingExercise.weekId, loggingExercise.dayId, loggingExercise.exercise.id);
                         setLoggingExercise(null);
-                        clearWeightInputMode();
                       }}
                     >
-                      <Trash2 size={16} className="mr-2" />
-                      Eliminar ejercicio
+                      <Trash2 size={15} className="mr-1.5" />
+                      Eliminar
                     </Button>
                   )}
                   <Button 
                     variant="primary" 
-                    className="w-full h-14 sm:h-16 rounded-2xl sm:rounded-3xl font-black uppercase tracking-widest bg-indigo-600 hover:bg-indigo-700 shadow-xl shadow-indigo-100"
-                    onClick={() => { setLoggingExercise(null); clearWeightInputMode(); }}
+                    className="w-full h-11 sm:h-12 rounded-xl font-black uppercase tracking-wider text-xs sm:text-sm bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-100"
+                    onClick={() => {
+                      if (!isHistoryMode && loggingExercise) {
+                        const logId = `${loggingExercise.weekId}-${loggingExercise.dayId}-${loggingExercise.exercise.id}`;
+                        onSetLogChange(logId, 0, {});
+                      }
+                      setLoggingExercise(null);
+                    }}
                   >
                     Guardar sesión
                   </Button>
@@ -1689,27 +1632,27 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.9, y: 20 }}
                 onClick={(e) => e.stopPropagation()}
-                className="relative z-10 w-full max-w-lg max-h-[90vh] overflow-y-auto bg-white dark:bg-slate-900 rounded-2xl sm:rounded-[2.5rem] shadow-2xl border border-slate-100 dark:border-slate-700"
+                className="relative z-10 w-full max-w-md max-h-[min(88dvh,90vh)] overflow-y-auto bg-white dark:bg-slate-900 rounded-2xl sm:rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-700"
               >
-              <div className="p-6 sm:p-10 dark:bg-slate-900">
-                <div className="flex items-center justify-between mb-10">
-                  <h3 className="text-3xl font-black text-slate-900 dark:text-white uppercase tracking-tight">Añadir Objetivo</h3>
+              <div className="p-4 sm:p-6 dark:bg-slate-900">
+                <div className="flex items-center justify-between mb-5">
+                  <h3 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white uppercase tracking-tight">Añadir ejercicio</h3>
                   <button 
                     onClick={() => setShowAddModal(false)} 
                     className="p-2 bg-slate-50 dark:bg-slate-800 text-slate-400 hover:text-rose-500 rounded-full transition-colors"
                   >
-                    <X size={24} />
+                    <X size={22} />
                   </button>
                 </div>
                 
-                <div className="space-y-8">
+                <div className="space-y-5">
                   <div>
-                    <label className="text-[11px] font-black uppercase text-slate-400 mb-3 block tracking-[0.2em]">Nombre del Ejercicio *</label>
+                    <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-[0.15em]">Nombre del ejercicio *</label>
                     <Input 
                       value={newExForm.name}
                       onChange={(e) => setNewExForm({ ...newExForm, name: e.target.value })}
                       placeholder="Ej: Press banca"
-                      className="h-16 text-lg font-black rounded-3xl border-2 border-slate-100 focus:border-indigo-500 px-6 shadow-sm transition-all"
+                      className="h-12 text-base font-black rounded-xl border-2 border-slate-100 focus:border-indigo-500 px-4 shadow-sm transition-all"
                     />
                   </div>
 
@@ -1774,69 +1717,74 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     </div>
                   </div>
 
-                  <div className={cn("grid gap-6", newExForm.mode === 'seconds' ? "grid-cols-2" : "grid-cols-2")}>
+                  <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <label className="text-[11px] font-black uppercase text-slate-400 mb-3 block tracking-[0.2em]">Sets *</label>
+                      <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-[0.15em]">Sets *</label>
                       <Input 
                         type="number"
                         value={newExForm.sets || ''}
                         placeholder="3"
                         min={1}
                         onChange={(e) => setNewExForm({ ...newExForm, sets: Math.max(1, parseInt(e.target.value) || 1) })}
-                        className="h-16 text-xl font-black text-center rounded-3xl border-2 border-slate-100 focus:border-indigo-500 shadow-sm"
+                        className="h-12 text-lg font-black text-center rounded-xl border-2 border-slate-100 focus:border-indigo-500 shadow-sm"
                       />
                     </div>
                     {newExForm.mode === 'seconds' ? (
                       <div>
-                        <label className="text-[11px] font-black uppercase text-slate-400 mb-3 block tracking-[0.2em]">Segundos *</label>
+                        <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-[0.15em]">Segundos *</label>
                         <Input 
                           type="number"
                           value={newExForm.reps}
                           onChange={(e) => setNewExForm({ ...newExForm, reps: e.target.value })}
-                          className="h-16 text-xl font-black text-center rounded-3xl border-2 border-slate-100 focus:border-indigo-500 shadow-sm"
+                          className="h-12 text-lg font-black text-center rounded-xl border-2 border-slate-100 focus:border-indigo-500 shadow-sm"
                         />
                       </div>
                     ) : (
                       <div>
-                        <label className="text-[11px] font-black uppercase text-slate-400 mb-3 block tracking-[0.2em]">Reps *</label>
+                        <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-[0.15em]">Reps *</label>
                         <Input 
                           value={newExForm.reps}
                           onChange={(e) => setNewExForm({ ...newExForm, reps: e.target.value })}
-                          className="h-16 text-xl font-black text-center rounded-3xl border-2 border-slate-100 focus:border-indigo-500 shadow-sm"
+                          className="h-12 text-lg font-black text-center rounded-xl border-2 border-slate-100 focus:border-indigo-500 shadow-sm"
                         />
                       </div>
                     )}
                   </div>
+                  {!newExForm.linkedTo && (
+                    <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug -mt-2">
+                      Sin TM de rutina: al guardar tus series se crea un <span className="font-bold text-indigo-600 dark:text-indigo-400">TM interno</span> y podrás usar % en la siguiente sesión.
+                    </p>
+                  )}
 
                 </div>
 
-                <div className="mt-8 p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 flex items-start gap-3">
-                  <Lightbulb size={20} className="text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
-                  <div className="text-sm">
-                    <p className="font-bold text-amber-800 dark:text-amber-200">¿Quieres competir?</p>
-                    <p className="text-amber-700 dark:text-amber-300 mt-1">Crea un torneo con este ejercicio en <span className="font-black">Comunidad → Torneos</span> y compite con tus amigos. Verás quién mejora más semana a semana.</p>
+                <div className="mt-4 p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 flex items-start gap-2">
+                  <Lightbulb size={18} className="text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                  <div className="text-xs leading-snug">
+                    <p className="font-bold text-amber-800 dark:text-amber-200">Torneos</p>
+                    <p className="text-amber-700 dark:text-amber-300 mt-0.5">En <span className="font-black">Comunidad → Torneos</span> puedes competir con amigos en este ejercicio.</p>
                   </div>
                 </div>
 
-                <div className="flex gap-4 mt-12">
+                <div className="flex gap-3 mt-6">
                   <Button 
                     variant="outline" 
-                    className="flex-1 h-16 rounded-3xl font-black uppercase tracking-widest text-slate-400 border-2 border-slate-100 hover:bg-slate-50"
+                    className="flex-1 h-12 rounded-xl font-black uppercase tracking-wider text-xs text-slate-400 border-2 border-slate-100 hover:bg-slate-50"
                     onClick={() => setShowAddModal(false)}
                   >
                     Cancelar
                   </Button>
                   <Button 
                     variant="primary" 
-                    className="flex-1 h-16 rounded-3xl font-black uppercase tracking-widest bg-indigo-600 hover:bg-indigo-700 shadow-xl shadow-indigo-100 transition-all active:scale-95"
+                    className="flex-1 h-12 rounded-xl font-black uppercase tracking-wider text-xs bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-100 transition-all active:scale-95"
                     onClick={() => {
                       const sets = newExForm.sets || 3;
-                      const pct = newExForm.linkedTo ? (newExForm.pct || 75) : undefined;
+                      const pct = newExForm.linkedTo ? (newExForm.pct || 75) : 75;
                       onAddExercise(currentWeek.id, currentDay.id, {
                         name: newExForm.name,
                         linkedTo: newExForm.linkedTo || undefined,
                         pct,
-                        pctPerSet: pct ? Array(sets).fill(pct) : undefined,
+                        pctPerSet: Array(sets).fill(pct),
                         sets,
                         reps: newExForm.reps,
                         mode: newExForm.mode

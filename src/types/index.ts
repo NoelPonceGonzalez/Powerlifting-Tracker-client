@@ -57,6 +57,8 @@ export interface SetLog {
   reps: number | null;
   weight: number | null;
   completed: boolean;
+  /** Cómo introdujo el peso/reps: kg absolutos o % sobre TM (persistido en Mongo con el log). */
+  inputMode?: 'kg' | 'pct';
 }
 
 export interface LogEntry {
@@ -67,13 +69,20 @@ export interface LogEntry {
   sets?: SetLog[];
 }
 
+export type RoutineProgressKind = 'weight' | 'reps' | 'seconds' | 'mixed';
+
 export interface HistoryEntry {
   date: string;
   week?: number;   // Semana del año (1-52) para ordenar por tramos
   year?: number;   // Año para ordenar por tramos
+  /** Día de la semana del snapshot (0=lunes … 6=domingo). Sin definir = punto agregado semanal (save-period). */
+  dayIndex?: number;
   rms: RMData;
+  /** Valor agregado del progreso de la rutina (ver `computeRoutineProgressTotal` en cliente). */
   total: number;
   trainingMaxes: Record<string, number>; // ID del TM -> valor
+  /** Cómo se calculó `total` al guardar (entradas antiguas: solo kg implícito). */
+  progressKind?: RoutineProgressKind;
   /** Id de rutina en servidor (progreso por rutina). */
   routineId?: string;
 }
@@ -98,11 +107,11 @@ export interface TrainingMax {
   isInternal?: boolean;
 }
 
-/** TM interno por usuario: clave = nombre de ejercicio normalizado (coincidencia con el plan). Tres vías independientes. */
+/** TM interno por rutina: mismo nombre en otra rutina no comparte marcas. Tres vías (peso/reps/tiempo) en Mongo. */
 export interface InternalExerciseMax {
   id: string;
   name: string;
-  /** E1RM kg (modo peso). */
+  /** Mejor kg apuntado en serie (modo peso); referencia al 100 %, no e1RM estimado. */
   valueWeight?: number;
   /** Mejor reps (modo repeticiones). */
   valueReps?: number;

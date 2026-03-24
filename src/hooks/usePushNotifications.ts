@@ -1,31 +1,37 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { apiPut } from '@/src/lib/api';
 
-/** En WebView el token lo inyecta la app nativa; no usamos Expo directamente desde aquí. */
-const isWebOrWebView = typeof window !== 'undefined';
-
-/** Registra el token de push en el backend para que lleguen notificaciones aunque la app esté cerrada.
- * Requiere development/production build (EAS Build); no funciona en Expo Go. */
+/** Registra el token Expo Push en el backend (necesario para recibir avisos con la app cerrada). */
 export function usePushNotifications(userId: string | null) {
-  const sentRef = useRef<string | null>(null);
+  /** Último token enviado con éxito para el usuario actual (evita spam; se invalida al cambiar de cuenta). */
+  const lastSentKeyRef = useRef<string | null>(null);
   const userIdRef = useRef(userId);
   userIdRef.current = userId;
 
   const registerToken = useCallback(async (token: string) => {
-    if (!token || !userIdRef.current) return;
-    if (token === sentRef.current) return;
+    const uid = userIdRef.current;
+    if (!token?.trim() || !uid) return;
+    const key = `${uid}::${token.trim()}`;
+    if (key === lastSentKeyRef.current) return;
     try {
-      await apiPut('/api/notifications/push-token', { token });
-      sentRef.current = token;
-    } catch (e) {
-      sentRef.current = null;
+      await apiPut('/api/notifications/push-token', { token: token.trim() });
+      lastSentKeyRef.current = key;
+    } catch {
+      lastSentKeyRef.current = null;
     }
   }, []);
 
   const tryRegister = useCallback(() => {
-    const t = (typeof window !== 'undefined' && (window as any).__EXPO_PUSH_TOKEN__) as string | undefined;
-    if (t) registerToken(t);
+    const t = (typeof window !== 'undefined' && (window as unknown as { __EXPO_PUSH_TOKEN__?: string }).__EXPO_PUSH_TOKEN__) as
+      | string
+      | undefined;
+    if (t) void registerToken(t);
   }, [registerToken]);
+
+  // Al cambiar de usuario, permitir volver a registrar el mismo dispositivo para la nueva cuenta
+  useEffect(() => {
+    lastSentKeyRef.current = null;
+  }, [userId]);
 
   useEffect(() => {
     if (!userId) return;
@@ -38,44 +44,33 @@ export function usePushNotifications(userId: string | null) {
     }
   }, [userId, tryRegister]);
 
-  // Reintentar cada 2s, 5s y 12s por si el token se inyecta tarde tras el login
+  // Si el token ya estaba inyectado antes del login, registrar en cuanto exista sesión
   useEffect(() => {
-    if (!userId) return;
-    const t1 = setTimeout(tryRegister, 2000);
-    const t2 = setTimeout(tryRegister, 5000);
-    const t3 = setTimeout(tryRegister, 12000);
-    return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
+    if (!userId || typeof window === 'undefined') return;
+    const w = window as unknown as { __EXPO_PUSH_TOKEN__?: string };
+    if (w.__EXPO_PUSH_TOKEN__) {
+      queueMicrotask(() => tryRegister());
+    }
   }, [userId, tryRegister]);
 
-  // Solo en contexto nativo directo (sin WebView): obtener token con Expo
+  // Reintentos: el bridge nativo puede inyectar el token después del primer render
   useEffect(() => {
-    if (!userId || isWebOrWebView) return;
+    if (!userId) return;
+    const delays = [400, 1200, 3000, 8000, 20000, 45000];
+    const timers = delays.map((ms) => setTimeout(tryRegister, ms));
+    return () => timers.forEach(clearTimeout);
+  }, [userId, tryRegister]);
 
-    let cancelled = false;
-    (async () => {
-      try {
-        const Notifications = await import('expo-notifications');
-        const Device = await import('expo-device');
-        const Constants = await import('expo-constants').then(m => m.default);
+  // Al volver a primer plano (app móvil), reintentar por si el token llegó en background
+  useEffect(() => {
+    if (!userId || typeof document === 'undefined') return;
+    const onVis = () => {
+      if (document.visibilityState === 'visible') tryRegister();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [userId, tryRegister]);
 
-        if (!Device.isDevice) return;
-        const { status: existingStatus } = await Notifications.getPermissionsAsync();
-        let finalStatus = existingStatus;
-        if (existingStatus !== 'granted') {
-          const { status } = await Notifications.requestPermissionsAsync();
-          finalStatus = status;
-        }
-        if (finalStatus !== 'granted' || cancelled) return;
-
-        const projectId = Constants.expoConfig?.extra?.eas?.projectId ?? (Constants as any).easConfig?.projectId;
-        const tokenData = await Notifications.getExpoPushTokenAsync({ projectId: projectId || undefined });
-        const token = tokenData?.data;
-        if (token && !cancelled) await registerToken(token);
-      } catch {
-        // Expo Go no soporta push; requiere development build (eas build)
-      }
-    })();
-
-    return () => { cancelled = true; };
-  }, [userId, registerToken]);
+  // El token Expo lo obtiene solo la capa nativa (client/App.tsx) e inyecta __EXPO_PUSH_TOKEN__
+  // en la WebView. No importar expo-notifications aquí: en el navegador fallaría y en WebView es redundante.
 }

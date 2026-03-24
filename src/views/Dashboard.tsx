@@ -14,14 +14,24 @@ import {
 import { Card } from '@/src/components/ui/Card';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { Button } from '@/src/components/ui/Button';
-import { HistoryEntry, RMData, TrainingMax, Challenge, GymCheckIn, User } from '@/src/types';
+import { HistoryEntry, RMData, TrainingMax, Challenge, GymCheckIn, User, RoutineProgressKind } from '@/src/types';
 import { cn } from '@/src/lib/utils';
+import {
+  computeRoutineProgressTotal,
+  progressValueFromHistoryEntry,
+} from '@/src/lib/routineProgressTotal';
 
 interface DashboardProps {
   user: User;
+  /** Historial de `save-period` solo de la rutina activa (progresión por rutina, no global). */
   history: HistoryEntry[];
   rms: RMData;
+  /** TM de la rutina activa; al cambiar de rutina cambian gráficos y referencias. */
   trainingMaxes: TrainingMax[];
+  /** Nombre de la rutina cuya progresión se muestra. */
+  activeRoutineName?: string;
+  /** Id. de rutina activa; al cambiar se resetean filtros de fecha al mes actual. */
+  activeRoutineId?: string;
   challenges: Challenge[];
   checkIns: GymCheckIn[];
   onUpdateUser?: (updates: Partial<User>) => void;
@@ -33,6 +43,17 @@ interface DashboardProps {
 type ProgressMode = 'month' | 'year';
 
 const MONTH_LABELS_SHORT = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+
+function formatRoutineAggregate(
+  value: number | null,
+  kind: RoutineProgressKind,
+  unit: string
+): string {
+  if (value == null) return '—';
+  const v = kind === 'mixed' ? Math.round(value * 100) / 100 : Math.round(value);
+  if (!unit) return String(v);
+  return `${v} ${unit}`;
+}
 
 const ProgressModeSwitch = React.memo(function ProgressModeSwitch({
   mode,
@@ -75,7 +96,9 @@ export const DashboardView: React.FC<DashboardProps> = ({
   user,
   history, 
   rms, 
-  trainingMaxes, 
+  trainingMaxes,
+  activeRoutineName = 'Rutina activa',
+  activeRoutineId,
   challenges,
   checkIns,
   onUpdateUser,
@@ -105,6 +128,14 @@ export const DashboardView: React.FC<DashboardProps> = ({
     }
   }, [user.progressMode]);
 
+  /** Al cambiar de rutina, el selector año/mes se alinea con el mes actual (progresión de esa rutina, no el filtro anterior). */
+  useEffect(() => {
+    if (activeRoutineId == null) return;
+    const n = new Date();
+    setSelectedYear(n.getFullYear());
+    setSelectedMonth(n.getMonth());
+  }, [activeRoutineId]);
+
   // Guardar progressMode en DB al cambiar
   const handleProgressModeChange = (mode: ProgressMode) => {
     setProgressMode(mode);
@@ -112,8 +143,33 @@ export const DashboardView: React.FC<DashboardProps> = ({
   };
   const lastHistory = history[history.length - 1];
   const firstHistory = history[0];
-  const totalGain = lastHistory && firstHistory ? lastHistory.total - firstHistory.total : 0;
-  const totalGainPct = firstHistory?.total ? Math.round((totalGain / firstHistory.total) * 100) : 0;
+
+  /** Cómo se agrega el progreso de esta rutina (kg / reps / s / índice mixto). */
+  const routineProgressMeta = useMemo(
+    () => computeRoutineProgressTotal(trainingMaxes),
+    [trainingMaxes]
+  );
+
+  /** Valor mostrado: coherente con la misma fórmula que el gráfico (reconstruye desde `trainingMaxes` guardados). */
+  const displayRoutineProgress = useMemo(() => {
+    if (!lastHistory) return routineProgressMeta.value;
+    return progressValueFromHistoryEntry(lastHistory, trainingMaxes);
+  }, [lastHistory, trainingMaxes, routineProgressMeta.value]);
+
+  const totalGain = useMemo(() => {
+    if (!firstHistory || !lastHistory) return 0;
+    const a = progressValueFromHistoryEntry(firstHistory, trainingMaxes);
+    const b = progressValueFromHistoryEntry(lastHistory, trainingMaxes);
+    return b - a;
+  }, [firstHistory, lastHistory, trainingMaxes]);
+
+  const totalGainPct =
+    firstHistory != null
+      ? (() => {
+          const base = progressValueFromHistoryEntry(firstHistory, trainingMaxes);
+          return base > 0 ? Math.round((totalGain / base) * 100) : 0;
+        })()
+      : 0;
 
   /** Modo global: todos los gráficos muestran kg/reps/s o % a la vez. Alterna cada 3s. */
   const [showPercent, setShowPercent] = useState(false);
@@ -122,22 +178,37 @@ export const DashboardView: React.FC<DashboardProps> = ({
     return () => clearInterval(id);
   }, []);
 
-  /** Valor del Progreso total según modo actual (kg o %) */
+  /** Variación del agregado de la rutina (misma unidad que `routineProgressMeta`). */
   const mainStatDisplay = useMemo(() => {
     const positive = totalGain >= 0;
+    const u = routineProgressMeta.unit;
     if (showPercent) {
       return { value: `${totalGainPct > 0 ? '+' : ''}${totalGainPct}%`, positive };
     }
-    return { value: `${totalGain > 0 ? '+' : ''}${totalGain} kg`, positive };
-  }, [totalGain, totalGainPct, showPercent]);
+    const abs =
+      routineProgressMeta.kind === 'mixed'
+        ? Math.round(totalGain * 100) / 100
+        : Math.round(totalGain);
+    return { value: `${abs > 0 ? '+' : ''}${abs} ${u}`.trim(), positive };
+  }, [totalGain, totalGainPct, showPercent, routineProgressMeta.kind, routineProgressMeta.unit]);
 
-  /** Por cada TM: valor según modo actual (kg/reps/s o %) - todos sincronizados */
+  /** Primer/último valor guardado de este TM en el historial de esta rutina (ids distintos por rutina). */
   const tmStatDisplay = useMemo(() => {
     const byId: Record<string, { value: string; negative: boolean }> = {};
+    const firstSnap = (tmId: string) =>
+      history.find(h => h.trainingMaxes != null && h.trainingMaxes[tmId] != null)?.trainingMaxes?.[tmId];
+    const lastSnap = (tmId: string) => {
+      for (let i = history.length - 1; i >= 0; i--) {
+        const v = history[i]?.trainingMaxes?.[tmId];
+        if (v != null) return v;
+      }
+      return undefined;
+    };
+
     trainingMaxes.forEach(tm => {
       const unit = tm.mode === 'weight' ? 'kg' : tm.mode === 'reps' ? 'reps' : 's';
-      const firstVal = firstHistory?.trainingMaxes?.[tm.id];
-      const lastVal = lastHistory?.trainingMaxes?.[tm.id] ?? (tm.mode === 'weight' ? tm.value : undefined);
+      const firstVal = firstSnap(tm.id);
+      const lastVal = lastSnap(tm.id) ?? (tm.mode === 'weight' ? tm.value : undefined);
       if (firstVal != null && lastVal != null) {
         const gain = lastVal - firstVal;
         const pct = firstVal > 0 ? Math.round((gain / firstVal) * 100) : 0;
@@ -151,9 +222,21 @@ export const DashboardView: React.FC<DashboardProps> = ({
       }
     });
     return byId;
-  }, [firstHistory, lastHistory, trainingMaxes, showPercent]);
+  }, [history, trainingMaxes, showPercent]);
 
   const joinedChallenges = useMemo(() => challenges.filter(c => c.participants.some(p => p.userId === user.id)), [challenges, user.id]);
+
+  /** Torneos activos que un amigo creó y aún no te has unido (el API ya filtra por amistad) */
+  const friendTournamentsToJoin = useMemo(() => {
+    return challenges.filter(c => {
+      const ended = c.status === 'finished' || new Date(c.endDate) <= now;
+      if (ended) return false;
+      if (c.participants.some(p => p.userId === user.id)) return false;
+      const creatorId = c.createdBy?.id;
+      if (!creatorId || creatorId === user.id) return false;
+      return true;
+    });
+  }, [challenges, user.id, now]);
 
   const todayCheckInGroups = useMemo(() => {
     const todayCheckIns = checkIns.filter(ci => {
@@ -202,13 +285,15 @@ export const DashboardView: React.FC<DashboardProps> = ({
             date = new Date(entry.year ?? currentYear, 0, Math.min(28, idx + 1));
           }
         }
+        const dayIdx = entry.dayIndex;
         return {
           source: entry,
           date,
           year: entry.year ?? date.getFullYear(),
           month: date.getMonth(),
           weekOfMonth: Math.max(1, Math.min(4, Math.ceil(date.getDate() / 7))),
-          order: date.getTime() + idx
+          dayIndex: dayIdx,
+          order: date.getTime() + (dayIdx ?? 0) * 3600000 + idx * 0.001
         };
       })
       .sort((a, b) => a.order - b.order);
@@ -232,9 +317,7 @@ export const DashboardView: React.FC<DashboardProps> = ({
     const currentYear = now.getFullYear();
     const currentMonth = now.getMonth();
     const currentWeekOfMonth = Math.max(1, Math.min(4, Math.ceil(now.getDate() / 7)));
-    const currentTotal = trainingMaxes
-      .filter(tm => tm.mode === 'weight')
-      .reduce((sum, tm) => sum + (tm.value || 0), 0);
+    const currentTotal = computeRoutineProgressTotal(trainingMaxes).value;
 
     if (progressMode === 'month') {
       const monthData = parsedHistory.filter(item => item.year === selectedYear && item.month === selectedMonth);
@@ -248,7 +331,7 @@ export const DashboardView: React.FC<DashboardProps> = ({
       return [1, 2, 3, 4].map(week => {
         const point = latestByWeek.get(week);
         const isCurrentSlot = selectedYear === currentYear && selectedMonth === currentMonth && week === currentWeekOfMonth;
-        if (point?.source.total != null) carryTotal = point.source.total;
+        if (point?.source) carryTotal = progressValueFromHistoryEntry(point.source, trainingMaxes);
         if (isCurrentSlot) carryTotal = currentTotal;
         const isFuture = isCurrentMonth && week > currentWeekOfMonth;
         return {
@@ -272,7 +355,7 @@ export const DashboardView: React.FC<DashboardProps> = ({
     return Array.from({ length: 12 }, (_, month) => {
       const point = latestByMonth.get(month);
       const isCurrentSlot = selectedYear === currentYear && month === currentMonth;
-      if (point?.source.total != null) carryTotal = point.source.total;
+      if (point?.source) carryTotal = progressValueFromHistoryEntry(point.source, trainingMaxes);
       if (isCurrentSlot) carryTotal = currentTotal;
       const isFuture = isCurrentYear && month > currentMonth;
       return {
@@ -289,31 +372,60 @@ export const DashboardView: React.FC<DashboardProps> = ({
 
   const tmChartDataById = useMemo(() => {
     const byId: Record<string, Array<{ date: string; value: number | null }>> = {};
+    const dayNamesShort = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
     const now = new Date();
     const currentYear = now.getFullYear();
     const currentMonth = now.getMonth();
-    const currentWeekOfMonth = Math.max(1, Math.min(4, Math.ceil(now.getDate() / 7)));
+
+    const entriesInView =
+      progressMode === 'month'
+        ? parsedHistory.filter(item => item.year === selectedYear && item.month === selectedMonth)
+        : parsedHistory.filter(item => item.year === selectedYear);
+
+    const sorted = [...entriesInView].sort((a, b) => a.order - b.order);
 
     trainingMaxes.forEach(tm => {
-      let carryValue: number | null = null;
-      byId[tm.id] = chartContext.map(point => {
-        const weekNum = 'weekNum' in point ? point.weekNum : null;
-        const monthNum = 'monthNum' in point ? point.monthNum : null;
-        const isCurrentSlot = progressMode === 'month'
-          ? (selectedYear === currentYear && selectedMonth === currentMonth && weekNum === currentWeekOfMonth)
-          : (selectedYear === currentYear && monthNum === currentMonth);
-        const rawValue = isCurrentSlot
-          ? tm.value
-          : (point.source?.trainingMaxes?.[tm.id] ?? null);
-        if (rawValue != null) carryValue = rawValue;
-        const isFuture = progressMode === 'month'
-          ? (selectedYear === currentYear && selectedMonth === currentMonth && (weekNum ?? 0) > currentWeekOfMonth)
-          : (selectedYear === currentYear && (monthNum ?? 0) > currentMonth);
-        return { date: point.label, value: isFuture ? null : (carryValue ?? 0) };
+      let carry: number | null = null;
+      const points: Array<{ date: string; value: number | null }> = [];
+
+      sorted.forEach(item => {
+        const raw = item.source.trainingMaxes?.[tm.id];
+        if (raw != null) carry = raw;
+        const isoWeek = item.source.week;
+        const di = item.source.dayIndex;
+        let label: string;
+        if (progressMode === 'month') {
+          label =
+            isoWeek != null && di != null
+              ? `S${isoWeek}·${dayNamesShort[di % 7]}`
+              : `${item.date.getDate()}/${item.month + 1}`;
+        } else {
+          label =
+            di != null
+              ? `${MONTH_LABELS_SHORT[item.month]}·${dayNamesShort[di % 7]}`
+              : MONTH_LABELS_SHORT[item.month];
+        }
+        points.push({ date: label, value: carry });
       });
+
+      const shouldAppendLive =
+        progressMode === 'month'
+          ? selectedYear === currentYear && selectedMonth === currentMonth
+          : selectedYear === currentYear;
+
+      if (shouldAppendLive) {
+        if (points.length === 0) {
+          points.push({ date: 'Ahora', value: tm.value });
+        } else {
+          const last = points[points.length - 1].value;
+          if (last !== tm.value) points.push({ date: 'Ahora', value: tm.value });
+        }
+      }
+
+      byId[tm.id] = points.length ? points : [{ date: 'Inicio', value: tm.value }];
     });
     return byId;
-  }, [chartContext, trainingMaxes, progressMode, selectedYear, selectedMonth]);
+  }, [parsedHistory, trainingMaxes, progressMode, selectedYear, selectedMonth]);
 
   return (
     <motion.div 
@@ -367,9 +479,18 @@ export const DashboardView: React.FC<DashboardProps> = ({
               <TrendingUp size={18} className="max-[360px]:size-4 sm:size-5 text-indigo-600 dark:text-indigo-400" />
             </div>
             <div className="text-right">
-              <div className="text-xl max-[360px]:text-lg sm:text-2xl font-black text-slate-900 dark:text-white">
-                {lastHistory?.total ?? 0}
-                <span className="text-[10px] max-[360px]:text-[9px] sm:text-xs text-slate-400 dark:text-slate-500 ml-1">kg</span>
+              <div
+                className="text-xl max-[360px]:text-lg sm:text-2xl font-black text-slate-900 dark:text-white"
+                title={`${routineProgressMeta.label}: ${routineProgressMeta.description}`}
+              >
+                {routineProgressMeta.kind === 'mixed'
+                  ? Math.round(displayRoutineProgress * 100) / 100
+                  : Math.round(displayRoutineProgress)}
+                {routineProgressMeta.unit ? (
+                  <span className="text-[10px] max-[360px]:text-[9px] sm:text-xs text-slate-400 dark:text-slate-500 ml-1">
+                    {routineProgressMeta.unit}
+                  </span>
+                ) : null}
               </div>
               <AnimatePresence mode="wait">
                 <motion.span
@@ -385,15 +506,20 @@ export const DashboardView: React.FC<DashboardProps> = ({
                       : "text-slate-500 dark:text-slate-400"
                   )}
                 >
-                  Total: {mainStatDisplay.value}
+                  En esta rutina: {mainStatDisplay.value}
                 </motion.span>
               </AnimatePresence>
             </div>
           </div>
-          <h3 className="font-bold text-slate-800 dark:text-slate-200 mb-3 max-[360px]:mb-2 sm:mb-4 text-sm max-[360px]:text-xs sm:text-base">Progreso total</h3>
+          <h3 className="font-bold text-slate-800 dark:text-slate-200 mb-0.5 max-[360px]:mb-0 sm:mb-1 text-sm max-[360px]:text-xs sm:text-base">
+            Progreso de la rutina
+          </h3>
+          <p className="text-[10px] max-[360px]:text-[9px] sm:text-xs font-bold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 mb-3 max-[360px]:mb-2 sm:mb-4 truncate" title={activeRoutineName}>
+            {activeRoutineName}
+          </p>
           <AnimatePresence mode="wait">
             <motion.div
-              key={`${progressMode}-${selectedYear}-${selectedMonth}`}
+              key={`${activeRoutineName}-${progressMode}-${selectedYear}-${selectedMonth}`}
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -6 }}
@@ -426,7 +552,10 @@ export const DashboardView: React.FC<DashboardProps> = ({
                       ? { backgroundColor: 'rgba(15,23,42,0.95)', borderRadius: '8px', border: 'none', color: '#fff', padding: '6px 10px', fontSize: 12 } 
                       : { backgroundColor: 'rgba(255,255,255,0.98)', borderRadius: '8px', border: '1px solid #e2e8f0', boxShadow: '0 4px 12px -4px rgba(0,0,0,0.1)', padding: '6px 10px', fontSize: 12 }} 
                     itemStyle={{ color: user.theme === 'dark' ? '#818cf8' : '#6366f1' }} 
-                    formatter={(value: number | null) => [value == null ? '—' : `${Math.round(value)} kg`, '']}
+                    formatter={(value: number | null) => [
+                      formatRoutineAggregate(value, routineProgressMeta.kind, routineProgressMeta.unit),
+                      '',
+                    ]}
                   />
                   <Area type="monotone" dataKey="total" stroke={user.theme === 'dark' ? '#818cf8' : '#6366f1'} strokeWidth={3} fillOpacity={1} fill={`url(#colorTotal${user.theme === 'dark' ? 'Dark' : 'Light'})`} />
                 </AreaChart>
@@ -485,7 +614,7 @@ export const DashboardView: React.FC<DashboardProps> = ({
                 <h3 className="font-bold text-slate-800 dark:text-slate-200 mb-4">{tm.name}</h3>
                 <AnimatePresence mode="wait">
                   <motion.div
-                    key={`${tm.id}-${progressMode}-${selectedYear}-${selectedMonth}`}
+                    key={`${tm.id}-${activeRoutineName}-${progressMode}-${selectedYear}-${selectedMonth}`}
                     initial={{ opacity: 0, y: 6 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -6 }}
@@ -546,6 +675,40 @@ export const DashboardView: React.FC<DashboardProps> = ({
               Ver todos
             </Button>
           </div>
+
+          {friendTournamentsToJoin.length > 0 && (
+            <Card padding="md" rounded="2xl" className="mb-4 border-amber-200/80 dark:border-amber-700/50 bg-amber-50/40 dark:bg-amber-950/20">
+              <p className="text-[10px] font-black uppercase tracking-widest text-amber-800 dark:text-amber-300 mb-2">
+                Tus amigos — únete
+              </p>
+              <p className="text-xs text-slate-600 dark:text-slate-400 mb-3">
+                Torneos en curso creados por amigos; ábrelos en Comunidad para registrar tu marca.
+              </p>
+              <div className="space-y-2">
+                {friendTournamentsToJoin.slice(0, 4).map(c => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => onOpenSocial('challenges')}
+                    className="w-full text-left flex items-center justify-between gap-2 py-2 px-3 rounded-xl bg-white/80 dark:bg-slate-900/80 border border-amber-100 dark:border-amber-900/40 hover:border-indigo-300 dark:hover:border-indigo-600 transition-colors"
+                  >
+                    <div className="min-w-0">
+                      <p className="font-bold text-slate-900 dark:text-slate-100 truncate text-sm">{c.title}</p>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                        Por {c.createdBy?.name ?? 'Amigo'} · {c.exercise}
+                      </p>
+                    </div>
+                    <span className="text-[10px] font-black uppercase text-indigo-600 dark:text-indigo-400 flex-shrink-0">Unirse</span>
+                  </button>
+                ))}
+              </div>
+              {friendTournamentsToJoin.length > 4 && (
+                <Button variant="outline" size="sm" className="w-full mt-2 rounded-xl text-xs" onClick={() => onOpenSocial('challenges')}>
+                  Ver {friendTournamentsToJoin.length - 4} más en Comunidad
+                </Button>
+              )}
+            </Card>
+          )}
           
           <div className="space-y-4">
             {joinedChallenges.length === 0 ? (

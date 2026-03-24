@@ -105,16 +105,30 @@ export default function App() {
           });
         }
 
-        if (!Device.isDevice) return;
+        if (!Device.isDevice) {
+          if (__DEV__) {
+            console.warn(
+              '[PUSH] Expo Push no está disponible en emulador/simulador. Usa un dispositivo físico con build de desarrollo o release.'
+            );
+          }
+          return;
+        }
+
         const { status: existingStatus } = await Notifications.getPermissionsAsync();
         let finalStatus = existingStatus;
         if (existingStatus !== 'granted') {
           const { status } = await Notifications.requestPermissionsAsync();
           finalStatus = status;
         }
-        if (finalStatus !== 'granted' || cancelled) return;
+        if (finalStatus !== 'granted' || cancelled) {
+          if (__DEV__) console.warn('[PUSH] Permiso de notificaciones denegado:', finalStatus);
+          return;
+        }
 
         const projectId = Constants.expoConfig?.extra?.eas?.projectId ?? (Constants as any).easConfig?.projectId;
+        if (!projectId && __DEV__) {
+          console.warn('[PUSH] Falta extra.eas.projectId en app.json — getExpoPushTokenAsync puede fallar.');
+        }
         const tokenData = await Notifications.getExpoPushTokenAsync({ projectId: projectId || undefined });
         const token = tokenData?.data;
         if (token && !cancelled) {
@@ -154,8 +168,8 @@ export default function App() {
         const Notifications = await import('expo-notifications');
 
         const goToActivity = (data: Record<string, any> | undefined) => {
-          const screen = data?.screen || 'social';
-          const tab = data?.tab || 'checkins';
+          const screen = String(data?.screen ?? 'social');
+          const tab = String(data?.tab ?? 'checkins');
           setPendingNotificationOpen({ screen, tab });
         };
 
@@ -350,8 +364,10 @@ export default function App() {
           onMessage={(event) => {
             try {
               const data = JSON.parse(event.nativeEvent.data);
-              if (data.type === 'user_logged_in' && data.userId && (pushTokenRef.current || pushToken)) {
+              if (data.type === 'user_logged_in' && data.userId) {
                 injectPushToken();
+                setTimeout(() => injectPushToken(), 400);
+                setTimeout(() => injectPushToken(), 2000);
               } else if (data.type === 'registration_token_consumed') {
                 setPendingRegistrationToken(null);
               }
