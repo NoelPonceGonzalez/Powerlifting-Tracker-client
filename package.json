@@ -12,7 +12,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "expo": "node scripts/expo-cli-wrapper.cjs",
+    "expo:cli": "node scripts/expo-cli-wrapper.cjs",
     "expo:start": "node scripts/expo-start-wrapper.cjs start",
     "expo:start:only": "expo start",
     "expo:android": "expo start --android",

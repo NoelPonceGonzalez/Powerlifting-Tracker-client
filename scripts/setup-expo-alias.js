@@ -37,4 +37,4 @@ if (args[0] === 'start') {
 `;
 
 // No hacer nada automáticamente, solo crear el script si el usuario lo necesita
-// El usuario puede usar 'npm run expo start' que funcionará igual que 'npx expo start'
+// El usuario puede usar 'npm run expo:cli start' (evita script "expo" en package.json, aviso de expo doctor)

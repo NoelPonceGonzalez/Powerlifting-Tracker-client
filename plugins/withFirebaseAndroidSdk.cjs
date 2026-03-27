@@ -30,9 +30,10 @@ function withFirebaseAndroidSdk(config) {
     if (!contents.includes(marker)) {
       return cfg;
     }
-    const addition = `\n\n    // Firebase BoM + Analytics (Firebase Console → Gradle)
-    implementation platform('com.google.firebase:firebase-bom:34.11.0')
-    implementation 'com.google.firebase:firebase-analytics'`;
+    const addition = `\n\n    // Firebase BoM + Analytics (alineado con app.json: firebaseBomVersion / playServicesMeasurementVersion)
+    implementation platform('com.google.firebase:firebase-bom:33.6.0')
+    implementation 'com.google.firebase:firebase-analytics'
+    implementation 'com.google.android.gms:play-services-measurement:21.6.2'`;
     contents = contents.replace(marker, `${marker}${addition}`);
     cfg.modResults.contents = contents;
     return cfg;

@@ -18,12 +18,12 @@ Este proyecto mantiene la app original web (Vite + Express) y ahora incluye un c
 ```bash
 cd client
 npm install
-npm run expo start
+npm run expo:cli start
 # O también puedes usar:
 npm run expo:start
 ```
 
-**✅ Ahora `npm run expo start` inicia automáticamente:**
+**✅ Ahora `npm run expo:cli start` inicia automáticamente:**
 - Servidor web en puerto 3000 (si no está corriendo)
 - Expo en modo LAN
 
