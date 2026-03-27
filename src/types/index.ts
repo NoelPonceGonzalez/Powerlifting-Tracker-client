@@ -67,6 +67,8 @@ export interface LogEntry {
   completed: boolean;
   weight?: number;
   sets?: SetLog[];
+  /** Nombre del ejercicio (solo sync a Mongo / WorkoutExercise.exerciseName). */
+  exerciseName?: string;
 }
 
 export type RoutineProgressKind = 'weight' | 'reps' | 'seconds' | 'mixed';
@@ -75,8 +77,14 @@ export interface HistoryEntry {
   date: string;
   week?: number;   // Semana del año (1-52) para ordenar por tramos
   year?: number;   // Año para ordenar por tramos
-  /** Día de la semana del snapshot (0=lunes … 6=domingo). Sin definir = punto agregado semanal (save-period). */
-  dayIndex?: number;
+  /** Lunes=0 … Domingo=6. Permite TM distinto el martes que el lunes de la misma semana. */
+  dayOfWeek?: number;
+  /** Fecha civil del snapshot (YYYY-MM-DD); vigencia hasta el siguiente snapshot. */
+  dateISO?: string;
+  /** Mes civil 1–12 (alineado con dateISO). */
+  month?: number;
+  /** ISO del servidor (puntos del gráfico / orden temporal). */
+  createdAt?: string;
   rms: RMData;
   /** Valor agregado del progreso de la rutina (ver `computeRoutineProgressTotal` en cliente). */
   total: number;
@@ -99,6 +107,7 @@ export interface Exercise {
 export interface TrainingMax {
   id: string;
   name: string;
+  /** Mejor marca según modo: kg (redondeo 2,5), reps o s — de lo registrado en series, no e1RM. */
   value: number;
   mode: ExerciseMode;
   linkedExercise?: keyof RMData;
@@ -133,20 +142,22 @@ export function getInternalValueForMode(im: InternalExerciseMax, mode: ExerciseM
 
 export interface PlannedExercise {
   id: string;
+  _dbId?: string;
   name: string;
   sets: number;
   reps: string | number;
-  pct?: number; // fallback cuando no hay pctPerSet
-  pctPerSet?: number[]; // % por serie: [87, 90, 95, 80] para ramping + back-off
+  pct?: number;
+  pctPerSet?: number[];
   weight?: number;
   mode: ExerciseMode;
-  linkedTo?: string; // ID of a TrainingMax
+  linkedTo?: string;
 }
 
 export type DayType = 'workout' | 'rest' | 'deload';
 
 export interface TrainingDay {
   id: string;
+  _dbId?: string;
   name: string;
   type: DayType;
   exercises: PlannedExercise[];
@@ -154,6 +165,7 @@ export interface TrainingDay {
 
 export interface TrainingWeek {
   id: string;
+  _dbIdWeek?: string;
   number: number;
   days: TrainingDay[];
 }

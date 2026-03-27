@@ -1,12 +1,40 @@
 import { StatusBar } from 'expo-status-bar';
+import Constants from 'expo-constants';
 import React, { useMemo, useRef, useState, useEffect } from 'react';
 import { ActivityIndicator, Linking, Platform, Pressable, SafeAreaView, Text, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 
+const DEV_WEB_PORT = parseInt(process.env.EXPO_PUBLIC_WEB_APP_PORT || '3000', 10);
+
+/** Extrae hostname desde debuggerHost / hostUri de Expo (misma IP que Metro → sirve para móvil físico). */
+function hostnameFromDebuggerLike(value: string): string | null {
+  const v = value.trim();
+  if (!v) return null;
+  try {
+    const withProto = v.includes('://') ? v : `http://${v}`;
+    const u = new URL(withProto);
+    if (u.hostname) return u.hostname;
+  } catch {
+    /* ignore */
+  }
+  const first = v.split(':')[0];
+  return first || null;
+}
+
+/**
+ * Host del túnel de Expo (Metro ~8081). No sirve para :3000: el servidor Vite/API no pasa por ese túnel.
+ * Usar `http://host:3000` aquí provoca ERR_TIMED_OUT.
+ */
+function isExpoTunnelMetroHost(host: string): boolean {
+  const h = host.toLowerCase();
+  return h.endsWith('.exp.direct') || h.endsWith('.exp.host');
+}
+
 /**
  * URL o origen donde la WebView carga el HTML/JS de la app.
  * - Si EXPO_PUBLIC_WEB_APP_URL está definida, la usa (desarrollo o túnel).
- * - Si __DEV__: usa el servidor local (en desarrollo los assets no están en el APK).
+ * - Si __DEV__: misma IP LAN que Metro (expo-constants) + puerto — salvo túnel Expo (*.exp.direct): ahí no usar ese host.
+ *   Con `expo start --tunnel` define EXPO_PUBLIC_WEB_APP_URL (ngrok al :3000 o IP local en WiFi).
  * - Si no: usa la web empaquetada en el APK (file://android_asset/webapp/) para builds de producción.
  */
 const getWebAppSource = (): { uri: string; baseUrl?: string } => {
@@ -14,24 +42,38 @@ const getWebAppSource = (): { uri: string; baseUrl?: string } => {
   if (envUrl) {
     return { uri: envUrl };
   }
-  // Desarrollo (Expo Go, expo run:android): cargar desde servidor (los assets no están en el APK)
   if (__DEV__) {
-    return { uri: Platform.OS === 'android' ? 'http://10.0.2.2:3000' : 'http://localhost:3000' };
+    const raw =
+      Constants.expoGoConfig?.debuggerHost ??
+      (Constants.expoConfig as { hostUri?: string } | null)?.hostUri ??
+      (Constants.manifest2 as { extra?: { expoClient?: { debuggerHost?: string } } } | null)?.extra?.expoClient
+        ?.debuggerHost ??
+      (Constants.manifest as { debuggerHost?: string } | null)?.debuggerHost;
+
+    if (raw) {
+      const host = hostnameFromDebuggerLike(raw);
+      if (host && !isExpoTunnelMetroHost(host)) {
+        return { uri: `http://${host}:${DEV_WEB_PORT}` };
+      }
+    }
+    return {
+      uri: Platform.OS === 'android' ? `http://10.0.2.2:${DEV_WEB_PORT}` : `http://localhost:${DEV_WEB_PORT}`,
+    };
   }
-  // APK de producción (EAS build): cargar web empaquetada
   if (Platform.OS === 'android') {
     return {
       uri: 'file:///android_asset/webapp/index.html',
       baseUrl: 'file:///android_asset/webapp/',
     };
   }
-  return { uri: 'http://localhost:3000' };
+  return { uri: `http://localhost:${DEV_WEB_PORT}` };
 };
 
 const WEB_APP_SOURCE = getWebAppSource();
 
 export default function App() {
   const webViewRef = useRef<WebView>(null);
+  const loadFailedRef = useRef(false);
   const [hasError, setHasError] = useState(false);
   const [errorDetails, setErrorDetails] = useState<string>('');
   const [pushToken, setPushToken] = useState<string | null>(null);
@@ -42,6 +84,12 @@ export default function App() {
 
   const webAppSource = useMemo(() => WEB_APP_SOURCE, []);
   const webAppUrl = webAppSource.uri ?? '';
+
+  useEffect(() => {
+    if (__DEV__) {
+      console.log('[WEBVIEW] URL de la app web:', webAppUrl);
+    }
+  }, [webAppUrl]);
 
   const extractRegistrationToken = (url: string): string | null => {
     try {
@@ -88,7 +136,6 @@ export default function App() {
 
         Notifications.setNotificationHandler({
           handleNotification: async () => ({
-            shouldShowAlert: true,
             shouldPlaySound: true,
             shouldSetBadge: true,
             shouldShowBanner: true,
@@ -263,15 +310,13 @@ export default function App() {
               <Text style={{ color: '#64748b', marginBottom: 4, fontSize: 11 }}>
                 Eso inicia el servidor (API + app) y luego Expo. No uses "npm run dev" desde la carpeta "server".
               </Text>
-              {webAppUrl.includes('.exp.direct') ? (
-                <Text style={{ color: '#f59e0b', marginTop: 4, fontSize: 11 }}>
-                  Con tunnel: npm run start:tunnel
-                </Text>
-              ) : (
-                <Text style={{ color: '#0f172a', marginTop: 4, fontSize: 12, fontWeight: '600' }}>
-                  2. Comprueba que aparezca: "Server running on http://localhost:3000"
-                </Text>
-              )}
+              <Text style={{ color: '#0f172a', marginTop: 4, fontSize: 12, fontWeight: '600' }}>
+                2. Comprueba que aparezca: "Server running on http://localhost:3000"
+              </Text>
+              <Text style={{ color: '#b45309', marginTop: 8, fontSize: 11, fontWeight: '600' }}>
+                Si usas expo start --tunnel: el túnel solo lleva Metro (8081), no tu servidor en :3000. En client/.env pon
+                EXPO_PUBLIC_WEB_APP_URL con la URL pública del puerto 3000 (p. ej. ngrok http 3000) o prueba sin túnel en la misma WiFi.
+              </Text>
               <Text style={{ color: '#64748b', fontSize: 11 }}>
                 URL esperada: {webAppUrl}
               </Text>
@@ -285,6 +330,7 @@ export default function App() {
           <View style={{ flexDirection: 'row', gap: 12, flexWrap: 'wrap' }}>
             <Pressable
               onPress={() => {
+                loadFailedRef.current = false;
                 setHasError(false);
                 setErrorDetails('');
                 webViewRef.current?.reload();
@@ -314,9 +360,11 @@ export default function App() {
           </View>
         </View>
       ) : (
-        <WebView
+        <View style={{ flex: 1, backgroundColor: '#f8fafc' }}>
+          <WebView
           ref={webViewRef}
           source={webAppSource}
+          style={{ flex: 1, backgroundColor: '#f8fafc' }}
           originWhitelist={['*', 'file://', 'file://*']}
           javaScriptEnabled
           domStorageEnabled
@@ -326,16 +374,22 @@ export default function App() {
           mixedContentMode="always"
           injectedJavaScriptBeforeContentLoaded={
             webAppUrl.startsWith('file://')
-              ? `window.__API_BASE__="${process.env.EXPO_PUBLIC_API_URL || 'http://3.231.3.49:3000'}";`
-              : undefined
+              ? `window.__API_BASE__=${JSON.stringify(process.env.EXPO_PUBLIC_API_URL || '')};true;`
+              : webAppUrl.startsWith('http')
+                ? `window.__API_BASE__=${JSON.stringify(
+                    (process.env.EXPO_PUBLIC_API_URL || '').trim() || webAppUrl.replace(/\/$/, '')
+                  )};true;`
+                : undefined
           }
           onLoadStart={() => {
             console.log(`[WEBVIEW] Cargando: ${webAppSource.uri}`);
+            loadFailedRef.current = false;
             setIsWebViewReady(false);
           }}
           onError={(syntheticEvent) => {
             const { nativeEvent } = syntheticEvent;
             console.error('[WEBVIEW] Error:', nativeEvent);
+            loadFailedRef.current = true;
             setErrorDetails(nativeEvent.description || 'Error de conexión');
             setHasError(true);
           }}
@@ -345,20 +399,24 @@ export default function App() {
             // 404 = servidor API-only (carpeta server/) o ruta inexistente → no sirve la SPA
             // 500+ = error del servidor
             if (statusCode === 404) {
+              loadFailedRef.current = true;
               setErrorDetails(
                 '404 Not Found. Arranca el servidor desde la carpeta "client" con: npm run dev'
               );
               setHasError(true);
             } else if (statusCode >= 500) {
+              loadFailedRef.current = true;
               setErrorDetails(`HTTP ${statusCode}: ${description || 'Error del servidor'}`);
               setHasError(true);
             }
           }}
           onLoadEnd={() => {
             console.log('[WEBVIEW] Carga completada');
-            setIsWebViewReady(true);
-            if (pendingRegistrationToken) {
-              injectRegistrationToken(pendingRegistrationToken);
+            if (!loadFailedRef.current) {
+              setIsWebViewReady(true);
+              if (pendingRegistrationToken) {
+                injectRegistrationToken(pendingRegistrationToken);
+              }
             }
           }}
           onMessage={(event) => {
@@ -392,6 +450,7 @@ export default function App() {
             </View>
           )}
         />
+        </View>
       )}
     </SafeAreaView>
   );

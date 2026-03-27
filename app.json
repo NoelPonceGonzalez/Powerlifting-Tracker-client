@@ -19,6 +19,7 @@
     },
     "android": {
       "package": "com.srhit.powerliftingtracker",
+      "googleServicesFile": "./config/google-services.json",
       "permissions": [
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.RECEIVE_BOOT_COMPLETED",
@@ -29,6 +30,11 @@
         "backgroundColor": "#ffffff"
       }
     },
+    "notification": {
+      "color": "#4f46e5",
+      "androidMode": "default",
+      "androidCollapsedTitle": "#{unread_notifications} notificaciones"
+    },
     "plugins": [
       [
         "expo-notifications",
@@ -36,6 +42,7 @@
           "enableBackgroundRemoteNotifications": true
         }
       ],
+      "./plugins/withFirebaseAndroidSdk.cjs",
       "./plugins/withBundleWebApp.cjs",
       "./plugins/withAndroidCoreResolution.cjs",
       [
@@ -52,9 +59,9 @@
     },
     "extra": {
       "eas": {
-        "projectId": "db898e9f-ab8d-4ae3-a489-1af87dfea8a1"
+        "projectId": "5a67afac-761c-4709-9665-9d85e9f1901c"
       }
     },
-    "owner": "srhit"
+    "owner": "noelponcegonzalez"
   }
 }

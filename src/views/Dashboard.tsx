@@ -15,9 +15,11 @@ import { Card } from '@/src/components/ui/Card';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { Button } from '@/src/components/ui/Button';
 import { HistoryEntry, RMData, TrainingMax, Challenge, GymCheckIn, User, RoutineProgressKind } from '@/src/types';
+import { entryDateISO } from '@/src/lib/calendarWeekDate';
 import { cn } from '@/src/lib/utils';
 import {
   computeRoutineProgressTotal,
+  commonTmIdsForProgressDelta,
   progressValueFromHistoryEntry,
 } from '@/src/lib/routineProgressTotal';
 
@@ -152,24 +154,32 @@ export const DashboardView: React.FC<DashboardProps> = ({
 
   /** Valor mostrado: coherente con la misma fórmula que el gráfico (reconstruye desde `trainingMaxes` guardados). */
   const displayRoutineProgress = useMemo(() => {
+    if (trainingMaxes.length === 0) return 0;
     if (!lastHistory) return routineProgressMeta.value;
     return progressValueFromHistoryEntry(lastHistory, trainingMaxes);
   }, [lastHistory, trainingMaxes, routineProgressMeta.value]);
 
-  const totalGain = useMemo(() => {
-    if (!firstHistory || !lastHistory) return 0;
-    const a = progressValueFromHistoryEntry(firstHistory, trainingMaxes);
-    const b = progressValueFromHistoryEntry(lastHistory, trainingMaxes);
-    return b - a;
+  /**
+   * Ganancia solo sobre TM que ya existían en el primer y último snapshot; añadir un TM
+   * nuevo no suma un +% artificial frente a la base.
+   */
+  const { totalGain, totalGainPct } = useMemo(() => {
+    if (!firstHistory || !lastHistory) return { totalGain: 0, totalGainPct: 0 };
+    const common = commonTmIdsForProgressDelta(firstHistory, lastHistory);
+    if (common === null) {
+      const base = progressValueFromHistoryEntry(firstHistory, trainingMaxes);
+      const b = progressValueFromHistoryEntry(lastHistory, trainingMaxes);
+      const gain = b - base;
+      const pct = base > 0 ? Math.round((gain / base) * 100) : 0;
+      return { totalGain: gain, totalGainPct: pct };
+    }
+    if (common.size === 0) return { totalGain: 0, totalGainPct: 0 };
+    const base = progressValueFromHistoryEntry(firstHistory, trainingMaxes, { onlyIds: common });
+    const b = progressValueFromHistoryEntry(lastHistory, trainingMaxes, { onlyIds: common });
+    const gain = b - base;
+    const pct = base > 0 ? Math.round((gain / base) * 100) : 0;
+    return { totalGain: gain, totalGainPct: pct };
   }, [firstHistory, lastHistory, trainingMaxes]);
-
-  const totalGainPct =
-    firstHistory != null
-      ? (() => {
-          const base = progressValueFromHistoryEntry(firstHistory, trainingMaxes);
-          return base > 0 ? Math.round((totalGain / base) * 100) : 0;
-        })()
-      : 0;
 
   /** Modo global: todos los gráficos muestran kg/reps/s o % a la vez. Alterna cada 3s. */
   const [showPercent, setShowPercent] = useState(false);
@@ -180,21 +190,32 @@ export const DashboardView: React.FC<DashboardProps> = ({
 
   /** Variación del agregado de la rutina (misma unidad que `routineProgressMeta`). */
   const mainStatDisplay = useMemo(() => {
-    const positive = totalGain >= 0;
     const u = routineProgressMeta.unit;
+    const tone =
+      showPercent
+        ? totalGainPct > 0
+          ? ('positive' as const)
+          : totalGainPct < 0
+            ? ('negative' as const)
+            : ('neutral' as const)
+        : totalGain > 0
+          ? 'positive'
+          : totalGain < 0
+            ? 'negative'
+            : 'neutral';
     if (showPercent) {
-      return { value: `${totalGainPct > 0 ? '+' : ''}${totalGainPct}%`, positive };
+      return { value: `${totalGainPct > 0 ? '+' : ''}${totalGainPct}%`, tone };
     }
     const abs =
       routineProgressMeta.kind === 'mixed'
         ? Math.round(totalGain * 100) / 100
         : Math.round(totalGain);
-    return { value: `${abs > 0 ? '+' : ''}${abs} ${u}`.trim(), positive };
+    return { value: `${abs > 0 ? '+' : ''}${abs} ${u}`.trim(), tone };
   }, [totalGain, totalGainPct, showPercent, routineProgressMeta.kind, routineProgressMeta.unit]);
 
   /** Primer/último valor guardado de este TM en el historial de esta rutina (ids distintos por rutina). */
   const tmStatDisplay = useMemo(() => {
-    const byId: Record<string, { value: string; negative: boolean }> = {};
+    const byId: Record<string, { value: string; tone: 'positive' | 'negative' | 'neutral' }> = {};
     const firstSnap = (tmId: string) =>
       history.find(h => h.trainingMaxes != null && h.trainingMaxes[tmId] != null)?.trainingMaxes?.[tmId];
     const lastSnap = (tmId: string) => {
@@ -213,12 +234,16 @@ export const DashboardView: React.FC<DashboardProps> = ({
         const gain = lastVal - firstVal;
         const pct = firstVal > 0 ? Math.round((gain / firstVal) * 100) : 0;
         if (showPercent) {
-          byId[tm.id] = { value: `${pct > 0 ? '+' : ''}${pct}%`, negative: pct < 0 };
+          const tone = pct > 0 ? 'positive' : pct < 0 ? 'negative' : 'neutral';
+          byId[tm.id] = { value: `${pct > 0 ? '+' : ''}${pct}%`, tone };
         } else {
-          byId[tm.id] = { value: `${gain > 0 ? '+' : ''}${gain} ${unit}`, negative: gain < 0 };
+          const tone = gain > 0 ? 'positive' : gain < 0 ? 'negative' : 'neutral';
+          byId[tm.id] = { value: `${gain > 0 ? '+' : ''}${gain} ${unit}`, tone };
         }
       } else {
-        byId[tm.id] = showPercent ? { value: '0%', negative: false } : { value: `0 ${unit}`, negative: false };
+        byId[tm.id] = showPercent
+          ? { value: '0%', tone: 'neutral' }
+          : { value: `0 ${unit}`, tone: 'neutral' };
       }
     });
     return byId;
@@ -272,28 +297,42 @@ export const DashboardView: React.FC<DashboardProps> = ({
 
     return [...history]
       .map((entry, idx) => {
-        let date = new Date(entry.date);
-        if (entry.year && entry.week) {
-          date = new Date(entry.year, 0, 1 + (entry.week - 1) * 7);
-        }
-        if (Number.isNaN(date.getTime())) {
-          const raw = (entry.date || '').toLowerCase().trim();
-          const matchedMonth = Object.entries(monthByText).find(([key]) => raw.includes(key))?.[1];
-          if (matchedMonth !== undefined) {
-            date = new Date(entry.year ?? currentYear, matchedMonth, 1);
-          } else {
-            date = new Date(entry.year ?? currentYear, 0, Math.min(28, idx + 1));
+        let date: Date;
+        if (entry.dateISO && /^\d{4}-\d{2}-\d{2}$/.test(entry.dateISO)) {
+          const [yy, mm, dd] = entry.dateISO.split('-').map(Number);
+          date = new Date(yy, mm - 1, dd);
+        } else {
+          date = new Date(entry.date);
+          if (entry.year && entry.week) {
+            const base = new Date(entry.year, 0, 1 + (entry.week - 1) * 7);
+            const dow = entry.dayOfWeek != null ? entry.dayOfWeek : 0;
+            date = new Date(base);
+            date.setDate(base.getDate() + dow);
+          }
+          if (Number.isNaN(date.getTime())) {
+            const raw = (entry.date || '').toLowerCase().trim();
+            const matchedMonth = Object.entries(monthByText).find(([key]) => raw.includes(key))?.[1];
+            if (matchedMonth !== undefined) {
+              date = new Date(entry.year ?? currentYear, matchedMonth, 1);
+            } else {
+              date = new Date(entry.year ?? currentYear, 0, Math.min(28, idx + 1));
+            }
           }
         }
-        const dayIdx = entry.dayIndex;
+        const created = entry.createdAt ? Date.parse(entry.createdAt) : NaN;
+        const isoOrder = Date.parse(entryDateISO(entry) + 'T12:00:00');
+        const orderBase = !Number.isNaN(isoOrder)
+          ? isoOrder
+          : !Number.isNaN(created)
+            ? created
+            : date.getTime();
         return {
           source: entry,
           date,
           year: entry.year ?? date.getFullYear(),
           month: date.getMonth(),
           weekOfMonth: Math.max(1, Math.min(4, Math.ceil(date.getDate() / 7))),
-          dayIndex: dayIdx,
-          order: date.getTime() + (dayIdx ?? 0) * 3600000 + idx * 0.001
+          order: orderBase + idx * 0.001
         };
       })
       .sort((a, b) => a.order - b.order);
@@ -372,60 +411,31 @@ export const DashboardView: React.FC<DashboardProps> = ({
 
   const tmChartDataById = useMemo(() => {
     const byId: Record<string, Array<{ date: string; value: number | null }>> = {};
-    const dayNamesShort = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
     const now = new Date();
     const currentYear = now.getFullYear();
     const currentMonth = now.getMonth();
-
-    const entriesInView =
-      progressMode === 'month'
-        ? parsedHistory.filter(item => item.year === selectedYear && item.month === selectedMonth)
-        : parsedHistory.filter(item => item.year === selectedYear);
-
-    const sorted = [...entriesInView].sort((a, b) => a.order - b.order);
+    const currentWeekOfMonth = Math.max(1, Math.min(4, Math.ceil(now.getDate() / 7)));
 
     trainingMaxes.forEach(tm => {
-      let carry: number | null = null;
-      const points: Array<{ date: string; value: number | null }> = [];
-
-      sorted.forEach(item => {
-        const raw = item.source.trainingMaxes?.[tm.id];
-        if (raw != null) carry = raw;
-        const isoWeek = item.source.week;
-        const di = item.source.dayIndex;
-        let label: string;
-        if (progressMode === 'month') {
-          label =
-            isoWeek != null && di != null
-              ? `S${isoWeek}·${dayNamesShort[di % 7]}`
-              : `${item.date.getDate()}/${item.month + 1}`;
-        } else {
-          label =
-            di != null
-              ? `${MONTH_LABELS_SHORT[item.month]}·${dayNamesShort[di % 7]}`
-              : MONTH_LABELS_SHORT[item.month];
-        }
-        points.push({ date: label, value: carry });
+      let carryValue: number | null = null;
+      byId[tm.id] = chartContext.map(point => {
+        const weekNum = 'weekNum' in point ? point.weekNum : null;
+        const monthNum = 'monthNum' in point ? point.monthNum : null;
+        const isCurrentSlot = progressMode === 'month'
+          ? (selectedYear === currentYear && selectedMonth === currentMonth && weekNum === currentWeekOfMonth)
+          : (selectedYear === currentYear && monthNum === currentMonth);
+        const rawValue = isCurrentSlot
+          ? tm.value
+          : (point.source?.trainingMaxes?.[tm.id] ?? null);
+        if (rawValue != null) carryValue = rawValue;
+        const isFuture = progressMode === 'month'
+          ? (selectedYear === currentYear && selectedMonth === currentMonth && (weekNum ?? 0) > currentWeekOfMonth)
+          : (selectedYear === currentYear && (monthNum ?? 0) > currentMonth);
+        return { date: point.label, value: isFuture ? null : (carryValue ?? 0) };
       });
-
-      const shouldAppendLive =
-        progressMode === 'month'
-          ? selectedYear === currentYear && selectedMonth === currentMonth
-          : selectedYear === currentYear;
-
-      if (shouldAppendLive) {
-        if (points.length === 0) {
-          points.push({ date: 'Ahora', value: tm.value });
-        } else {
-          const last = points[points.length - 1].value;
-          if (last !== tm.value) points.push({ date: 'Ahora', value: tm.value });
-        }
-      }
-
-      byId[tm.id] = points.length ? points : [{ date: 'Inicio', value: tm.value }];
     });
     return byId;
-  }, [parsedHistory, trainingMaxes, progressMode, selectedYear, selectedMonth]);
+  }, [chartContext, trainingMaxes, progressMode, selectedYear, selectedMonth]);
 
   return (
     <motion.div 
@@ -501,9 +511,9 @@ export const DashboardView: React.FC<DashboardProps> = ({
                   transition={{ duration: 0.2 }}
                   className={cn(
                     "text-xs sm:text-sm font-bold block mt-0.5",
-                    mainStatDisplay.positive === false
-                      ? "text-rose-600 dark:text-rose-400"
-                      : "text-slate-500 dark:text-slate-400"
+                    mainStatDisplay.tone === 'positive' && "text-emerald-600 dark:text-emerald-400",
+                    mainStatDisplay.tone === 'negative' && "text-rose-600 dark:text-rose-400",
+                    mainStatDisplay.tone === 'neutral' && "text-slate-500 dark:text-slate-400"
                   )}
                 >
                   En esta rutina: {mainStatDisplay.value}
@@ -601,7 +611,9 @@ export const DashboardView: React.FC<DashboardProps> = ({
                             transition={{ duration: 0.2 }}
                             className={cn(
                               "text-xs font-bold block mt-0.5",
-                              item.negative ? "text-rose-600 dark:text-rose-400" : "text-slate-500 dark:text-slate-400"
+                              item.tone === 'positive' && "text-emerald-600 dark:text-emerald-400",
+                              item.tone === 'negative' && "text-rose-600 dark:text-rose-400",
+                              item.tone === 'neutral' && "text-slate-500 dark:text-slate-400"
                             )}
                           >
                             {item.value}

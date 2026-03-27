@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowLeft, Eye, EyeOff, Pencil, Plus, Trash2 } from 'lucide-react';
+import { ArrowLeft, Calendar, CalendarDays, Eye, EyeOff, Pencil, Plus, Trash2 } from 'lucide-react';
 import { Card } from '@/src/components/ui/Card';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
@@ -18,7 +18,7 @@ interface RoutineManagerViewProps {
   routines: RoutineSummary[];
   onBack: () => void;
   onActivateRoutine: (routineId: string) => void;
-  onCreateRoutine: (name: string) => void;
+  onCreateRoutine: (name: string, options?: { sameTemplateAllWeeks: boolean }) => void;
   onRenameRoutine: (routineId: string, name: string) => void;
   onDeleteRoutine: (routineId: string) => void;
   onToggleHiddenRoutine?: (routineId: string) => void;
@@ -35,15 +35,24 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
 }) => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newRoutineName, setNewRoutineName] = useState('');
+  /** true = mes (por defecto), false = semana (ciclo 4 semanas). */
+  const [createPlanSameTemplateAllWeeks, setCreatePlanSameTemplateAllWeeks] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
 
   const handleCreate = () => {
     const trimmed = newRoutineName.trim();
     if (!trimmed) return;
-    onCreateRoutine(trimmed);
+    onCreateRoutine(trimmed, { sameTemplateAllWeeks: createPlanSameTemplateAllWeeks });
     setNewRoutineName('');
+    setCreatePlanSameTemplateAllWeeks(true);
     setShowCreateModal(false);
+  };
+
+  const closeCreateModal = () => {
+    setShowCreateModal(false);
+    setNewRoutineName('');
+    setCreatePlanSameTemplateAllWeeks(true);
   };
 
   return (
@@ -68,7 +77,10 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
       <section className="mb-6">
         <Button
           variant="primary"
-          onClick={() => setShowCreateModal(true)}
+          onClick={() => {
+            setCreatePlanSameTemplateAllWeeks(true);
+            setShowCreateModal(true);
+          }}
           className="w-full sm:w-auto rounded-xl"
         >
           <Plus size={14} className="mr-1" />
@@ -84,7 +96,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={() => { setShowCreateModal(false); setNewRoutineName(''); }}
+              onClick={closeCreateModal}
               className="absolute inset-0 min-h-[100dvh] bg-black/75 backdrop-blur-sm"
             />
             <motion.div
@@ -92,7 +104,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 10 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative bg-white dark:bg-slate-900 w-full max-w-sm rounded-2xl p-6 shadow-2xl dark:border dark:border-slate-700"
+              className="relative bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl p-6 shadow-2xl dark:border dark:border-slate-700"
             >
               <h3 className="text-lg font-black text-slate-900 dark:text-slate-100 mb-4">Nueva rutina</h3>
               <Input
@@ -102,8 +114,45 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                 className="mb-4"
                 onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
               />
+              <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 mb-2">
+                Cómo ver el plan
+              </p>
+              <div className="grid grid-cols-2 gap-2 mb-4">
+                <button
+                  type="button"
+                  onClick={() => setCreatePlanSameTemplateAllWeeks(true)}
+                  className={cn(
+                    'flex flex-col items-center gap-1.5 rounded-xl border-2 px-3 py-3 text-left transition-all',
+                    createPlanSameTemplateAllWeeks
+                      ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-900 dark:text-indigo-100'
+                      : 'border-slate-200 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400 hover:border-slate-300'
+                  )}
+                >
+                  <Calendar className="size-5 shrink-0" />
+                  <span className="text-xs font-black">Mes</span>
+                  <span className="text-[10px] font-medium leading-tight opacity-90">
+                    Mismo contenido en todas las semanas (recomendado)
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCreatePlanSameTemplateAllWeeks(false)}
+                  className={cn(
+                    'flex flex-col items-center gap-1.5 rounded-xl border-2 px-3 py-3 text-left transition-all',
+                    !createPlanSameTemplateAllWeeks
+                      ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-900 dark:text-indigo-100'
+                      : 'border-slate-200 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400 hover:border-slate-300'
+                  )}
+                >
+                  <CalendarDays className="size-5 shrink-0" />
+                  <span className="text-xs font-black">Semana</span>
+                  <span className="text-[10px] font-medium leading-tight opacity-90">
+                    Ciclo de 4 semanas (tipos 1–4)
+                  </span>
+                </button>
+              </div>
               <div className="flex gap-2">
-                <Button variant="outline" className="flex-1" onClick={() => { setShowCreateModal(false); setNewRoutineName(''); }}>
+                <Button variant="outline" className="flex-1" onClick={closeCreateModal}>
                   Cancelar
                 </Button>
                 <Button variant="primary" className="flex-1" onClick={handleCreate} disabled={!newRoutineName.trim()}>

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Trophy, Mail, Lock, User } from 'lucide-react';
+import { Trophy, Mail, Lock, User, ArrowLeft } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { Card } from '@/src/components/ui/Card';
@@ -11,9 +11,12 @@ import { getApiBaseUrl } from '@/src/lib/api';
 interface LoginProps {
   onLogin: (user: AppUser) => void;
   toast: ReturnType<typeof useToast>;
+  /** Añadir otra cuenta sin cerrar la sesión actual (solo login, sin pestaña registro). */
+  variant?: 'default' | 'addAccount';
+  onCancel?: () => void;
 }
 
-export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
+export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'default', onCancel }) => {
   const [mode, setMode] = useState<'login' | 'register' | 'complete'>('login');
   const [registerStep, setRegisterStep] = useState<'email' | 'code'>('email');
   const [username, setUsername] = useState('');
@@ -33,6 +36,13 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
   React.useEffect(() => {
     setError('');
   }, []);
+
+  React.useEffect(() => {
+    if (variant === 'addAccount') {
+      setMode('login');
+      setError('');
+    }
+  }, [variant]);
 
   const normalizeEmail = (value: string) => {
     const clean = value.trim().toLowerCase();
@@ -560,6 +570,8 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
     }
   };
 
+  const isAddAccount = variant === 'addAccount';
+
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center p-4">
       <motion.div
@@ -568,6 +580,18 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
         transition={{ duration: 0.4, ease: 'easeOut' }}
         className="w-full max-w-md backdrop-blur-2xl bg-white/70 dark:bg-slate-900/70 rounded-3xl p-8 border border-white/40 dark:border-slate-700/40 shadow-2xl"
       >
+        {isAddAccount && onCancel && (
+          <div className="mb-4">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="flex items-center gap-2 text-sm font-bold text-indigo-600 dark:text-indigo-400 hover:opacity-80"
+            >
+              <ArrowLeft size={18} />
+              Volver a la app
+            </button>
+          </div>
+        )}
         <div className="text-center mb-10">
           <motion.div
             initial={{ y: -20, opacity: 0 }}
@@ -583,7 +607,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
             transition={{ delay: 0.3 }}
             className="text-4xl font-black tracking-tight text-slate-900 dark:text-white mb-2"
           >
-            Tracker
+            {isAddAccount ? 'Otra cuenta' : 'Tracker'}
           </motion.h1>
           <motion.p
             initial={{ y: -10, opacity: 0 }}
@@ -591,13 +615,15 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast }) => {
             transition={{ delay: 0.4 }}
             className="text-slate-500 dark:text-slate-400 font-medium"
           >
-            Entrena como un profesional
+            {isAddAccount
+              ? 'Inicia sesión; la cuenta quedará guardada en este dispositivo para cambiar rápido.'
+              : 'Entrena como un profesional'}
           </motion.p>
         </div>
 
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
           <Card padding="xl" rounded="2xl" className="shadow-xl shadow-slate-200/50 dark:shadow-xl dark:shadow-black/30 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border border-white/60 dark:border-slate-700/60">
-            {mode !== 'complete' && (
+            {mode !== 'complete' && !isAddAccount && (
               <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl mb-6">
                 <button
                   type="button"

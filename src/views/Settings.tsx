@@ -1,22 +1,50 @@
 import React from 'react';
 import { motion } from 'motion/react';
-import { User as UserIcon, Camera, Image as ImageIcon, Weight, Moon, Sun, LogOut } from 'lucide-react';
+import { User as UserIcon, Camera, Image as ImageIcon, Weight, Moon, Sun, LogOut, Users, Plus, Check, X } from 'lucide-react';
 import { Card } from '@/src/components/ui/Card';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { User } from '@/src/types';
+import type { AccountSummary } from '@/src/lib/savedAccounts';
 import { cn } from '@/src/lib/utils';
 
 interface SettingsViewProps {
   user: User;
   onUpdateUser: (updates: Partial<User>) => void;
   onLogout: () => void;
+  /** Cuentas guardadas en el dispositivo (sin token). */
+  savedAccountSummaries?: AccountSummary[];
+  onSwitchAccount?: (userId: string) => void;
+  onAddAccount?: () => void;
+  /** Quitar sesión guardada de este dispositivo (no borra la cuenta en el servidor). */
+  onRemoveSavedAccount?: (userId: string) => void;
 }
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ user, onUpdateUser, onLogout }) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({
+  user,
+  onUpdateUser,
+  onLogout,
+  savedAccountSummaries = [],
+  onSwitchAccount,
+  onAddAccount,
+  onRemoveSavedAccount,
+}) => {
   const galleryInputRef = React.useRef<HTMLInputElement | null>(null);
   const cameraInputRef = React.useRef<HTMLInputElement | null>(null);
+  const photoMenuRef = React.useRef<HTMLDivElement | null>(null);
+  const [photoMenuOpen, setPhotoMenuOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!photoMenuOpen) return;
+    const onDoc = (e: MouseEvent) => {
+      if (photoMenuRef.current && !photoMenuRef.current.contains(e.target as Node)) {
+        setPhotoMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [photoMenuOpen]);
 
   const handleAvatarFile = (file?: File) => {
     if (!file) return;
@@ -63,69 +91,187 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ user, onUpdateUser, 
       </header>
 
       <div className="space-y-8">
-        {/* Profile Section */}
+        {/* Profile Section: cuenta(s) en este dispositivo + foto (tocar imagen) + datos */}
         <section>
           <div className="flex items-center gap-3 mb-6">
             <div className="bg-indigo-600 p-2 rounded-xl">
               <UserIcon className="text-white" size={20} />
             </div>
-            <h2 className="text-xl font-black text-slate-800 dark:text-slate-100 uppercase tracking-tight">Perfil</h2>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-xl font-black text-slate-800 dark:text-slate-100 uppercase tracking-tight">Perfil</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+                Cambia de cuenta o edita tu foto y nombre.
+              </p>
+            </div>
           </div>
 
           <Card padding="lg" rounded="2xl" className="space-y-6">
-            <div className="flex items-center gap-6">
-              <div className="relative group">
-                <Avatar 
-                  src={user.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'User')}`}
-                  name={user.name}
-                  className="w-24 h-24 rounded-3xl border-4 border-white dark:border-slate-700 shadow-xl"
+            {(onSwitchAccount || onAddAccount) && (
+              <div className="space-y-3 pb-6 border-b border-slate-100 dark:border-slate-700">
+                <div className="flex items-center gap-2">
+                  <Users className="text-violet-600 dark:text-violet-400" size={18} />
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-slate-400">
+                    Cuentas en este dispositivo
+                  </p>
+                </div>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Cambia de perfil sin volver a escribir la contraseña.
+                </p>
+                <div className="space-y-2">
+                  {savedAccountSummaries.map((acc) => {
+                    const isActive = acc.id === user.id;
+                    return (
+                      <div
+                        key={acc.id}
+                        className={cn(
+                          'flex items-center gap-3 p-3 rounded-xl border transition-colors',
+                          isActive
+                            ? 'border-indigo-400 bg-indigo-50/80 dark:bg-indigo-950/40 dark:border-indigo-600'
+                            : 'border-slate-100 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/60'
+                        )}
+                      >
+                        <Avatar
+                          src={acc.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(acc.name || 'U')}`}
+                          name={acc.name}
+                          className="w-11 h-11 rounded-xl border-2 border-white dark:border-slate-700 flex-shrink-0"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <p className="font-bold text-slate-900 dark:text-slate-100 truncate text-sm">{acc.name}</p>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">{acc.email}</p>
+                        </div>
+                        {isActive ? (
+                          <span className="flex items-center gap-1 text-[10px] font-black uppercase tracking-wider text-indigo-600 dark:text-indigo-400 flex-shrink-0">
+                            <Check size={14} /> Activa
+                          </span>
+                        ) : (
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            {onSwitchAccount && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="rounded-lg text-xs font-black uppercase"
+                                onClick={() => onSwitchAccount(acc.id)}
+                              >
+                                Usar
+                              </Button>
+                            )}
+                            {onRemoveSavedAccount && (
+                              <button
+                                type="button"
+                                title="Quitar de este dispositivo"
+                                onClick={() => onRemoveSavedAccount(acc.id)}
+                                className="p-2 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30"
+                              >
+                                <X size={18} />
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {onAddAccount && (
+                    <button
+                      type="button"
+                      onClick={onAddAccount}
+                      className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border-2 border-dashed border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 font-bold text-sm hover:border-indigo-400 hover:text-indigo-600 dark:hover:border-indigo-500 transition-colors"
+                    >
+                      <Plus size={18} />
+                      Añadir otra cuenta
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-col sm:flex-row sm:items-start gap-6">
+              <div ref={photoMenuRef} className="relative flex-shrink-0 mx-auto sm:mx-0">
+                <button
+                  type="button"
+                  onClick={() => setPhotoMenuOpen((o) => !o)}
+                  className={cn(
+                    'group relative rounded-3xl focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900',
+                    photoMenuOpen && 'ring-2 ring-indigo-500 ring-offset-2 dark:ring-offset-slate-900'
+                  )}
+                  aria-expanded={photoMenuOpen}
+                  aria-haspopup="menu"
+                  aria-label="Cambiar foto de perfil: galería o cámara"
+                >
+                  <Avatar
+                    src={user.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'User')}`}
+                    name={user.name}
+                    className="w-24 h-24 rounded-3xl border-4 border-white dark:border-slate-700 shadow-xl pointer-events-none"
+                  />
+                  <span
+                    className="absolute inset-0 rounded-3xl bg-black/0 group-hover:bg-black/25 group-active:bg-black/35 transition-colors flex items-center justify-center"
+                    aria-hidden
+                  >
+                    <span className="opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center gap-0.5 text-white text-[10px] font-black uppercase tracking-tight drop-shadow">
+                      <Camera size={22} strokeWidth={2} />
+                      Tocar
+                    </span>
+                  </span>
+                </button>
+                {photoMenuOpen && (
+                  <div
+                    className="absolute left-1/2 -translate-x-1/2 sm:left-0 sm:translate-x-0 top-full mt-2 z-30 min-w-[200px] rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-xl py-1"
+                    role="menu"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="w-full flex items-center gap-2 px-4 py-3 text-left text-sm font-bold text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-700/80"
+                      onClick={() => {
+                        galleryInputRef.current?.click();
+                        setPhotoMenuOpen(false);
+                      }}
+                    >
+                      <ImageIcon size={18} className="text-indigo-600 dark:text-indigo-400" />
+                      Galería
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="w-full flex items-center gap-2 px-4 py-3 text-left text-sm font-bold text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-700/80"
+                      onClick={() => {
+                        cameraInputRef.current?.click();
+                        setPhotoMenuOpen(false);
+                      }}
+                    >
+                      <Camera size={18} className="text-indigo-600 dark:text-indigo-400" />
+                      Hacer foto
+                    </button>
+                  </div>
+                )}
+                <input
+                  ref={galleryInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    handleAvatarFile(e.target.files?.[0]);
+                    e.target.value = '';
+                  }}
+                />
+                <input
+                  ref={cameraInputRef}
+                  type="file"
+                  accept="image/*"
+                  capture="user"
+                  className="hidden"
+                  onChange={(e) => {
+                    handleAvatarFile(e.target.files?.[0]);
+                    e.target.value = '';
+                  }}
                 />
               </div>
-              <div className="flex-1 space-y-4">
+              <div className="flex-1 space-y-4 min-w-0">
                 <div className="space-y-2">
                   <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Foto de perfil</label>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">Elige de la galería o hazte una foto con la cámara</p>
-                  <div className="flex flex-wrap gap-2">
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      onClick={() => galleryInputRef.current?.click()}
-                      className="rounded-xl"
-                    >
-                      <ImageIcon size={16} className="mr-1.5" />
-                      Galería
-                    </Button>
-                    <Button 
-                      variant="outline" 
-                      size="sm" 
-                      onClick={() => cameraInputRef.current?.click()}
-                      className="rounded-xl"
-                    >
-                      <Camera size={16} className="mr-1.5" />
-                      Hacer foto
-                    </Button>
-                    <input
-                      ref={galleryInputRef}
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={(e) => {
-                        handleAvatarFile(e.target.files?.[0]);
-                        e.target.value = '';
-                      }}
-                    />
-                    <input
-                      ref={cameraInputRef}
-                      type="file"
-                      accept="image/*"
-                      capture="user"
-                      className="hidden"
-                      onChange={(e) => {
-                        handleAvatarFile(e.target.files?.[0]);
-                        e.target.value = '';
-                      }}
-                    />
-                  </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Toca la imagen para elegir galería o cámara.
+                  </p>
                 </div>
                 <div className="space-y-1">
                   <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Nombre de Usuario</label>

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "601064701185",
+    "project_id": "powerlifting-8171b",
+    "storage_bucket": "powerlifting-8171b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:601064701185:android:4fbdfc39ff37657f3d2f00",
+        "android_client_info": {
+          "package_name": "com.srhit.powerliftingtracker"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA-NERlSVV5GRWAaYUBjcX533UHhgo48xs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

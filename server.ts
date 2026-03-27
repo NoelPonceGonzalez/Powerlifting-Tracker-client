@@ -1,3 +1,7 @@
+/**
+ * Dev unificado: API + Vite en un solo proceso (puerto PORT o 3000).
+ * No lo ejecutes a la vez que `npm run dev` en la carpeta `server/` (ambos usan :3000 por defecto → EADDRINUSE).
+ */
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
@@ -13,6 +17,7 @@ import checkinsRoutes from '../server/src/routes/checkins';
 import notificationsRoutes from '../server/src/routes/notifications';
 import challengesRoutes from '../server/src/routes/challenges';
 import internalExerciseMaxesRoutes from '../server/src/routes/internalExerciseMaxes';
+import { formatApiRequestLogLine } from '../server/src/utils/apiRequestLogLabel';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -26,7 +31,7 @@ async function startServer() {
   // CORS headers para permitir conexiones desde WebView móvil (PRIMERO)
   app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
     if (req.method === 'OPTIONS') {
       return res.sendStatus(200);
@@ -34,11 +39,36 @@ async function startServer() {
     next();
   });
 
-  app.use(express.json());
-  
-  // --- MongoDB + API routes ---
-  await connectDB();
-  
+  /** Mismo límite que `server/src/index.ts`: rutinas + logs superan el default de Express (~100kb). */
+  const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || '15mb';
+  app.use(express.json({ limit: JSON_BODY_LIMIT }));
+  app.use(express.urlencoded({ extended: true, limit: JSON_BODY_LIMIT }));
+
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (err?.type === 'entity.too.large' || err?.status === 413) {
+      console.warn('[BODY] PayloadTooLarge', { path: req?.path, limit: JSON_BODY_LIMIT });
+      if (res && typeof res.status === 'function') {
+        return res.status(413).json({ error: 'El cuerpo de la petición es demasiado grande. Aumenta JSON_BODY_LIMIT si hace falta.' });
+      }
+    }
+    next(err);
+  });
+
+  // Una línea por petición API (mismo criterio que server/src/index.ts)
+  app.use((req, res, next) => {
+    try {
+      if (req.method === 'OPTIONS') return next();
+      const line = formatApiRequestLogLine(req.path ?? '', req.method, req.body);
+      if (line) console.log(`[${new Date().toISOString()}] ${line}`);
+    } catch {
+      /* ignore */
+    }
+    next();
+  });
+
+  // MongoDB se conecta después de app.listen (ver final) para que el puerto abra al instante.
+  // Si await connectDB() va antes, la WebView en Android hace timeout mientras Mongo tarda o falla.
+
   // ============================================
   // IMPORTANTE: Todas las rutas de API DEBEN estar ANTES de Vite
   // Express procesa los middlewares en orden, así que las rutas específicas
@@ -87,20 +117,6 @@ async function startServer() {
   console.log('   POST /api/auth/verify-registration-code');
   console.log('   POST /api/auth/complete-registration');
   console.log('   ... y otras rutas de API\n');
-  
-  // Middleware de logging para TODAS las peticiones (después de registrar rutas)
-  app.use((req, res, next) => {
-    console.log(`\n🔵 [REQUEST] ${req.method} ${req.path} - ${new Date().toISOString()}`);
-    console.log(`🔵 [REQUEST] IP: ${req.ip || req.connection?.remoteAddress || req.socket?.remoteAddress || 'unknown'}`);
-    if (req.path !== '/health' && req.path !== '/ping') {
-      if (req.body && Object.keys(req.body).length > 0) {
-        const sanitizedBody = { ...req.body };
-        if (sanitizedBody.password) sanitizedBody.password = '[REDACTED]';
-        console.log(`🔵 [REQUEST] Body:`, JSON.stringify(sanitizedBody, null, 2));
-      }
-    }
-    next();
-  });
 
   // --- Vite Middleware ---
   // IMPORTANTE: Vite debe ir DESPUÉS de todas las rutas de API
@@ -178,6 +194,8 @@ async function startServer() {
     }
     process.exit(1);
   });
+
+  await connectDB();
 }
 
 startServer();

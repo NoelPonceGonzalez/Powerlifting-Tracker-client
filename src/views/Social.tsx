@@ -204,11 +204,30 @@ export const SocialView: React.FC<SocialViewProps> = ({
     setFriendProfile(null);
     setFriendRoutineLoading(true);
     try {
-      const [routine, profile] = await Promise.all([
-        apiGet<{ name: string; weeks: TrainingWeek[] } | null>(`/api/social/friends/${friend.id}/routine`),
+      const [routineRaw, profile] = await Promise.all([
+        apiGet<{
+          name: string;
+          weeks: TrainingWeek[];
+          baseTemplate?: TrainingWeek[];
+          versions?: { effectiveFromWeek: number; weeks: TrainingWeek[] }[];
+          logs?: unknown;
+        } | null>(`/api/social/friends/${friend.id}/routine`),
         apiGet<{ name: string; avatar: string; trainingMaxes: { name: string; value: number; mode: string }[] }>(`/api/social/friends/${friend.id}/profile`).catch(() => ({ name: friend.name, avatar: friend.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(friend.name)}`, trainingMaxes: [] })),
       ]);
-      setFriendRoutine(routine);
+      if (routineRaw) {
+        const { expandRoutineFromApi } = await import('@/src/lib/planMaterialize');
+        const expanded = expandRoutineFromApi({
+          id: friend.id,
+          name: routineRaw.name,
+          weeks: routineRaw.weeks,
+          versions: routineRaw.versions,
+          baseTemplate: routineRaw.baseTemplate,
+          logs: routineRaw.logs,
+        });
+        setFriendRoutine({ name: expanded.name, weeks: expanded.weeks });
+      } else {
+        setFriendRoutine(null);
+      }
       setFriendProfile(profile);
     } catch {
       setFriendRoutine(null);

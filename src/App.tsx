@@ -24,7 +24,8 @@ import {
   Exercise, 
   ExerciseMode,
   TrainingMax, 
-  TrainingWeek, 
+  TrainingWeek,
+  TrainingDay,
   PlannedExercise,
   RoutineVersion,
   FriendRequest,
@@ -37,14 +38,46 @@ import {
   getInternalValueForMode,
   DayType
 } from '@/src/types';
-import { apiGet, apiPost, apiPut, apiDelete } from '@/src/lib/api';
+import { apiGet, apiPost, apiPut, apiPatch, apiDelete } from '@/src/lib/api';
 import { cn } from '@/src/lib/utils';
 import { normalizeExerciseNameKey } from '@/src/lib/normalizeExerciseName';
 import { computeRoutineProgressTotal } from '@/src/lib/routineProgressTotal';
-import { findDayIndexForLogId } from '@/src/lib/trainingMaxDayContext';
-import { parseRoutineLogsFromMongo, serializeRoutineLogsForMongo } from '@/src/lib/routineLogs';
+import {
+  calendarMonth1FromDateISO,
+  dateISOFromYearWeekDay,
+  dateISOToUtcNoonISO,
+  entryDateISO,
+} from '@/src/lib/calendarWeekDate';
+import { buildBaselineHistoryEntry, TM_BASELINE_DATE_ISO } from '@/src/lib/historyTm';
+import { serializeLogEntryForMongo } from '@/src/lib/routineLogs';
+import {
+  getLogEntryForExercise,
+  parseRoutineLogKeyLoose,
+  resolveExerciseNameFromRoutineLogKey,
+  resolveLogEntryForMerge,
+  routineLogKeyFromIds,
+  stripLegacyLogKeysForCanonical,
+  purgeAndReindexLogsAfterExerciseRemoval,
+} from '@/src/lib/routineLogKey';
+import { resolveTmForAutoBump } from '@/src/lib/trainingMaxResolve';
 import { getWeekTypeSlot } from '@/src/lib/mesocycleWeek';
+import {
+  expandRoutineFromApi,
+  deriveBaseTemplateFromWeeks,
+  materialize52WeeksFromFourTemplateWeeks,
+  normalizeTemplateWeek,
+} from '@/src/lib/planMaterialize';
+import { buildPlanPatchPayload } from '@/src/lib/planSyncPayload';
 import { usePushNotifications } from '@/src/hooks/usePushNotifications';
+import {
+  loadSavedAccounts,
+  upsertAccount,
+  removeAccount,
+  setActiveAccountId,
+  migrateLegacyIfNeeded,
+  toSummaries,
+  type SavedAccount,
+} from '@/src/lib/savedAccounts';
 
 // --- Constants & Mock Data ---
 const INITIAL_USER: User = {
@@ -118,6 +151,25 @@ const generateWeeks = (): TrainingWeek[] => {
   return weeks;
 };
 
+/** Misma estructura semanal (52 semanas), sin ejercicios — rutinas nuevas creadas por el usuario. */
+const generateEmptyWeeks = (): TrainingWeek[] => {
+  const weeks: TrainingWeek[] = [];
+  const dayNames = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+  for (let i = 1; i <= 52; i++) {
+    weeks.push({
+      id: `w${i}`,
+      number: i,
+      days: dayNames.map((name, dIdx) => ({
+        id: `w${i}-d${dIdx}`,
+        name,
+        type: (dIdx === 0 || dIdx === 2 || dIdx === 4) ? 'workout' : 'rest',
+        exercises: [],
+      })),
+    });
+  }
+  return weeks;
+};
+
 const INITIAL_WEEKS: TrainingWeek[] = generateWeeks();
 const AUTH_USER_STORAGE_KEY = 'auth_user';
 
@@ -126,6 +178,36 @@ const getCurrentWeekOfYear = (date = new Date()): number => {
   const diffDays = Math.floor((date.getTime() - start.getTime()) / 86400000);
   return Math.max(1, Math.min(52, Math.floor(diffDays / 7) + 1));
 };
+
+/** Fecha del día visible en Rutina (mes/semana/día), no “hoy” del reloj. */
+type PlanViewAnchor = {
+  year: number;
+  week: number;
+  dayOfWeek: number;
+  dateISO: string;
+};
+
+function buildDefaultPlanViewAnchor(): PlanViewAnchor {
+  const now = new Date();
+  const y = now.getFullYear();
+  const w = getCurrentWeekOfYear(now);
+  const dow = (now.getDay() + 6) % 7;
+  return {
+    year: y,
+    week: w,
+    dayOfWeek: dow,
+    dateISO: dateISOFromYearWeekDay(y, w, dow),
+  };
+}
+
+function monthLabelFromDateISO(iso: string): string {
+  const parts = iso.split('-').map((x) => parseInt(x, 10));
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) {
+    return new Date().toLocaleDateString('es-ES', { month: 'short' });
+  }
+  const [y, m, d] = parts;
+  return new Date(y, m - 1, d).toLocaleDateString('es-ES', { month: 'short' });
+}
 
 interface RoutinePlan {
   id: string;
@@ -139,14 +221,31 @@ interface RoutinePlan {
   logs: Record<string, LogEntry>;
 }
 
+/** Si el plan en memoria tiene &lt;52 semanas, materializa 1–52 para que la UI y resolveWeekDayIndex coincidan con w1…w52. */
+function materializeRoutineWeeksIfNeeded(routine: RoutinePlan): TrainingWeek[] {
+  const rw = routine.weeks;
+  if (!rw?.length) return rw;
+  if (rw.length >= 52) return rw;
+  const tpl = rw.length <= 4 ? rw : deriveBaseTemplateFromWeeks(rw);
+  return materialize52WeeksFromFourTemplateWeeks(tpl.length <= 4 ? tpl : deriveBaseTemplateFromWeeks(tpl));
+}
+
 /** Obtiene las semanas a mostrar según la semana de referencia (1-based) */
 function getWeeksAt(routine: RoutinePlan, weekNumber: number): TrainingWeek[] {
   const versions = routine.versions;
-  if (!versions || versions.length === 0) return routine.weeks;
+  if (!versions || versions.length === 0) {
+    return materializeRoutineWeeksIfNeeded(routine);
+  }
   const applicable = versions.filter(v => v.effectiveFromWeek <= weekNumber);
-  if (applicable.length === 0) return routine.weeks;
+  if (applicable.length === 0) {
+    return materializeRoutineWeeksIfNeeded(routine);
+  }
   const best = applicable.reduce((a, b) => a.effectiveFromWeek >= b.effectiveFromWeek ? a : b);
-  return best.weeks;
+  const w = best.weeks;
+  if (!w?.length) return materializeRoutineWeeksIfNeeded(routine);
+  if (w.length <= 4) return materialize52WeeksFromFourTemplateWeeks(w);
+  if (w.length >= 52) return w;
+  return materialize52WeeksFromFourTemplateWeeks(deriveBaseTemplateFromWeeks(w));
 }
 
 /** Plan completo a guardar en Mongo: la versión más reciente. No usar `getWeeksAt(..., semanaActual)` aquí: si editas una semana futura, eso devolvía una versión vieja y el PUT pisaba series/reps. */
@@ -161,27 +260,111 @@ function getRoutineWeeksForPersistence(routine: RoutinePlan): TrainingWeek[] {
 }
 
 /**
- * Semanas para enlazar `logs` con ejercicios al subir TM. Debe usar los mismos IDs que la UI (p. ej. w14-d0-e1).
- * Si solo se usa `versions[last].weeks` con plantilla 1–4, las claves de log no coinciden y el TM no sube.
+ * Semanas para enlazar `logs` con ejercicios al subir TM. Debe cubrir los mismos IDs que el plan visible
+ * (`getWeeksAt` para la semana del calendario) y además el array completo en Mongo (`routine.weeks`), si no
+ * las claves tipo `template-w4-d0-e1` vs `w14-d0-e1` no coinciden y el TM no sube al registrar series.
  */
 function getWeeksForTrainingMaxScan(routine: RoutinePlan): TrainingWeek[] {
-  const versionWeeks =
+  const versionWeeksTpl =
     routine.versions?.length > 0
       ? routine.versions[routine.versions.length - 1].weeks
       : [];
-  if (routine.weeks?.length > 0 && routine.weeks.length >= (versionWeeks?.length || 0)) {
-    return routine.weeks;
+  const rootWeeks = routine.weeks || [];
+  const ref = getCurrentWeekOfYear();
+  const atCalendarWeek = getWeeksAt(routine, ref);
+
+  const merged = new Map<string, TrainingWeek>();
+  const add = (arr: TrainingWeek[]) => {
+    arr.forEach((w) => merged.set(w.id, w));
+  };
+
+  if (rootWeeks.length > 0) add(rootWeeks);
+  add(atCalendarWeek);
+  if (rootWeeks.length === 0 && versionWeeksTpl.length > 0) {
+    const expanded =
+      versionWeeksTpl.length <= 4
+        ? materialize52WeeksFromFourTemplateWeeks(versionWeeksTpl)
+        : versionWeeksTpl.length >= 52
+          ? versionWeeksTpl
+          : materialize52WeeksFromFourTemplateWeeks(deriveBaseTemplateFromWeeks(versionWeeksTpl));
+    add(expanded);
   }
-  if (versionWeeks?.length > 0) return versionWeeks;
-  return routine.weeks || [];
+
+  return Array.from(merged.values());
 }
 
-/** Copia un día con nuevos IDs para la semana/día destino */
+/** Incluye la semana del log si el merge de plantillas no traía ese `wN` (evita no subir TM al registrar series). */
+function getWeeksForTrainingMaxScanWithLog(routine: RoutinePlan, logId: string): TrainingWeek[] {
+  const base = getWeeksForTrainingMaxScan(routine);
+  const parsed = parseRoutineLogKeyLoose(logId);
+  if (!parsed) return base;
+  if (base.some((w) => w.number === parsed.planWeek)) return base;
+  const extra = getWeeksAt(routine, parsed.planWeek);
+  const merged = new Map<string, TrainingWeek>();
+  base.forEach((w) => merged.set(w.id, w));
+  extra.forEach((w) => merged.set(w.id, w));
+  return Array.from(merged.values());
+}
+
+/** Acepta clave canónica `w13-d0-e1` (servidor/DB) o legada `w13-w13-d0-w13-d0-e1`. */
+function parseLogIdForHistory(logId: string): { weekId: string; dayId: string; exId: string } | null {
+  const canon = /^w(\d+)-d(\d+)-e(\d+)$/.exec(logId);
+  if (canon) {
+    const w = canon[1];
+    const d = canon[2];
+    const e = canon[3];
+    return { weekId: `w${w}`, dayId: `w${w}-d${d}`, exId: `w${w}-d${d}-e${e}` };
+  }
+  const m = logId.match(/^(.*?)-(.*)-(e\d+)$/);
+  if (!m) return null;
+  return { weekId: m[1], dayId: m[2], exId: m[3] };
+}
+
+/**
+ * Año / semana del calendario (1–52) / día (Lun=0) del plan donde cayó el log — alineado con el gráfico y getTMsForView.
+ * `calendarWeekRef` = semana que el usuario tiene seleccionada en el plan (viewAsOfWeek ?? semana actual).
+ */
+function resolveCalendarFromLogId(
+  routine: RoutinePlan,
+  logId: string,
+  calendarWeekRef: number
+): { year: number; week: number; dayOfWeek: number } | null {
+  const parts = parseLogIdForHistory(logId);
+  if (!parts) return null;
+  const weeks = getWeeksForTrainingMaxScan(routine);
+  const week = weeks.find((w) => w.id === parts.weekId);
+  if (!week) return null;
+  const dm = parts.dayId.match(/d(\d+)$/i);
+  const dayOfWeek = dm ? parseInt(dm[1], 10) : 0;
+  const year = new Date().getFullYear();
+  /** Rutina con plantilla 1–4 semanas: los logs usan w1…w4 como “slot” del mesociclo, no la semana civil. */
+  const rootWeeksLen = routine.weeks?.length ?? 0;
+  const isFourWeekTemplateRoutine = rootWeeksLen > 0 && rootWeeksLen <= 4;
+  const slotM = /^w(\d+)$/.exec(parts.weekId);
+  const slotFromId = slotM ? parseInt(slotM[1], 10) : 0;
+  let weekNum = week.number;
+  if (isFourWeekTemplateRoutine && slotFromId >= 1 && slotFromId <= 4) {
+    weekNum = Math.max(1, Math.min(52, calendarWeekRef));
+  }
+  return { year, week: weekNum, dayOfWeek };
+}
+
+function buildRmsFromLinkedTms(tms: TrainingMax[], base: RMData): RMData {
+  const out: RMData = { bench: base.bench, squat: base.squat, deadlift: base.deadlift };
+  tms.forEach((tm) => {
+    if (tm.linkedExercise) out[tm.linkedExercise] = tm.value;
+  });
+  return out;
+}
+
+/** Copia un día con nuevos IDs para la semana/día destino. Conserva `_dbId` de cada ejercicio del día destino (cada semana tiene su fila en Mongo). */
 function copyDayWithNewIds(
   srcDay: { id: string; name: string; type: DayType; exercises: PlannedExercise[] },
   targetWeekId: string,
-  targetDayId: string
+  targetDayId: string,
+  targetDay?: { exercises: PlannedExercise[] }
 ): { id: string; name: string; type: DayType; exercises: PlannedExercise[] } {
+  const targetEx = targetDay?.exercises;
   return {
     id: targetDayId,
     name: srcDay.name,
@@ -189,8 +372,30 @@ function copyDayWithNewIds(
     exercises: srcDay.exercises.map((e, idx) => ({
       ...e,
       id: `${targetWeekId}-${targetDayId}-e${idx + 1}`,
+      _dbId: targetEx?.[idx]?._dbId ?? e._dbId,
     })),
   };
+}
+
+/** Campos que acepta PATCH /exercises/:id (evita mandar id/_dbId u otros campos del cliente). */
+function exercisePatchBodyFromUpdates(updates: Partial<PlannedExercise>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (updates.name !== undefined) out.name = updates.name;
+  if (updates.sets !== undefined) out.sets = updates.sets;
+  if (updates.reps !== undefined) {
+    const r = updates.reps;
+    if (typeof r === 'string' && /^\d+$/.test(r.trim())) {
+      out.reps = parseInt(r.trim(), 10);
+    } else {
+      out.reps = r;
+    }
+  }
+  if (updates.pct !== undefined) out.pct = updates.pct;
+  if (updates.pctPerSet !== undefined) out.pctPerSet = updates.pctPerSet;
+  if (updates.weight !== undefined) out.weight = updates.weight;
+  if (updates.mode !== undefined) out.mode = updates.mode;
+  if (updates.linkedTo !== undefined) out.linkedTo = updates.linkedTo;
+  return out;
 }
 
 /** Profundidad de copia de weeks */
@@ -204,54 +409,70 @@ function deepCloneWeeks(weeks: TrainingWeek[]): TrainingWeek[] {
   }));
 }
 
-function normalizeTemplateWeek(week: TrainingWeek, weekType: number): TrainingWeek {
-  return {
-    ...week,
-    id: `template-w${weekType}`,
-    number: weekType,
-    days: week.days.map((day, dayIdx) => ({
-      ...day,
-      id: `template-w${weekType}-d${dayIdx}`,
-      exercises: day.exercises.map((exercise, exIdx) => ({
-        ...exercise,
-        id: `template-w${weekType}-d${dayIdx}-e${exIdx + 1}`,
-      })),
-    })),
-  };
+/**
+ * Resuelve índices 0..51 en la plantilla anual (w1…w52). Debe usar la misma semana que `getWeeksAt`
+ * aunque `routine.weeks` en estado tenga solo 4 semanas plantilla.
+ */
+function resolveWeekDayIndex(
+  routine: RoutinePlan,
+  weekId: string,
+  dayId: string
+): { weekIdx: number; dayIdx: number } | null {
+  const base = routine.weeks;
+  if (!base.length) return null;
+
+  let calendarWeekNum: number;
+  const wMatch = /^w(\d+)$/.exec(weekId);
+  if (wMatch) {
+    calendarWeekNum = Math.max(1, Math.min(52, parseInt(wMatch[1], 10)));
+  } else {
+    const byId = base.findIndex((w) => w.id === weekId);
+    if (byId < 0) return null;
+    calendarWeekNum = base[byId].number ?? byId + 1;
+  }
+
+  const weekIdx = calendarWeekNum - 1;
+  if (weekIdx < 0 || weekIdx > 51) return null;
+
+  const weeksView = getWeeksAt(routine, calendarWeekNum);
+  const wk = weeksView[weekIdx] ?? weeksView.find((w) => w.number === calendarWeekNum);
+  if (!wk?.days?.length) return null;
+
+  let dayIdx = wk.days.findIndex((d) => d.id === dayId);
+  if (dayIdx < 0) {
+    const dm = /-d(\d+)$/.exec(dayId);
+    if (dm) dayIdx = parseInt(dm[1], 10);
+  }
+  if (dayIdx < 0 || dayIdx >= wk.days.length) return null;
+
+  return { weekIdx, dayIdx };
 }
 
-function deriveBaseTemplateFromWeeks(weeks: TrainingWeek[]): TrainingWeek[] {
-  const byType = new Map<number, TrainingWeek>();
-  weeks.forEach((week) => {
-    const slot = getWeekTypeSlot(week.number);
-    if (!byType.has(slot)) byType.set(slot, week);
-  });
-  const fallback = weeks[0] || {
-    id: 'template-empty',
-    number: 1,
-    days: [],
-  } as TrainingWeek;
-  return [1, 2, 3, 4].map((slot) => normalizeTemplateWeek(byType.get(slot) || fallback, slot));
-}
+type CreateRoutinePlanOptions = { empty?: boolean; sameTemplateAllWeeks?: boolean };
 
-const createRoutinePlan = (id: string, name: string): RoutinePlan => {
-  const weeks = generateWeeks();
+const createRoutinePlan = (id: string, name: string, options?: boolean | CreateRoutinePlanOptions) => {
+  const opts: CreateRoutinePlanOptions =
+    typeof options === 'boolean' ? { empty: options } : options ?? {};
+  const empty = opts.empty ?? false;
+  const sameTemplateAllWeeks = opts.sameTemplateAllWeeks !== false;
+  const weeks = empty ? generateEmptyWeeks() : generateWeeks();
+  const tpl = deriveBaseTemplateFromWeeks(weeks);
   return {
     id,
     name,
-    sameTemplateAllWeeks: true,
+    sameTemplateAllWeeks,
     hiddenFromSocial: false,
     weeks,
-    versions: [{ effectiveFromWeek: 1, weeks: deepCloneWeeks(weeks) }],
-    baseTemplate: deriveBaseTemplateFromWeeks(weeks),
+    versions: [{ effectiveFromWeek: 1, weeks: tpl }],
+    baseTemplate: tpl,
     weekTypeOverrides: [],
     logs: {},
   };
 };
 
 const INITIAL_ROUTINES: RoutinePlan[] = [
-  createRoutinePlan('routine-a', 'Rutina A'),
-  createRoutinePlan('routine-b', 'Rutina B'),
+  createRoutinePlan('routine-a', 'Rutina A', { empty: true }),
+  createRoutinePlan('routine-b', 'Rutina B', { empty: true }),
 ];
 
 const INITIAL_FRIENDS: FriendRequest[] = [];
@@ -267,6 +488,13 @@ export default function App() {
   const [tms, setTms] = useState<TrainingMax[]>(INITIAL_TMS);
   /** TM inferidos por nombre de ejercicio (sin vínculo a TM de rutina). */
   const [internalExerciseMaxes, setInternalExerciseMaxes] = useState<InternalExerciseMax[]>([]);
+  /** Evita cierres obsoletos en handleSetLogChange (varias series antes del siguiente render). */
+  const tmsRef = useRef<TrainingMax[]>(tms);
+  tmsRef.current = tms;
+  const rmsRef = useRef<RMData>(rms);
+  rmsRef.current = rms;
+  const internalExerciseMaxesRef = useRef<InternalExerciseMax[]>(internalExerciseMaxes);
+  internalExerciseMaxesRef.current = internalExerciseMaxes;
   const [routines, setRoutines] = useState<RoutinePlan[]>(INITIAL_ROUTINES);
   const [activeRoutineId, setActiveRoutineId] = useState<string>(INITIAL_ROUTINES[0].id);
   /** Ref para ignorar respuestas de fetch de TM/historial si el usuario ya cambió de rutina. */
@@ -279,6 +507,25 @@ export default function App() {
   const [challenges, setChallenges] = useState<Challenge[]>(INITIAL_CHALLENGES);
   const [checkIns, setCheckIns] = useState<GymCheckIn[]>(INITIAL_CHECKINS);
   const [socialTab, setSocialTab] = useState<'friends' | 'challenges' | 'checkins'>('friends');
+  const [savedAccountsState, setSavedAccountsState] = useState<SavedAccount[]>(() => loadSavedAccounts());
+  const [addAccountMode, setAddAccountMode] = useState(false);
+  const [isSwitchingAccount, setIsSwitchingAccount] = useState(false);
+
+  const mapUserFromMePayload = (data: { user: any }): User => {
+    const u = data.user;
+    return {
+      id: String(u._id || u.id),
+      name: u.name || 'Atleta',
+      email: u.email,
+      avatar: u.avatar || 'https://picsum.photos/seed/user/200/200',
+      bodyWeight: u.bodyWeight ?? 80,
+      theme: (u.theme ||
+        (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
+          ? 'dark'
+          : 'light')) as 'light' | 'dark',
+      progressMode: u.progressMode === 'year' ? 'year' : u.progressMode === 'month' ? 'month' : undefined,
+    };
+  };
 
   const goToSocial = useCallback((tab?: 'friends' | 'challenges' | 'checkins') => {
     setSocialTab(tab ?? 'friends');
@@ -290,24 +537,35 @@ export default function App() {
     week: getCurrentWeekOfYear(d),
   });
 
+  /** Año, semana ISO y día (Lun=0 … Dom=6) — para snapshots de TM por día dentro de la semana. */
+  const getYearWeekDay = (d = new Date()) => ({
+    year: d.getFullYear(),
+    week: getCurrentWeekOfYear(d),
+    dayOfWeek: (d.getDay() + 6) % 7,
+  });
+
   // Función helper para crear entrada de historial con todos los TMs
   const createHistoryEntry = (
     date: string,
     currentTms: TrainingMax[],
     currentRms: RMData,
-    weekYear?: { week: number; year: number; dayIndex?: number }
+    weekYear?: { week: number; year: number; dayOfWeek?: number }
   ): HistoryEntry => {
     const tmValues: Record<string, number> = {};
     currentTms.forEach(tm => {
       tmValues[tm.id] = tm.value;
     });
     const progress = computeRoutineProgressTotal(currentTms);
-    const { week, year } = weekYear ?? getYearAndWeek();
+    const resolved = weekYear ?? getYearWeekDay();
+    const dow = typeof resolved.dayOfWeek === 'number' ? resolved.dayOfWeek : 0;
+    const dateISO = dateISOFromYearWeekDay(resolved.year, resolved.week, dow);
     return {
       date,
-      week,
-      year,
-      ...(weekYear?.dayIndex !== undefined ? { dayIndex: weekYear.dayIndex } : {}),
+      week: resolved.week,
+      year: resolved.year,
+      ...(typeof resolved.dayOfWeek === 'number' ? { dayOfWeek: resolved.dayOfWeek } : {}),
+      dateISO,
+      month: calendarMonth1FromDateISO(dateISO),
       rms: { ...currentRms },
       total: progress.value,
       progressKind: progress.kind,
@@ -315,29 +573,13 @@ export default function App() {
     };
   };
 
-  /** Obtener los TMs vigentes para una semana concreta (modo histórico) */
-  const getTMsForWeek = (displayWeekNum: number, displayYear: number): TrainingMax[] => {
-    const sorted = [...history].filter(e => e.year != null && e.week != null);
-    if (sorted.length === 0) return tms;
-    // Ordenar desc por (year, week) para encontrar el más reciente <= (displayYear, displayWeekNum)
-    sorted.sort((a, b) => {
-      const y = (b.year ?? 0) - (a.year ?? 0);
-      if (y !== 0) return y;
-      return (b.week ?? 0) - (a.week ?? 0);
-    });
-    const entry = sorted.find(e => {
-      const ey = e.year ?? 0;
-      const ew = e.week ?? 0;
-      return ey < displayYear || (ey === displayYear && ew <= displayWeekNum);
-    });
-    if (!entry?.trainingMaxes) return tms;
-    return tms.map(tm => ({
-      ...tm,
-      value: entry.trainingMaxes[tm.id] ?? tm.value
-    }));
-  };
-
   const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const historyRef = useRef<HistoryEntry[]>([]);
+  historyRef.current = history;
+  /** Día/semana visibles en Rutina: TMs manuales deben anclarse aquí, no a `getYearWeekDay()`. */
+  const planViewAnchorRef = useRef<PlanViewAnchor>(buildDefaultPlanViewAnchor());
+  /** Evita repetir la hidratación de línea base 1970 para la misma rutina. */
+  const baselineHydratedForRoutineRef = useRef<string | null>(null);
 
   usePushNotifications(user?.id ?? null);
 
@@ -348,11 +590,80 @@ export default function App() {
   /** Siempre la rutina activa más reciente: el flush del debounce de sync debe leer esto, no el closure del efecto (evita guardar sin logs nuevos). */
   const routineForSyncRef = useRef<RoutinePlan | null>(null);
   routineForSyncRef.current = activeRoutine ?? null;
+  /** Claves de log modificadas por rutina (sync incremental a ExerciseLog en Mongo). */
+  const dirtyLogKeysByRoutineRef = useRef<Map<string, Set<string>>>(new Map());
+  const planBulkSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** Si no hay _dbId en ejercicio/día, el servidor solo recibe cambios vía PATCH /plan. */
+  const schedulePlanBulkSync = useCallback(() => {
+    if (planBulkSyncTimeoutRef.current) clearTimeout(planBulkSyncTimeoutRef.current);
+    planBulkSyncTimeoutRef.current = setTimeout(async () => {
+      planBulkSyncTimeoutRef.current = null;
+      const r = routineForSyncRef.current;
+      if (!r || (r.id.startsWith('routine-') && r.id.length < 20)) return;
+      try {
+        const body = buildPlanPatchPayload(r);
+        const res = await apiPatch<Record<string, unknown>>(`/api/routines/${r.id}/plan`, body);
+        const plan = expandRoutineFromApi(res);
+        setRoutines((prev) => prev.map((x) => (x.id === plan.id ? plan : x)));
+      } catch (e) {
+        console.error('[Routine] Error sync plan (fallback):', e);
+      }
+    }, 500);
+  }, []);
+
+  const markLogDirty = useCallback((routineId: string, logKey: string) => {
+    if (routineId.startsWith('routine-') && routineId.length < 20) return;
+    let s = dirtyLogKeysByRoutineRef.current.get(routineId);
+    if (!s) {
+      s = new Set();
+      dirtyLogKeysByRoutineRef.current.set(routineId, s);
+    }
+    s.add(logKey);
+  }, []);
+
+  /** PATCH logs a Mongo (WorkoutSession / WorkoutExercise / WorkoutSet). No limpia `dirty` si no hay payload. */
+  const syncDirtyLogsForRoutine = useCallback(
+    async (routine: RoutinePlan): Promise<boolean> => {
+      const routineId = routine.id;
+      if (routineId.startsWith('routine-') && routineId.length < 20) return false;
+      if (!user) return false;
+      const dirty = dirtyLogKeysByRoutineRef.current.get(routineId);
+      const keysToSend = dirty && dirty.size > 0 ? [...dirty] : [];
+      if (keysToSend.length === 0) return true;
+      const logsToPatch: Record<string, LogEntry> = {};
+      for (const k of keysToSend) {
+        const entry = routine.logs[k];
+        if (!entry) continue;
+        const exerciseName = resolveExerciseNameFromRoutineLogKey(routine, k);
+        logsToPatch[k] = serializeLogEntryForMongo({
+          ...entry,
+          ...(exerciseName ? { exerciseName } : {}),
+        });
+      }
+      if (Object.keys(logsToPatch).length === 0) {
+        console.warn('[Routine] Claves dirty sin entrada en logs; no se limpia la cola:', keysToSend);
+        return false;
+      }
+      try {
+        const todayISO = new Date().toISOString().slice(0, 10);
+        await apiPatch(`/api/routines/${routineId}/logs`, { logs: logsToPatch, dateISO: todayISO });
+        dirty?.clear();
+        return true;
+      } catch (e) {
+        console.error('[Routine] Error sincronizando logs:', e);
+        return false;
+      }
+    },
+    [user]
+  );
   /** Evita guardar historial/TM en Mongo con `routineId` nuevo y `tms` aún de la rutina anterior. */
   const tmsLoadedForRoutineRef = useRef<string | null>(null);
   const tmHighlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Tarjetas TM que acaban de subir desde el registro de series (feedback visual). */
   const [tmAutoHighlightIds, setTmAutoHighlightIds] = useState<string[]>([]);
+  /** Incrementa para forzar que el efecto de sync de logs vuelva a ejecutarse con el estado ya committed. */
+  const [planSyncTick, setPlanSyncTick] = useState(0);
   /** Recalcula cada render para no quedar congelado en la semana del primer mount. */
   const currentWeekOfYear = getCurrentWeekOfYear(new Date());
   const weeks = useMemo(() => {
@@ -361,15 +672,78 @@ export default function App() {
     return getWeeksAt(activeRoutine, refWeek);
   }, [activeRoutine, viewAsOfWeek, currentWeekOfYear]);
   const logs = activeRoutine?.logs || {};
-  const isHistoryMode = viewAsOfWeek !== null;
+  /**
+   * `viewAsOfWeek` solo indica qué semana del año materializar en el plan (mes / flechas).
+   * No debe activar “solo lectura”: si `isHistoryMode` dependía de `viewAsOfWeek !== null`, al navegar
+   * a otra semana desaparecían editar/borrar ejercicios y los handlers quedaban en no-op.
+   */
+  const isHistoryMode = false;
 
   const sortedHistory = useMemo(() => {
     return [...history].sort((a, b) => {
-      const ya = a.year ?? 0, yb = b.year ?? 0;
-      if (ya !== yb) return ya - yb;
-      return (a.week ?? 0) - (b.week ?? 0);
+      const c = entryDateISO(a).localeCompare(entryDateISO(b));
+      if (c !== 0) return c;
+      return (a.createdAt || '').localeCompare(b.createdAt || '');
     });
   }, [history]);
+
+  /**
+   * Solo si el historial está vacío: línea base con los TM cargados (antes de cualquier PR).
+   * Si ya hay filas del servidor, no insertar aquí (evita mezclar TM “actuales” tras subir el máximo en un PR).
+   */
+  useEffect(() => {
+    if (!user?.id || !activeRoutineId) return;
+    const isLocalOnlyRoutine = activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20;
+    if (isLocalOnlyRoutine) return;
+    if (tms.length === 0) return;
+    setHistory((prev) => {
+      if (prev.length > 0) return prev;
+      if (prev.some((h) => entryDateISO(h) === TM_BASELINE_DATE_ISO)) return prev;
+      const baseline = buildBaselineHistoryEntry(
+        activeRoutineId,
+        tms,
+        buildRmsFromLinkedTms(tms, rms),
+        'Origen'
+      );
+      return [baseline];
+    });
+  }, [user?.id, activeRoutineId, tms, rms]);
+
+  useEffect(() => {
+    baselineHydratedForRoutineRef.current = null;
+  }, [activeRoutineId]);
+
+  /**
+   * Historial del servidor sin snapshot 1970-01-01: añadir una vez por rutina (TM vigentes hasta el primer cambio con fecha).
+   */
+  useEffect(() => {
+    if (!user?.id || !activeRoutineId) return;
+    if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) return;
+    if (tms.length === 0 || history.length === 0) return;
+    if (baselineHydratedForRoutineRef.current === activeRoutineId) return;
+    if (history.some((h) => entryDateISO(h) === TM_BASELINE_DATE_ISO)) {
+      baselineHydratedForRoutineRef.current = activeRoutineId;
+      return;
+    }
+    setHistory((prev) => {
+      if (prev.some((h) => entryDateISO(h) === TM_BASELINE_DATE_ISO)) {
+        baselineHydratedForRoutineRef.current = activeRoutineId;
+        return prev;
+      }
+      const baseline = buildBaselineHistoryEntry(
+        activeRoutineId,
+        tms,
+        buildRmsFromLinkedTms(tms, rms),
+        'Origen'
+      );
+      baselineHydratedForRoutineRef.current = activeRoutineId;
+      return [...prev, baseline].sort((a, b) => {
+        const c = entryDateISO(a).localeCompare(entryDateISO(b));
+        if (c !== 0) return c;
+        return (a.createdAt || '').localeCompare(b.createdAt || '');
+      });
+    });
+  }, [user?.id, activeRoutineId, tms, rms, history]);
 
   // Al volver a Rutina desde otra vista, resetear a presente
   const prevViewRef = useRef<ViewType>(view);
@@ -468,49 +842,56 @@ export default function App() {
           apiGet<any[]>('/api/routines').catch(() => []),
           apiGet<any[]>('/api/checkins').catch(() => []),
         ]);
-        // Usuario nuevo: crear rutina y TMs por defecto en DB
+        // Usuario sin rutinas: una rutina vacía (sin TM ni ejercicios; mismo criterio que "Crear rutina")
         if (!routinesRes?.length) {
-          const seedRoutine = createRoutinePlan('seed', 'Rutina A');
+          const seedRoutine = createRoutinePlan('seed', 'Mi rutina', { empty: true, sameTemplateAllWeeks: true });
           try {
+            const w = getWeeksAt(seedRoutine, currentWeekOfYear);
+            const bt =
+              seedRoutine.baseTemplate?.length ? seedRoutine.baseTemplate : deriveBaseTemplateFromWeeks(w);
             const created = await apiPost<any>('/api/routines', {
               name: seedRoutine.name,
-              weeks: getWeeksAt(seedRoutine, currentWeekOfYear),
-              versions: seedRoutine.versions,
-              baseTemplate: seedRoutine.baseTemplate,
-              weekTypeOverrides: seedRoutine.weekTypeOverrides,
+              versions: [{ effectiveFromWeek: 1, weeks: bt }],
+              baseTemplate: bt,
+              weekTypeOverrides: seedRoutine.weekTypeOverrides || [],
+              sameTemplateAllWeeks: true,
               isActive: true,
             });
-            const plan: RoutinePlan = {
-              id: String(created._id || created.id),
+            const plan: RoutinePlan = expandRoutineFromApi({
+              _id: created._id,
+              id: created.id,
               name: created.name,
-              sameTemplateAllWeeks: !!created.sameTemplateAllWeeks,
-              hiddenFromSocial: !!created.hiddenFromSocial,
-              weeks: created.weeks || [],
-              versions: created.versions?.length ? created.versions : [{ effectiveFromWeek: 1, weeks: created.weeks || [] }],
-              baseTemplate: created.baseTemplate?.length ? created.baseTemplate : deriveBaseTemplateFromWeeks(created.weeks || []),
-              weekTypeOverrides: created.weekTypeOverrides || [],
+              sameTemplateAllWeeks: created.sameTemplateAllWeeks,
+              hiddenFromSocial: created.hiddenFromSocial,
+              weeks: created.weeks,
+              versions: created.versions,
+              baseTemplate: created.baseTemplate,
+              weekTypeOverrides: created.weekTypeOverrides,
               logs: {},
-            };
+            });
             setRoutines([plan]);
             setActiveRoutineId(plan.id);
           } catch (e) {
             console.error('[App] Error creando rutina seed:', e);
           }
         }
-        // Los TM se cargan por rutina activa (efecto dedicado); al crear rutina el servidor inserta TM por defecto.
+        // Los TM se cargan por rutina activa (efecto dedicado).
         // Rutinas: server → RoutinePlan
         if (routinesRes?.length > 0) {
-          const plans: RoutinePlan[] = routinesRes.map((r: any) => ({
-            id: String(r._id || r.id),
-            name: r.name || 'Rutina',
-            sameTemplateAllWeeks: r.sameTemplateAllWeeks !== false,
-            hiddenFromSocial: !!r.hiddenFromSocial,
-            weeks: r.weeks || [],
-            versions: r.versions?.length ? r.versions : [{ effectiveFromWeek: 1, weeks: r.weeks || [] }],
-            baseTemplate: r.baseTemplate?.length ? r.baseTemplate : deriveBaseTemplateFromWeeks(r.weeks || []),
-            weekTypeOverrides: r.weekTypeOverrides || [],
-            logs: parseRoutineLogsFromMongo(r.logs),
-          }));
+          const plans: RoutinePlan[] = routinesRes.map((r: any) =>
+            expandRoutineFromApi({
+              _id: r._id,
+              id: r.id,
+              name: r.name,
+              sameTemplateAllWeeks: r.sameTemplateAllWeeks,
+              hiddenFromSocial: r.hiddenFromSocial,
+              weeks: r.weeks,
+              versions: r.versions,
+              baseTemplate: r.baseTemplate,
+              weekTypeOverrides: r.weekTypeOverrides,
+              logs: r.logs,
+            })
+          );
           setRoutines(plans);
           const active = routinesRes.find((r: any) => r.isActive);
           if (active) setActiveRoutineId(String(active._id || active.id));
@@ -680,12 +1061,15 @@ export default function App() {
             date: h.date,
             week: h.week,
             year: h.year,
-            dayIndex: h.dayIndex != null ? Number(h.dayIndex) : undefined,
+            dayOfWeek: h.dayOfWeek != null ? Number(h.dayOfWeek) : undefined,
+            dateISO: h.dateISO ? String(h.dateISO) : undefined,
+            month: h.month != null ? Number(h.month) : undefined,
             rms: h.rms || {},
             total: Number(h.total),
             trainingMaxes: h.trainingMaxes || {},
             progressKind: h.progressKind,
             routineId: h.routineId ? String(h.routineId) : hid,
+            createdAt: h.createdAt ? String(h.createdAt) : undefined,
           }))
         );
       } catch (e) {
@@ -697,56 +1081,65 @@ export default function App() {
     };
   }, [user?.id, activeRoutineId]);
 
-  // Sincronizar rutina activa a la DB (debounced 2s tras cambios en logs/weeks)
+  // Sincronizar rutina activa a la DB (debounce corto; series/reps disparan flush al salir del campo)
   const routineSyncRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const routineSyncFlush = useRef<() => Promise<void> | null>(null);
+  const syncInFlightRef = useRef<Promise<void> | null>(null);
+  /** Tras editar series/reps: el PUT debe ejecutarse en useEffect (ya committed), no en setTimeout(0) antes del render. */
+  const shouldFlushRoutineAfterCommitRef = useRef(false);
+  const ROUTINE_SYNC_DEBOUNCE_MS = 500;
+
   useEffect(() => {
-    if (!user || !activeRoutine) return;
+    if (!user || !activeRoutine) {
+      shouldFlushRoutineAfterCommitRef.current = false;
+      return;
+    }
     const routine = routines.find(r => r.id === activeRoutineId);
-    if (!routine || (routine.id.startsWith('routine-') && routine.id.length < 20)) return; // evitar ids locales no persistidos
+    if (!routine || (routine.id.startsWith('routine-') && routine.id.length < 20)) {
+      shouldFlushRoutineAfterCommitRef.current = false;
+      return;
+    }
     const doSync = async () => {
+      if (syncInFlightRef.current) {
+        try { await syncInFlightRef.current; } catch { /* ignore */ }
+      }
       const toSync = routineForSyncRef.current;
       if (!toSync || (toSync.id.startsWith('routine-') && toSync.id.length < 20)) {
         routineSyncRef.current = null;
         return;
       }
-      try {
-        const weeks = getRoutineWeeksForPersistence(toSync);
-        const baseTemplate = toSync.baseTemplate?.length ? toSync.baseTemplate : deriveBaseTemplateFromWeeks(weeks);
-        const weekTypeOverrides = toSync.weekTypeOverrides || [];
-        const logsObj = serializeRoutineLogsForMongo(toSync.logs);
-        const versionsPayload =
-          toSync.versions?.length && toSync.versions.length > 0
-            ? toSync.versions
-            : [{ effectiveFromWeek: 1, weeks }];
-        await apiPut(`/api/routines/${toSync.id}`, {
-          weeks,
-          versions: versionsPayload,
-          baseTemplate,
-          weekTypeOverrides,
-          logs: logsObj,
-          sameTemplateAllWeeks: toSync.sameTemplateAllWeeks,
-          hiddenFromSocial: toSync.hiddenFromSocial,
-        });
-      } catch (e) {
-        console.error('[Routine] Error sincronizando:', e);
-      }
+      const syncPromise = (async () => {
+        await syncDirtyLogsForRoutine(toSync);
+      })();
+      syncInFlightRef.current = syncPromise;
+      await syncPromise;
+      syncInFlightRef.current = null;
       routineSyncRef.current = null;
     };
     routineSyncFlush.current = doSync;
+
+    if (shouldFlushRoutineAfterCommitRef.current) {
+      shouldFlushRoutineAfterCommitRef.current = false;
+      void doSync();
+      return () => {
+        if (routineSyncRef.current) {
+          clearTimeout(routineSyncRef.current);
+          routineSyncRef.current = null;
+        }
+      };
+    }
+
     routineSyncRef.current && clearTimeout(routineSyncRef.current);
-    routineSyncRef.current = setTimeout(doSync, 2000);
+    routineSyncRef.current = setTimeout(doSync, ROUTINE_SYNC_DEBOUNCE_MS);
     return () => {
       if (routineSyncRef.current) {
         clearTimeout(routineSyncRef.current);
         routineSyncRef.current = null;
-        // Flush pendiente al desmontar para no perder cambios
-        routineSyncFlush.current?.();
       }
     };
-  }, [routines, activeRoutineId, user?.id, activeRoutine]);
+  }, [routines, activeRoutineId, user?.id, activeRoutine, planSyncTick, syncDirtyLogsForRoutine]);
 
-  /** Enviar rutina pendiente al salir de la pestaña / cerrar (el debounce 2s podría no dispararse). */
+  /** Enviar rutina pendiente al salir de la pestaña / cerrar (por si el debounce no ha disparado). */
   useEffect(() => {
     const flushPendingRoutine = () => {
       if (routineSyncRef.current) {
@@ -1036,23 +1429,37 @@ export default function App() {
   };
 
   // Handlers
-  const handleAddTM = async () => {
+  const handleCreateTM = async (payload: {
+    name: string;
+    value: number;
+    mode: 'weight' | 'reps' | 'seconds';
+    sharedToSocial?: boolean;
+  }) => {
+    const name = payload.name.trim();
+    const value = Number(payload.value);
+    if (!name || !Number.isFinite(value) || value < 1) return;
+    const mode = payload.mode;
+    const sharedToSocial = !!payload.sharedToSocial;
     if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) {
       const local: TrainingMax = {
         id: `tm-${Math.random().toString(36).slice(2, 9)}`,
-        name: 'Nuevo TM',
-        value: 50,
-        mode: 'weight',
+        name,
+        value,
+        mode,
+        sharedToSocial,
       };
       setTms((prev) => [...prev, local]);
       return;
     }
     try {
+      const anchor = planViewAnchorRef.current;
       const created = await apiPost<any>('/api/training-maxes', {
         routineId: activeRoutineId,
-        name: 'Nuevo TM',
-        value: 50,
-        mode: 'weight',
+        name,
+        value,
+        mode,
+        sharedToSocial,
+        createdAt: dateISOToUtcNoonISO(anchor.dateISO),
       });
       const newTm = {
         id: String(created._id || created.id),
@@ -1060,11 +1467,11 @@ export default function App() {
         value: Number(created.value),
         mode: created.mode,
         linkedExercise: created.linkedExercise,
+        sharedToSocial: !!created.sharedToSocial,
       };
-      setTms(prev => [...prev, newTm]);
-      // Actualizar historial para que el total incluya el nuevo TM
-      const currentDate = new Date().toLocaleDateString('es-ES', { month: 'short' });
-      setHistory(prev => {
+      setTms((prev) => [...prev, newTm]);
+      const currentDate = monthLabelFromDateISO(anchor.dateISO);
+      setHistory((prev) => {
         if (prev.length === 0) return prev;
         const last = prev[prev.length - 1];
         const newTmsRecord = { ...last.trainingMaxes, [newTm.id]: newTm.value };
@@ -1072,10 +1479,18 @@ export default function App() {
         const progNew = computeRoutineProgressTotal(updatedTmsList);
         const newTotal = progNew.value;
         const newKind = progNew.kind;
-        if (last.date === currentDate) {
+        const samePeriod =
+          last.year === anchor.year &&
+          last.week === anchor.week &&
+          (last.dayOfWeek ?? 0) === anchor.dayOfWeek;
+        if (samePeriod) {
           return [...prev.slice(0, -1), { ...last, trainingMaxes: newTmsRecord, total: newTotal, progressKind: newKind }];
         }
-        const entry = createHistoryEntry(currentDate, updatedTmsList, rms, getYearAndWeek());
+        const entry = createHistoryEntry(currentDate, updatedTmsList, rms, {
+          week: anchor.week,
+          year: anchor.year,
+          dayOfWeek: anchor.dayOfWeek,
+        });
         return [...prev, entry];
       });
     } catch (e) {
@@ -1084,7 +1499,36 @@ export default function App() {
   };
 
   const handleRemoveTM = async (id: string) => {
-    setTms(prev => prev.filter(tm => tm.id !== id));
+    const removed = tms.find((tm) => tm.id === id);
+    const remainingTms = tms.filter((tm) => tm.id !== id);
+    setTms((prev) => prev.filter((tm) => tm.id !== id));
+    if (removed?.linkedExercise) {
+      setRms((prev) => ({ ...prev, [removed.linkedExercise]: 0 }));
+    }
+    setHistory((prev) =>
+      prev.map((entry) => {
+        if (!entry.trainingMaxes) return entry;
+        const nextTm: Record<string, number> = { ...entry.trainingMaxes };
+        delete nextTm[id];
+        const snapshotTms = remainingTms.map((t) => ({
+          ...t,
+          value: nextTm[t.id] ?? 0,
+        }));
+        const prog = computeRoutineProgressTotal(snapshotTms);
+        const le = removed?.linkedExercise;
+        const nextRms =
+          le && entry.rms
+            ? { ...entry.rms, [le]: 0 }
+            : entry.rms;
+        return {
+          ...entry,
+          trainingMaxes: Object.keys(nextTm).length > 0 ? nextTm : {},
+          rms: nextRms ?? entry.rms,
+          total: prog.value,
+          progressKind: prog.kind,
+        };
+      })
+    );
     if (!/^[a-f0-9]{24}$/i.test(id)) return;
     if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) return;
     try {
@@ -1106,7 +1550,9 @@ export default function App() {
     }
     // Actualizar historial para que Progreso refleje el cambio al instante
     if (updates.value !== undefined) {
-      const currentDate = new Date().toLocaleDateString('es-ES', { month: 'short' });
+      const anchor = planViewAnchorRef.current;
+      const currentDate = monthLabelFromDateISO(anchor.dateISO);
+      const { week, year, dayOfWeek: d } = anchor;
       const linked = currentTm?.linkedExercise;
       setHistory(prev => {
         if (prev.length === 0) return prev;
@@ -1117,18 +1563,36 @@ export default function App() {
         const progUp = computeRoutineProgressTotal(updatedTmsList);
         const newTotal = progUp.value;
         const newKind = progUp.kind;
-        if (last.date === currentDate) {
-          return [...prev.slice(0, -1), { ...last, trainingMaxes: newTms, rms: newRms, total: newTotal, progressKind: newKind }];
+        const samePeriod =
+          last.year === year && last.week === week && (last.dayOfWeek ?? 0) === d;
+        if (samePeriod) {
+          const iso = anchor.dateISO;
+          return [
+            ...prev.slice(0, -1),
+            {
+              ...last,
+              trainingMaxes: newTms,
+              rms: newRms,
+              total: newTotal,
+              progressKind: newKind,
+              dateISO: iso,
+              month: calendarMonth1FromDateISO(iso),
+            },
+          ];
         }
-        const entry = createHistoryEntry(currentDate, updatedTmsList, newRms, getYearAndWeek());
-        return [...prev, entry];
+        const entry = createHistoryEntry(currentDate, updatedTmsList, newRms, { week, year, dayOfWeek: d });
+        return [...prev, { ...entry, routineId: activeRoutineId }];
       });
     }
     (async () => {
       if (!/^[a-f0-9]{24}$/i.test(id)) return;
       if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) return;
       try {
-        await apiPut(`/api/training-maxes/${id}`, { ...updates, routineId: activeRoutineId });
+        await apiPut(`/api/training-maxes/${id}`, {
+          ...updates,
+          routineId: activeRoutineId,
+          updatedAt: dateISOToUtcNoonISO(planViewAnchorRef.current.dateISO),
+        });
       } catch (e) {
         console.error('[TM] Error actualizando:', e);
         // rollback si no persiste en DB
@@ -1138,34 +1602,42 @@ export default function App() {
     })();
   };
 
-  const handleCreateRoutine = async (routineName: string) => {
+  const handleCreateRoutine = async (
+    routineName: string,
+    opts?: { sameTemplateAllWeeks?: boolean }
+  ) => {
     const name = routineName?.trim();
     if (!name) return;
-    const newRoutine = createRoutinePlan(
-      `routine-${Math.random().toString(36).slice(2, 8)}`,
-      name
-    );
+    const sameTemplateAllWeeks = opts?.sameTemplateAllWeeks !== false;
+    const newRoutine = createRoutinePlan(`routine-${Math.random().toString(36).slice(2, 8)}`, name, {
+      empty: true,
+      sameTemplateAllWeeks,
+    });
     try {
+      const w = getWeeksAt(newRoutine, currentWeekOfYear);
+      const bt =
+        newRoutine.baseTemplate?.length ? newRoutine.baseTemplate : deriveBaseTemplateFromWeeks(w);
       const created = await apiPost<any>('/api/routines', {
         name: newRoutine.name,
-        weeks: getWeeksAt(newRoutine, currentWeekOfYear),
-        versions: newRoutine.versions,
-        baseTemplate: newRoutine.baseTemplate,
-        weekTypeOverrides: newRoutine.weekTypeOverrides,
+        versions: [{ effectiveFromWeek: 1, weeks: bt }],
+        baseTemplate: bt,
+        weekTypeOverrides: newRoutine.weekTypeOverrides || [],
+        sameTemplateAllWeeks,
         /** La rutina nueva pasa a ser la activa en Mongo (desactiva el resto): TM, gráficos e historial van ligados a ella. */
         isActive: true,
       });
-      const plan: RoutinePlan = {
-        id: String(created._id || created.id),
+      const plan: RoutinePlan = expandRoutineFromApi({
+        _id: created._id,
+        id: created.id,
         name: created.name,
-        sameTemplateAllWeeks: !!created.sameTemplateAllWeeks,
-        hiddenFromSocial: !!created.hiddenFromSocial,
-        weeks: created.weeks || [],
-        versions: created.versions?.length ? created.versions : [{ effectiveFromWeek: 1, weeks: created.weeks || [] }],
-        baseTemplate: created.baseTemplate?.length ? created.baseTemplate : deriveBaseTemplateFromWeeks(created.weeks || []),
-        weekTypeOverrides: created.weekTypeOverrides || [],
-        logs: parseRoutineLogsFromMongo(created.logs),
-      };
+        sameTemplateAllWeeks: created.sameTemplateAllWeeks,
+        hiddenFromSocial: created.hiddenFromSocial,
+        weeks: created.weeks,
+        versions: created.versions,
+        baseTemplate: created.baseTemplate,
+        weekTypeOverrides: created.weekTypeOverrides,
+        logs: created.logs,
+      });
       setRoutines(prev => [...prev, plan]);
       setActiveRoutineId(plan.id);
       setProgramScreen('plan');
@@ -1190,40 +1662,56 @@ export default function App() {
   };
 
   const handleCopyFriendRoutine = async (routine: { name: string; weeks: TrainingWeek[] }) => {
+    /** Copia estructura del amigo: solo nombre, series, reps y modo. Sin kg, sin % sobre TM ni vínculos a sus TM. */
     const newWeeks: TrainingWeek[] = routine.weeks.map((w, wi) => ({
       ...w,
       id: `w${wi + 1}`,
       days: w.days.map((d, di) => ({
         ...d,
         id: `w${wi + 1}-d${di}`,
-        exercises: d.exercises.map((e, ei) => ({
-          ...e,
-          id: `w${wi + 1}-d${di}-e${ei + 1}`,
-          linkedTo: undefined,
-        })),
+        exercises: d.exercises.map((e, ei) => {
+          const id = `w${wi + 1}-d${di}-e${ei + 1}`;
+          return {
+            id,
+            name: e.name,
+            sets: e.sets,
+            reps: e.reps,
+            mode: e.mode,
+          } as PlannedExercise;
+        }),
       })),
     }));
     try {
       const copiedBaseTemplate = deriveBaseTemplateFromWeeks(newWeeks);
       const created = await apiPost<any>('/api/routines', {
-      name: `${routine.name} (de amigo)`,
-      weeks: newWeeks,
-        versions: [{ effectiveFromWeek: 1, weeks: newWeeks }],
+        name: `${routine.name} (de amigo)`,
+        versions: [{ effectiveFromWeek: 1, weeks: copiedBaseTemplate }],
         baseTemplate: copiedBaseTemplate,
         weekTypeOverrides: [],
         isActive: true,
       });
-      const plan: RoutinePlan = {
-        id: String(created._id || created.id),
+      const planId = String(created._id || created.id);
+      const tmsList = await apiGet<any[]>(`/api/training-maxes?routineId=${encodeURIComponent(planId)}`).catch(() => []);
+      await Promise.all(
+        tmsList.map((t: any) =>
+          apiPut(`/api/training-maxes/${t._id || t.id}`, {
+            value: 0,
+            routineId: planId,
+          }).catch(() => {})
+        )
+      );
+      const plan: RoutinePlan = expandRoutineFromApi({
+        _id: created._id,
+        id: created.id,
         name: created.name,
-        sameTemplateAllWeeks: !!created.sameTemplateAllWeeks,
-        hiddenFromSocial: !!created.hiddenFromSocial,
-        weeks: created.weeks || [],
-        versions: created.versions?.length ? created.versions : [{ effectiveFromWeek: 1, weeks: created.weeks || [] }],
-        baseTemplate: created.baseTemplate?.length ? created.baseTemplate : copiedBaseTemplate,
-        weekTypeOverrides: created.weekTypeOverrides || [],
-        logs: {},
-      };
+        sameTemplateAllWeeks: created.sameTemplateAllWeeks,
+        hiddenFromSocial: created.hiddenFromSocial,
+        weeks: created.weeks,
+        versions: created.versions,
+        baseTemplate: created.baseTemplate,
+        weekTypeOverrides: created.weekTypeOverrides,
+        logs: created.logs,
+      });
       setRoutines(prev => [...prev, plan]);
       setActiveRoutineId(plan.id);
       setProgramScreen('plan');
@@ -1272,11 +1760,12 @@ export default function App() {
     weekIdx: number,
     dayIdx: number,
     applyToDay: (day: TrainingWeek['days'][0]) => TrainingWeek['days'][0],
-    options?: { propagate?: boolean }
+    options?: { propagate?: boolean; forwardOnly?: boolean }
   ): RoutinePlan => {
-    const vers = routine.versions?.length ? routine.versions : [{ effectiveFromWeek: 1, weeks: deepCloneWeeks(routine.weeks) }];
-    const latest = vers[vers.length - 1];
-    const baseWeeks = deepCloneWeeks(latest.weeks);
+    const vers = routine.versions?.length
+      ? routine.versions
+      : [{ effectiveFromWeek: 1, weeks: deriveBaseTemplateFromWeeks(routine.weeks) }];
+    const baseWeeks = deepCloneWeeks(routine.weeks.length >= 52 ? routine.weeks : materialize52WeeksFromFourTemplateWeeks(vers[vers.length - 1].weeks));
     const srcWeek = baseWeeks[weekIdx];
     if (!srcWeek || !srcWeek.days[dayIdx]) return { ...routine, weeks: baseWeeks };
     const slot = getWeekTypeSlot(srcWeek.number);
@@ -1284,17 +1773,22 @@ export default function App() {
     baseWeeks[weekIdx] = { ...srcWeek, days: srcWeek.days.map((d, i) => i === dayIdx ? modifiedDay : d) };
 
     const propagate = options?.propagate !== false;
+    const forwardOnly = options?.forwardOnly === true;
     if (propagate) {
       const sameAll = !!routine.sameTemplateAllWeeks;
-      for (let wi = weekIdx + 1; wi < baseWeeks.length; wi++) {
+      /** Misma plantilla en todas las semanas que tocan (mes = todas; semana = mismo slot 1–4), sin tocar `routine.logs`. */
+      for (let wi = 0; wi < baseWeeks.length; wi++) {
+        if (wi === weekIdx) continue;
+        if (forwardOnly && wi < weekIdx) continue;
         const w = baseWeeks[wi];
+        if (!w.days[dayIdx]) continue;
         if (!sameAll && getWeekTypeSlot(w.number) !== slot) continue;
-        const targetDay = copyDayWithNewIds(modifiedDay, w.id, w.days[dayIdx].id);
-        baseWeeks[wi] = { ...w, days: w.days.map((d, i) => i === dayIdx ? targetDay : d) };
+        const targetDay = copyDayWithNewIds(modifiedDay, w.id, w.days[dayIdx].id, w.days[dayIdx]);
+        baseWeeks[wi] = { ...w, days: w.days.map((d, i) => (i === dayIdx ? targetDay : d)) };
       }
     }
 
-    const currentBaseTemplate = routine.baseTemplate?.length ? routine.baseTemplate : deriveBaseTemplateFromWeeks(baseWeeks);
+    const currentBaseTemplate = deriveBaseTemplateFromWeeks(baseWeeks);
     const nextOverrides = propagate
       ? [
           ...(routine.weekTypeOverrides || []).filter((ov: { weekType: number }) => ov.weekType !== slot),
@@ -1302,7 +1796,10 @@ export default function App() {
         ].sort((a: { weekType: number }, b: { weekType: number }) => a.weekType - b.weekType)
       : (routine.weekTypeOverrides || []);
 
-    const newVersion: RoutineVersion = { effectiveFromWeek: weekIdx + 1, weeks: baseWeeks };
+    const newVersion: RoutineVersion = {
+      effectiveFromWeek: weekIdx + 1,
+      weeks: deriveBaseTemplateFromWeeks(baseWeeks),
+    };
     const newVersions = [...vers.filter(v => v.effectiveFromWeek < newVersion.effectiveFromWeek), newVersion].sort((a, b) => a.effectiveFromWeek - b.effectiveFromWeek);
     return {
       ...routine,
@@ -1314,82 +1811,252 @@ export default function App() {
   };
 
   const handleAddExercise = (weekId: string, dayId: string, initialValues?: Partial<PlannedExercise>) => {
+    const routine = routines.find(r => r.id === activeRoutineId);
+    if (!routine) return;
+    const resolved = resolveWeekDayIndex(routine, weekId, dayId);
+    if (!resolved) return;
+    const fullWeeks = routine.weeks.length >= 52 ? routine.weeks : materializeRoutineWeeksIfNeeded(routine);
+    const day = fullWeeks[resolved.weekIdx]?.days[resolved.dayIdx];
+    if (!day) return;
+
+    const trimmedName = (initialValues?.name ?? '').trim();
+    if (!trimmedName) return;
+
+    const newEx: PlannedExercise = {
+      id: `${weekId}-${dayId}-e${day.exercises.length + 1}`,
+      sets: initialValues?.sets ?? 3,
+      reps: initialValues?.reps ?? 10,
+      mode: (initialValues?.mode as ExerciseMode) ?? 'weight',
+      ...initialValues,
+      name: trimmedName,
+    };
+
     updateActiveRoutine((r) => {
-      const base = r.versions?.length ? r.versions[r.versions.length - 1].weeks : r.weeks;
-      const weekIdx = base.findIndex((w: TrainingWeek) => w.id === weekId);
-      if (weekIdx < 0) return r;
-      const dayIdx = base[weekIdx]?.days.findIndex((d: { id: string }) => d.id === dayId) ?? -1;
-      if (dayIdx < 0) return r;
-      return applyRoutineChangeWithVersioning(r, weekIdx, dayIdx, (day) => ({
-        ...day,
-        exercises: [...day.exercises, {
-          id: `${weekId}-${dayId}-e${day.exercises.length + 1}`,
-          name: initialValues?.name ?? 'Nuevo Ejercicio',
-          sets: initialValues?.sets ?? 3,
-          reps: initialValues?.reps ?? 10,
-          mode: (initialValues?.mode as ExerciseMode) ?? 'weight',
-          ...initialValues,
-        }],
-      }));
+      const res2 = resolveWeekDayIndex(r, weekId, dayId);
+      if (!res2) return r;
+      return applyRoutineChangeWithVersioning(r, res2.weekIdx, res2.dayIdx, (d) => ({
+        ...d,
+        exercises: [...d.exercises, newEx],
+      }), { forwardOnly: true });
     });
+
+    if (routine.id && !routine.id.startsWith('routine-')) {
+      schedulePlanBulkSync();
+    }
   };
 
   const handleRemoveExercise = (weekId: string, dayId: string, exerciseId: string) => {
+    const routine = routines.find(r => r.id === activeRoutineId);
+    if (!routine) return;
+    const resolved = resolveWeekDayIndex(routine, weekId, dayId);
+    if (!resolved) return;
+    const fullWeeks = routine.weeks.length >= 52 ? routine.weeks : materializeRoutineWeeksIfNeeded(routine);
+    const day = fullWeeks[resolved.weekIdx]?.days[resolved.dayIdx];
+    const ex = day?.exercises.find(e => e.id === exerciseId);
+    const exIdx1Based = ex ? day.exercises.indexOf(ex) + 1 : -1;
+
     updateActiveRoutine((r) => {
-      const base = r.versions?.length ? r.versions[r.versions.length - 1].weeks : r.weeks;
-      const weekIdx = base.findIndex((w: TrainingWeek) => w.id === weekId);
-      if (weekIdx < 0) return r;
-      const dayIdx = base[weekIdx]?.days.findIndex((d: { id: string }) => d.id === dayId) ?? -1;
-      if (dayIdx < 0) return r;
-      return applyRoutineChangeWithVersioning(r, weekIdx, dayIdx, (day) => ({
-        ...day,
-        exercises: day.exercises.filter(e => e.id !== exerciseId),
-      }));
+      const res2 = resolveWeekDayIndex(r, weekId, dayId);
+      if (!res2) return r;
+      /** No usar `forwardOnly: true` aquí: solo actualizaba semanas “futuras” (índice > actual) y las semanas
+       * anteriores del año seguían con el ejercicio; al navegar o al derivar plantilla parecía que “volvía”. */
+      const updated = applyRoutineChangeWithVersioning(r, res2.weekIdx, res2.dayIdx, (d) => ({
+        ...d,
+        exercises: d.exercises.filter(e => e.id !== exerciseId),
+      }), { forwardOnly: false });
+      if (exIdx1Based > 0) {
+        return {
+          ...updated,
+          logs: purgeAndReindexLogsAfterExerciseRemoval(updated.logs, res2.dayIdx, exIdx1Based),
+        };
+      }
+      return updated;
     });
+
+    if (routine.id && !routine.id.startsWith('routine-')) {
+      schedulePlanBulkSync();
+    }
   };
 
   const handleUpdateExercise = (weekId: string, dayId: string, exerciseId: string, updates: Partial<PlannedExercise>) => {
+    const routine = routines.find(r => r.id === activeRoutineId);
+    if (!routine) return;
+    const resolved = resolveWeekDayIndex(routine, weekId, dayId);
+    if (!resolved) return;
+    const fullWeeks = routine.weeks.length >= 52 ? routine.weeks : materializeRoutineWeeksIfNeeded(routine);
+    const day = fullWeeks[resolved.weekIdx]?.days[resolved.dayIdx];
+    const ex = day?.exercises.find(e => e.id === exerciseId);
+    const dbExId = ex?._dbId;
+
     updateActiveRoutine((r) => {
-      const base = r.versions?.length ? r.versions[r.versions.length - 1].weeks : r.weeks;
-      const weekIdx = base.findIndex((w: TrainingWeek) => w.id === weekId);
-      if (weekIdx < 0) return r;
-      const dayIdx = base[weekIdx]?.days.findIndex((d: { id: string }) => d.id === dayId) ?? -1;
-      if (dayIdx < 0) return r;
-      return applyRoutineChangeWithVersioning(r, weekIdx, dayIdx, (day) => ({
-        ...day,
-        exercises: day.exercises.map(e => e.id === exerciseId ? { ...e, ...updates } : e),
+      const res2 = resolveWeekDayIndex(r, weekId, dayId);
+      if (!res2) return r;
+      return applyRoutineChangeWithVersioning(r, res2.weekIdx, res2.dayIdx, (d) => ({
+        ...d,
+        exercises: d.exercises.map(e => e.id === exerciseId ? { ...e, ...updates } : e),
       }));
     });
+
+    if (dbExId && routine.id && !routine.id.startsWith('routine-')) {
+      const body = exercisePatchBodyFromUpdates(updates);
+      if (Object.keys(body).length === 0) {
+        /* Sin campos persistibles; el estado local ya se actualizó arriba. */
+      } else {
+      void apiPatch<{
+        ok?: boolean;
+        exercise?: Partial<PlannedExercise>;
+      }>(`/api/routines/${routine.id}/exercises/${dbExId}`, body)
+        .then((res) => {
+          const ex = res?.exercise;
+          if (!ex) return;
+          updateActiveRoutine((r) => {
+            const res2 = resolveWeekDayIndex(r, weekId, dayId);
+            if (!res2) return r;
+            return applyRoutineChangeWithVersioning(r, res2.weekIdx, res2.dayIdx, (d) => ({
+              ...d,
+              exercises: d.exercises.map((e) =>
+                e.id === exerciseId
+                  ? {
+                      ...e,
+                      ...(ex.sets !== undefined ? { sets: ex.sets } : {}),
+                      ...(ex.reps !== undefined ? { reps: ex.reps } : {}),
+                      ...(ex.pct !== undefined ? { pct: ex.pct } : {}),
+                      ...(ex.pctPerSet !== undefined ? { pctPerSet: ex.pctPerSet } : {}),
+                      ...(ex.weight !== undefined ? { weight: ex.weight } : {}),
+                      ...(ex.mode !== undefined ? { mode: ex.mode } : {}),
+                    }
+                  : e
+              ),
+            }));
+          });
+        })
+        .catch((e: any) => console.error('[Routine] Error updating exercise:', e));
+      }
+    } else if (routine.id && !routine.id.startsWith('routine-')) {
+      schedulePlanBulkSync();
+    }
   };
 
   const handleLogChange = (id: string, field: keyof LogEntry, value: any) => {
-    updateActiveRoutine((routine) => ({
-      ...routine,
-      logs: {
-        ...routine.logs,
-        [id]: {
-          ...(routine.logs[id] || { rpe: '', notes: '', completed: false, sets: [] }),
-          [field]: value
-        }
-      }
-    }));
+    markLogDirty(activeRoutineId, id);
+    updateActiveRoutine((routine) => {
+      const base = resolveLogEntryForMerge(routine.logs, id);
+      const cleaned = stripLegacyLogKeysForCanonical(routine.logs, id);
+      return {
+        ...routine,
+        logs: {
+          ...cleaned,
+          [id]: { ...base, [field]: value },
+        },
+      };
+    });
   };
 
   const roundTo25 = (n: number) => Math.round(n / 2.5) * 2.5;
 
-  const resolveLinkedTM = (exercise: PlannedExercise): TrainingMax | undefined => {
-    if (!exercise.linkedTo?.trim()) return undefined;
-    const byId = tms.find(tm => tm.id === exercise.linkedTo);
-    if (byId) return byId;
-    const byLinked = tms.find(tm => tm.linkedExercise === (exercise.linkedTo as keyof RMData));
-    if (byLinked) return byLinked;
-    const norm = (s?: string) => (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
-    return tms.find(tm => norm(tm.name) === norm(exercise.linkedTo!) || norm(tm.name) === norm(exercise.name));
+  /**
+   * Safety-net: re-escanea TODOS los logs de la rutina buscando TMs superados.
+   * Se ejecuta al pulsar "Guardar sesión" para atrapar bumps que el onChange por tecla no detectó.
+   */
+  const rescanTmBumpsFromLogs = (routine: RoutinePlan) => {
+    if (!user) return;
+    const allWeeks = getWeeksForTrainingMaxScan(routine);
+    const currentTms = tmsRef.current;
+    const newTms = currentTms.map((tm) => ({ ...tm }));
+    let didBump = false;
+    allWeeks.forEach((week: TrainingWeek) => {
+      week.days.forEach((day: TrainingDay) => {
+        day.exercises.forEach((ex: PlannedExercise) => {
+          const linkedTM = resolveTmForAutoBump(ex, newTms);
+          if (!linkedTM) return;
+          const idxTm = newTms.findIndex((t) => t.id === linkedTM.id);
+          if (idxTm < 0) return;
+          const lid = routineLogKeyFromIds(week, day, ex);
+          const l = resolveLogEntryForMerge(routine.logs, lid);
+          if (!l?.sets) return;
+          l.sets.forEach((set: SetLog) => {
+            if (linkedTM.mode === 'weight') {
+              const w = set.weight ?? 0;
+              if (w <= 0) return;
+              const candidate = roundTo25(w);
+              if (candidate > newTms[idxTm].value) {
+                newTms[idxTm] = { ...newTms[idxTm], value: candidate };
+                didBump = true;
+              }
+            } else if (linkedTM.mode === 'reps' || linkedTM.mode === 'seconds') {
+              const val = set.reps ?? 0;
+              if (val <= 0) return;
+              const candidate = Math.round(val);
+              if (candidate > newTms[idxTm].value) {
+                newTms[idxTm] = { ...newTms[idxTm], value: candidate };
+                didBump = true;
+              }
+            }
+          });
+        });
+      });
+    });
+    if (didBump) {
+      tmsRef.current = newTms;
+      setTms(newTms);
+      const linked = newTms.filter(t => t.linkedExercise);
+      const newRms = { ...rmsRef.current };
+      linked.forEach(tm => { if (tm.linkedExercise) newRms[tm.linkedExercise] = tm.value; });
+      rmsRef.current = newRms;
+      setRms(newRms);
+      const resolvedCal = getYearWeekDay();
+      const { week: w, year: y, dayOfWeek: d } = resolvedCal;
+      const newTmsRecord = newTms.reduce((acc, tm) => ({ ...acc, [tm.id]: tm.value }), {} as Record<string, number>);
+      const currentDate = new Date().toLocaleDateString('es-ES', { month: 'short' });
+      setHistory((prev) => {
+        const samePeriodNew = (e: HistoryEntry) =>
+          e.year === y && e.week === w && (e.dayOfWeek ?? 0) === (d ?? 0);
+        const filtered = prev.filter((e) => !samePeriodNew(e));
+        const entries: HistoryEntry[] = [...filtered];
+        const hasBaseline = entries.some((e) => entryDateISO(e) === TM_BASELINE_DATE_ISO);
+        if (!hasBaseline) {
+          const prevRmsSnap = buildRmsFromLinkedTms(currentTms, rmsRef.current);
+          entries.push(buildBaselineHistoryEntry(activeRoutineId, currentTms, prevRmsSnap, currentDate));
+        }
+        const newEntry: HistoryEntry = {
+          ...createHistoryEntry(currentDate, newTms, newRms, { week: w, year: y, dayOfWeek: d }),
+          routineId: activeRoutineId,
+        };
+        entries.push(newEntry);
+        return entries.sort((a, b) => {
+          const c = entryDateISO(a).localeCompare(entryDateISO(b));
+          if (c !== 0) return c;
+          return (a.createdAt || '').localeCompare(b.createdAt || '');
+        });
+      });
+      const bumpIso = dateISOFromYearWeekDay(y, w, d ?? 0);
+      newTms.filter(t => t.value !== currentTms.find(ot => ot.id === t.id)?.value).forEach(tm => {
+        apiPut(`/api/training-maxes/${tm.id}`, {
+          value: tm.value,
+          routineId: activeRoutineId,
+          updatedAt: dateISOToUtcNoonISO(bumpIso),
+        }).catch(() => {});
+      });
+      const iso = bumpIso;
+      apiPost('/api/training-maxes/save-period', {
+        routineId: activeRoutineId,
+        date: currentDate,
+        week: w,
+        year: y,
+        dayOfWeek: d,
+        dateISO: iso,
+        month: calendarMonth1FromDateISO(iso),
+        rms: newRms,
+        total: computeRoutineProgressTotal(newTms).value,
+        trainingMaxes: newTmsRecord,
+        progressKind: computeRoutineProgressTotal(newTms).kind,
+      }).catch(() => {});
+    }
   };
 
   /** TM de rutina vinculado, o TM interno inferido por nombre (peso / reps / segundos por separado en Mongo). */
   const resolveEffectiveTM = (exercise: PlannedExercise): TrainingMax | undefined => {
-    const official = resolveLinkedTM(exercise);
+    const official = resolveTmForAutoBump(exercise, tms);
     if (official) return official;
     const im = internalExerciseMaxes.find(
       m => normalizeExerciseNameKey(m.name) === normalizeExerciseNameKey(exercise.name)
@@ -1411,17 +2078,20 @@ export default function App() {
       newTms: TrainingMax[];
       newRms: RMData;
       prevTmsSnapshot: TrainingMax[];
+      prevRmsSnapshot: RMData;
       w: number;
       y: number;
-      dayIndex: number;
+      /** Lunes=0 … Domingo=6 — mismo día en que subió el TM desde series. */
+      d: number;
       currentDate: string;
       newTmsRecord: Record<string, number>;
       newTotal: number;
     };
     let tmBump: TmBumpPayload | null = null;
     let pendingInternalUpserts: { name: string; mode: 'weight' | 'reps' | 'seconds'; candidateValue: number }[] = [];
+    markLogDirty(activeRoutineId, logId);
     updateActiveRoutine((routine) => {
-      const log = routine.logs[logId] || { rpe: '', notes: '', completed: false, sets: [] };
+      const log = resolveLogEntryForMerge(routine.logs, logId);
       const currentSets = [...(log.sets || [])];
       
       while (currentSets.length <= setIdx) {
@@ -1440,30 +2110,29 @@ export default function App() {
       currentSets[setIdx] = merged;
       
       const updatedLogs = {
-        ...routine.logs,
-        [logId]: { ...log, sets: currentSets }
+        ...stripLegacyLogKeysForCanonical(routine.logs, logId),
+        [logId]: { ...log, sets: currentSets },
       };
       const updatedRoutine = { ...routine, logs: updatedLogs };
 
-      if (!isHistoryMode && user) {
-        const baseWeeks = getWeeksForTrainingMaxScan(routine);
+      if (user) {
+        const baseWeeks = getWeeksForTrainingMaxScanWithLog(routine, logId);
         let didBump = false;
-        const newTms = [...tms];
+        const newTms = tmsRef.current.map((tm) => ({ ...tm }));
         baseWeeks.forEach((week: TrainingWeek) => {
-          week.days.forEach((day: { id: string; exercises: PlannedExercise[] }) => {
+          week.days.forEach((day: TrainingDay) => {
             day.exercises.forEach((ex: PlannedExercise) => {
-              const linkedTM = resolveLinkedTM(ex);
+              const linkedTM = resolveTmForAutoBump(ex, newTms);
               if (!linkedTM) return;
-              const idxTm = newTms.findIndex(t => t.id === linkedTM.id);
+              const idxTm = newTms.findIndex((t) => t.id === linkedTM.id);
               if (idxTm < 0) return;
-              const lid = `${week.id}-${day.id}-${ex.id}`;
-              const l = updatedLogs[lid];
+              const lid = routineLogKeyFromIds(week, day, ex);
+              const l = resolveLogEntryForMerge(updatedLogs, lid);
               if (!l?.sets) return;
               l.sets.forEach((set: SetLog) => {
                 if (linkedTM.mode === 'weight') {
                   const w = set.weight ?? 0;
-                  const r = set.reps ?? 0;
-                  if (w <= 0 || r <= 0) return;
+                  if (w <= 0) return;
                   const candidate = roundTo25(w);
                   if (candidate > newTms[idxTm].value) {
                     newTms[idxTm] = { ...newTms[idxTm], value: candidate };
@@ -1486,12 +2155,12 @@ export default function App() {
         // TM interno: sin linkedTo — peso = máximo kg apuntado en serie (tu «100 %»), no e1RM; reps/seg por campo en Mongo
         const maxByKey = new Map<string, { name: string; mode: 'weight' | 'reps' | 'seconds'; candidateValue: number }>();
         baseWeeks.forEach((week: TrainingWeek) => {
-          week.days.forEach((day: { id: string; exercises: PlannedExercise[] }) => {
+          week.days.forEach((day: TrainingDay) => {
             day.exercises.forEach((ex: PlannedExercise) => {
               // Solo saltar si hay TM de rutina real; si linkedTo es huérfano, el TM interno aplica y debe actualizarse
-              if (resolveLinkedTM(ex)) return;
-              const lid = `${week.id}-${day.id}-${ex.id}`;
-              const l = updatedLogs[lid];
+              if (resolveTmForAutoBump(ex, newTms)) return;
+              const lid = routineLogKeyFromIds(week, day, ex);
+              const l = resolveLogEntryForMerge(updatedLogs, lid);
               if (!l?.sets?.length) return;
               const nk = normalizeExerciseNameKey(ex.name);
               if (ex.mode === 'weight') {
@@ -1528,7 +2197,7 @@ export default function App() {
         });
         pendingInternalUpserts = [];
         maxByKey.forEach((v) => {
-          const im = internalExerciseMaxes.find(
+          const im = internalExerciseMaxesRef.current.find(
             m => normalizeExerciseNameKey(m.name) === normalizeExerciseNameKey(v.name)
           );
           const prevStored = im
@@ -1545,24 +2214,63 @@ export default function App() {
 
         if (didBump) {
           const linked = newTms.filter(t => t.linkedExercise);
-          const newRms = { ...rms };
+          const newRms = { ...rmsRef.current };
           linked.forEach(tm => { if (tm.linkedExercise) newRms[tm.linkedExercise] = tm.value; });
-          const { week: w, year: y } = getYearAndWeek();
+          const resolvedCal =
+            resolveCalendarFromLogId(updatedRoutine, logId, viewAsOfWeek ?? currentWeekOfYear) ??
+            getYearWeekDay();
+          const { week: w, year: y, dayOfWeek: d } = resolvedCal;
           const newTmsRecord = newTms.reduce((acc, tm) => ({ ...acc, [tm.id]: tm.value }), {} as Record<string, number>);
           const newTotal = computeRoutineProgressTotal(newTms).value;
           const currentDate = new Date().toLocaleDateString('es-ES', { month: 'short' });
-          const dayIndex = findDayIndexForLogId(updatedRoutine, logId) ?? 0;
+          const prevTmsSnap = tmsRef.current.map((tm) => ({ ...tm }));
+          const prevRmsSnap = { ...rmsRef.current };
           tmBump = {
             newTms,
             newRms,
-            prevTmsSnapshot: tms,
+            prevTmsSnapshot: prevTmsSnap,
+            prevRmsSnapshot: prevRmsSnap,
             w,
             y,
-            dayIndex,
+            d,
             currentDate,
             newTmsRecord,
             newTotal,
           };
+          tmsRef.current = newTms;
+          rmsRef.current = newRms;
+        }
+
+        if (pendingInternalUpserts.length > 0) {
+          const next = [...internalExerciseMaxesRef.current];
+          pendingInternalUpserts.forEach(({ name, mode, candidateValue }) => {
+            const k = normalizeExerciseNameKey(name);
+            const idx = next.findIndex(m => normalizeExerciseNameKey(m.name) === k);
+            const field = mode === 'weight' ? 'valueWeight' : mode === 'reps' ? 'valueReps' : 'valueSeconds';
+            if (idx >= 0) {
+              const cur = next[idx];
+              const prevNum =
+                mode === 'weight'
+                  ? (cur.valueWeight ?? cur.value ?? 0)
+                  : mode === 'reps'
+                    ? (cur.valueReps ?? 0)
+                    : (cur.valueSeconds ?? 0);
+              if (candidateValue > prevNum) {
+                next[idx] = { ...cur, [field]: candidateValue };
+              }
+            } else {
+              next.push({
+                id: `pending-${k}`,
+                name,
+                ...(mode === 'weight'
+                  ? { valueWeight: candidateValue }
+                  : mode === 'reps'
+                    ? { valueReps: candidateValue }
+                    : { valueSeconds: candidateValue }),
+              });
+            }
+          });
+          internalExerciseMaxesRef.current = next;
         }
       }
 
@@ -1631,84 +2339,243 @@ export default function App() {
     }
     if (tmBump) {
       const b = tmBump;
-      queueMicrotask(() => {
-        const bumpedIds = b.newTms
-          .filter(t => t.value !== b.prevTmsSnapshot.find(ot => ot.id === t.id)?.value)
-          .map(t => t.id);
-        if (bumpedIds.length) {
-          if (tmHighlightTimerRef.current) clearTimeout(tmHighlightTimerRef.current);
-          setTmAutoHighlightIds(bumpedIds);
-          tmHighlightTimerRef.current = setTimeout(() => {
-            setTmAutoHighlightIds([]);
-            tmHighlightTimerRef.current = null;
-          }, 4000);
-        }
-        setTms(b.newTms);
-        setRms(b.newRms);
-        setHistory(prev => {
-          const entry: HistoryEntry = {
-            ...createHistoryEntry(b.currentDate, b.newTms, b.newRms, {
-              week: b.w,
-              year: b.y,
-              dayIndex: b.dayIndex,
-            }),
-            routineId: activeRoutineId,
-          };
-          const filtered = prev.filter(
-            e =>
-              !(
-                e.year === entry.year &&
-                e.week === entry.week &&
-                (e.dayIndex ?? -1) === (entry.dayIndex ?? -1)
-              )
+      const bumpedIds = b.newTms
+        .filter(t => t.value !== b.prevTmsSnapshot.find(ot => ot.id === t.id)?.value)
+        .map(t => t.id);
+      if (bumpedIds.length) {
+        if (tmHighlightTimerRef.current) clearTimeout(tmHighlightTimerRef.current);
+        setTmAutoHighlightIds(bumpedIds);
+        tmHighlightTimerRef.current = setTimeout(() => {
+          setTmAutoHighlightIds([]);
+          tmHighlightTimerRef.current = null;
+        }, 4000);
+      }
+      const tmActuallyChangedForHist = b.newTms.some(
+        (t) => b.prevTmsSnapshot.find((ot) => ot.id === t.id)?.value !== t.value
+      );
+      const hasBaselineNow = historyRef.current.some((e) => entryDateISO(e) === TM_BASELINE_DATE_ISO);
+      const needBaselineSave = tmActuallyChangedForHist && !hasBaselineNow;
+
+      setTms(b.newTms);
+      setRms(b.newRms);
+      setHistory((prev) => {
+        const samePeriodNew = (e: HistoryEntry) =>
+          e.year === b.y && e.week === b.w && (e.dayOfWeek ?? 0) === (b.d ?? 0);
+        const filtered = prev.filter((e) => !samePeriodNew(e));
+        const entries: HistoryEntry[] = [...filtered];
+        const hasBaseline = entries.some((e) => entryDateISO(e) === TM_BASELINE_DATE_ISO);
+        if (tmActuallyChangedForHist && !hasBaseline) {
+          const prevRmsSnap = buildRmsFromLinkedTms(b.prevTmsSnapshot, b.prevRmsSnapshot);
+          entries.push(
+            buildBaselineHistoryEntry(activeRoutineId, b.prevTmsSnapshot, prevRmsSnap, b.currentDate)
           );
-          return [...filtered, entry].sort((a, b) => {
-            const ya = (a.year ?? 0) - (b.year ?? 0);
-            if (ya !== 0) return ya;
-            const wa = (a.week ?? 0) - (b.week ?? 0);
-            if (wa !== 0) return wa;
-            return (a.dayIndex ?? 999) - (b.dayIndex ?? 999);
-          });
+        }
+        const newEntry: HistoryEntry = {
+          ...createHistoryEntry(b.currentDate, b.newTms, b.newRms, { week: b.w, year: b.y, dayOfWeek: b.d }),
+          routineId: activeRoutineId,
+        };
+        entries.push(newEntry);
+        return entries.sort((a, b) => {
+          const c = entryDateISO(a).localeCompare(entryDateISO(b));
+          if (c !== 0) return c;
+          return (a.createdAt || '').localeCompare(b.createdAt || '');
         });
+      });
+      queueMicrotask(() => {
+        const bumpIsoLog = dateISOFromYearWeekDay(b.y, b.w, b.d ?? 0);
         b.newTms.filter(t => t.value !== b.prevTmsSnapshot.find(ot => ot.id === t.id)?.value).forEach(tm => {
           apiPut(`/api/training-maxes/${tm.id}`, {
             value: tm.value,
             routineId: activeRoutineId,
+            updatedAt: dateISOToUtcNoonISO(bumpIsoLog),
           }).catch(() => {});
         });
         const isPersistedRoutine = !(activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20);
         if (isPersistedRoutine) {
-          apiPost('/api/training-maxes/save-period', {
-            routineId: activeRoutineId,
-            date: b.currentDate,
-            week: b.w,
-            year: b.y,
-            dayIndex: b.dayIndex,
-            rms: b.newRms,
-            total: b.newTotal,
-            trainingMaxes: b.newTmsRecord,
-            progressKind: computeRoutineProgressTotal(b.newTms).kind,
-          }).catch(() => {});
+          const saveNew = () => {
+            const iso = dateISOFromYearWeekDay(b.y, b.w, b.d ?? 0);
+            return apiPost('/api/training-maxes/save-period', {
+              routineId: activeRoutineId,
+              date: b.currentDate,
+              week: b.w,
+              year: b.y,
+              dayOfWeek: b.d,
+              dateISO: iso,
+              month: calendarMonth1FromDateISO(iso),
+              rms: b.newRms,
+              total: b.newTotal,
+              trainingMaxes: b.newTmsRecord,
+              progressKind: computeRoutineProgressTotal(b.newTms).kind,
+            });
+          };
+          const run = async () => {
+            if (needBaselineSave) {
+              const prevRmsSnap = buildRmsFromLinkedTms(b.prevTmsSnapshot, b.prevRmsSnapshot);
+              const prevProg = computeRoutineProgressTotal(b.prevTmsSnapshot);
+              const prevTmRec = b.prevTmsSnapshot.reduce(
+                (acc, tm) => ({ ...acc, [tm.id]: tm.value }),
+                {} as Record<string, number>
+              );
+              try {
+                await apiPost('/api/training-maxes/save-period', {
+                  routineId: activeRoutineId,
+                  date: b.currentDate,
+                  week: 1,
+                  year: 1970,
+                  dayOfWeek: 0,
+                  dateISO: TM_BASELINE_DATE_ISO,
+                  month: 1,
+                  rms: prevRmsSnap,
+                  total: prevProg.value,
+                  trainingMaxes: prevTmRec,
+                  progressKind: prevProg.kind,
+                });
+              } catch {
+                /* idempotente si ya existe */
+              }
+            }
+            await saveNew().catch(() => {});
+          };
+          void run();
         }
       });
     }
   };
 
   const handleMarkCompleted = (logId: string, completed: boolean) => {
-    updateActiveRoutine((routine) => ({
-      ...routine,
-      logs: {
-        ...routine.logs,
-        [logId]: {
-          ...(routine.logs[logId] || { rpe: '', notes: '', completed: false, sets: [] }),
-          completed
-        }
-      }
-    }));
+    markLogDirty(activeRoutineId, logId);
+    updateActiveRoutine((routine) => {
+      const base = resolveLogEntryForMerge(routine.logs, logId);
+      const cleaned = stripLegacyLogKeysForCanonical(routine.logs, logId);
+      return {
+        ...routine,
+        logs: {
+          ...cleaned,
+          [logId]: { ...base, completed },
+        },
+      };
+    });
   };
+
+  const handleLoginComplete = useCallback((userData: User) => {
+    const token = localStorage.getItem('auth_token');
+    if (token) {
+      upsertAccount({
+        id: userData.id,
+        token,
+        email: userData.email,
+        name: userData.name,
+        avatar: userData.avatar,
+      });
+      setActiveAccountId(userData.id);
+      setSavedAccountsState(loadSavedAccounts());
+    }
+    setUser(userData);
+  }, []);
+
+  const switchToAccount = useCallback(
+    async (userId: string) => {
+      const accounts = loadSavedAccounts();
+      const acc = accounts.find((a) => a.id === userId);
+      if (!acc) {
+        toast.error('Cuenta no encontrada');
+        return;
+      }
+      setIsSwitchingAccount(true);
+      try {
+        localStorage.setItem('auth_token', acc.token);
+        setActiveAccountId(userId);
+        const res = await fetch('/api/auth/me', {
+          headers: { Authorization: `Bearer ${acc.token}` },
+        });
+        if (!res.ok) {
+          toast.error('Sesión inválida o caducada');
+          removeAccount(userId);
+          setSavedAccountsState(loadSavedAccounts());
+          return;
+        }
+        const data = await res.json();
+        const u = mapUserFromMePayload(data);
+        upsertAccount({
+          id: u.id,
+          token: acc.token,
+          email: u.email,
+          name: u.name,
+          avatar: u.avatar,
+        });
+        setSavedAccountsState(loadSavedAccounts());
+        setRoutines([]);
+        setActiveRoutineId(null);
+        setHistory([]);
+        setTms([]);
+        setRms({ bench: 0, squat: 0, deadlift: 0 });
+        setInternalExerciseMaxes([]);
+        setCheckIns([]);
+        setChallenges([]);
+        setFriendsList([]);
+        setFriends([]);
+        setViewAsOfWeek(null);
+        setProgramScreen('plan');
+        setView('dashboard');
+        setUser(u);
+      } catch (e) {
+        console.error('[Account] Error al cambiar de cuenta:', e);
+        toast.error('No se pudo cambiar de cuenta');
+      } finally {
+        setIsSwitchingAccount(false);
+      }
+    },
+    [toast]
+  );
+
+  const handleLogout = useCallback(async () => {
+    const uid = user?.id;
+    if (!uid) return;
+    try {
+      const token = localStorage.getItem('auth_token');
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+    } catch {
+      /* ignore */
+    }
+    removeAccount(uid);
+    setSavedAccountsState(loadSavedAccounts());
+    const remaining = loadSavedAccounts();
+    if (remaining.length > 0) {
+      try {
+        await switchToAccount(remaining[0].id);
+      } catch {
+        localStorage.removeItem('auth_token');
+        setActiveAccountId(null);
+        localStorage.removeItem(AUTH_USER_STORAGE_KEY);
+        setUser(null);
+      }
+    } else {
+      localStorage.removeItem('auth_token');
+      setActiveAccountId(null);
+      localStorage.removeItem(AUTH_USER_STORAGE_KEY);
+      setUser(null);
+    }
+  }, [user?.id, switchToAccount]);
+
+  const handleRemoveSavedAccount = useCallback(
+    (userId: string) => {
+      if (userId === user?.id) {
+        void handleLogout();
+        return;
+      }
+      removeAccount(userId);
+      setSavedAccountsState(loadSavedAccounts());
+    },
+    [user?.id, handleLogout]
+  );
 
   useEffect(() => {
     const checkSession = async () => {
+      migrateLegacyIfNeeded();
+      setSavedAccountsState(loadSavedAccounts());
       const cachedRaw = localStorage.getItem(AUTH_USER_STORAGE_KEY);
       if (cachedRaw) {
         try {
@@ -1728,33 +2595,34 @@ export default function App() {
           return;
         }
         
+        const ac = new AbortController();
+        const t = setTimeout(() => ac.abort(), 15000);
         const res = await fetch('/api/auth/me', {
           headers: {
             Authorization: `Bearer ${token}`,
           },
+          signal: ac.signal,
         });
+        clearTimeout(t);
         
         if (res.ok) {
           try {
             const data = await res.json();
-            setUser({
-              id: String(data.user._id || data.user.id),
-              name: data.user.name || 'Atleta',
-              email: data.user.email,
-              avatar: data.user.avatar || 'https://picsum.photos/seed/user/200/200',
-              bodyWeight: data.user.bodyWeight ?? 80,
-              theme: (data.user.theme || (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) as 'light' | 'dark',
-              progressMode: data.user.progressMode === 'year' ? 'year' : data.user.progressMode === 'month' ? 'month' : undefined,
-            });
-            localStorage.setItem(AUTH_USER_STORAGE_KEY, JSON.stringify({
-              id: String(data.user._id || data.user.id),
-              name: data.user.name || 'Atleta',
-              email: data.user.email,
-              avatar: data.user.avatar || 'https://picsum.photos/seed/user/200/200',
-              bodyWeight: data.user.bodyWeight ?? 80,
-              theme: (data.user.theme || (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) as 'light' | 'dark',
-              progressMode: data.user.progressMode === 'year' ? 'year' : data.user.progressMode === 'month' ? 'month' : undefined,
-            }));
+            const u = mapUserFromMePayload(data);
+            setUser(u);
+            localStorage.setItem(AUTH_USER_STORAGE_KEY, JSON.stringify(u));
+            const t = localStorage.getItem('auth_token');
+            if (t) {
+              upsertAccount({
+                id: u.id,
+                token: t,
+                email: u.email,
+                name: u.name,
+                avatar: u.avatar,
+              });
+              setActiveAccountId(u.id);
+              setSavedAccountsState(loadSavedAccounts());
+            }
           } catch (parseError) {
             console.error('[SESSION] Error parseando respuesta:', parseError);
             localStorage.removeItem('auth_token');
@@ -1762,7 +2630,18 @@ export default function App() {
             setUser(null);
           }
         } else {
-          // Si el token es inválido o expirado, simplemente limpiar y continuar
+          try {
+            const raw = localStorage.getItem(AUTH_USER_STORAGE_KEY);
+            if (raw) {
+              const u = JSON.parse(raw) as User;
+              if (u?.id) {
+                removeAccount(u.id);
+                setSavedAccountsState(loadSavedAccounts());
+              }
+            }
+          } catch {
+            /* ignore */
+          }
           localStorage.removeItem('auth_token');
           localStorage.removeItem(AUTH_USER_STORAGE_KEY);
           setUser(null);
@@ -1785,35 +2664,12 @@ export default function App() {
     localStorage.setItem(AUTH_USER_STORAGE_KEY, JSON.stringify(user));
   }, [user]);
 
-  const handleLogout = async () => {
-    const token = localStorage.getItem('auth_token');
-    try {
-      await fetch('/api/auth/logout', {
-        method: 'POST',
-        headers: token
-          ? {
-              Authorization: `Bearer ${token}`,
-            }
-          : undefined,
-      });
-      localStorage.removeItem('auth_token');
-      localStorage.removeItem(AUTH_USER_STORAGE_KEY);
-      setUser(null);
-    } catch (e) {
-      console.error('Logout failed');
-      localStorage.removeItem('auth_token');
-      localStorage.removeItem(AUTH_USER_STORAGE_KEY);
-      setUser(null);
-    }
-  };
-
   const exportToExcel = () => {
     const data: any[] = [];
     weeks.forEach(week => {
       week.days.forEach(day => {
         day.exercises.forEach(ex => {
-          const logId = `${week.id}-${day.id}-${ex.id}`;
-          const log = logs[logId] || { rpe: '', notes: '', completed: false, sets: [] };
+          const log = getLogEntryForExercise(logs, week, day, ex);
           const linkedTM = tms.find(t => t.id === ex.linkedTo);
           const getTargetWeight = (sIdx: number) => linkedTM ? Math.round(linkedTM.value * ((ex.pctPerSet?.[sIdx] ?? ex.pct ?? 75) / 100)) : (ex.weight || 0);
 
@@ -1863,19 +2719,17 @@ export default function App() {
     if (!tms.length) return;
     const now = new Date();
     const currentDate = now.toLocaleDateString('es-ES', { month: 'short' });
-    const { week, year } = getYearAndWeek(now);
-    const entry = createHistoryEntry(currentDate, tms, rms, { week, year });
+    const { week, year, dayOfWeek: d } = getYearWeekDay(now);
+    const entry = createHistoryEntry(currentDate, tms, rms, { week, year, dayOfWeek: d });
     const entryWithRoutine: HistoryEntry = { ...entry, routineId: activeRoutineId };
     setHistory(prev => {
-      const filtered = prev.filter(
-        e => !(e.year === year && e.week === week && e.dayIndex == null)
-      );
+      const samePeriod = (e: HistoryEntry) =>
+        e.year === year && e.week === week && (e.dayOfWeek ?? 0) === d;
+      const filtered = prev.filter(e => !samePeriod(e));
       return [...filtered, entryWithRoutine].sort((a, b) => {
-        const ya = (a.year ?? 0) - (b.year ?? 0);
-        if (ya !== 0) return ya;
-        const wa = (a.week ?? 0) - (b.week ?? 0);
-        if (wa !== 0) return wa;
-        return (a.dayIndex ?? 999) - (b.dayIndex ?? 999);
+        const c = entryDateISO(a).localeCompare(entryDateISO(b));
+        if (c !== 0) return c;
+        return (a.createdAt || '').localeCompare(b.createdAt || '');
       });
     });
     try {
@@ -1884,6 +2738,9 @@ export default function App() {
         date: entry.date,
         week: entry.week,
         year: entry.year,
+        dayOfWeek: d,
+        dateISO: entry.dateISO,
+        month: entry.month,
         rms: entry.rms,
         total: entry.total,
         trainingMaxes: entry.trainingMaxes,
@@ -1920,7 +2777,25 @@ export default function App() {
   if (!user) {
     return (
       <>
-        <LoginView onLogin={(userData) => setUser(userData)} toast={toast} />
+        <LoginView onLogin={handleLoginComplete} toast={toast} />
+        <ToastContainer toasts={toast.toasts} onClose={toast.removeToast} />
+      </>
+    );
+  }
+
+  if (user && addAccountMode) {
+    return (
+      <>
+        <LoginView
+          variant="addAccount"
+          onCancel={() => setAddAccountMode(false)}
+          onLogin={(userData) => {
+            handleLoginComplete(userData);
+            setAddAccountMode(false);
+            setView('settings');
+          }}
+          toast={toast}
+        />
         <ToastContainer toasts={toast.toasts} onClose={toast.removeToast} />
       </>
     );
@@ -1935,7 +2810,7 @@ export default function App() {
     if (!routine.id.startsWith('routine-')) {
       apiPut(`/api/routines/${routine.id}`, { sameTemplateAllWeeks: newVal }).catch((e) => {
         console.error('[Routine] Error guardando Mes/Sem:', e);
-        toast?.({ type: 'error', message: 'No se pudo guardar la preferencia Mes/Sem' });
+        toast.error('No se pudo guardar la preferencia Mes/Sem');
       });
     }
   };
@@ -1955,24 +2830,38 @@ export default function App() {
         setRoutines((prev) =>
           prev.map((r) => (r.id === routineId ? { ...r, hiddenFromSocial: routine.hiddenFromSocial } : r))
         );
-        toast?.({ type: 'error', message: 'No se pudo guardar la visibilidad' });
+        toast.error('No se pudo guardar la visibilidad');
       }
     }
   };
 
   const handleUpdateDayType = (weekId: string, dayId: string, type: DayType) => {
+    const routine = routines.find(r => r.id === activeRoutineId);
+    const res0 = routine ? resolveWeekDayIndex(routine, weekId, dayId) : null;
+    const dbDayId = res0 ? routine!.weeks[res0.weekIdx]?.days[res0.dayIdx]?._dbId : undefined;
+
     updateActiveRoutine((r) => {
-      const base = r.versions?.length ? r.versions[r.versions.length - 1].weeks : r.weeks;
-      const weekIdx = base.findIndex((w: TrainingWeek) => w.id === weekId);
-      if (weekIdx < 0) return r;
-      const dayIdx = base[weekIdx]?.days.findIndex((d: { id: string }) => d.id === dayId) ?? -1;
-      if (dayIdx < 0) return r;
-      return applyRoutineChangeWithVersioning(r, weekIdx, dayIdx, (day) => ({ ...day, type }), { propagate: false });
+      const resolved = resolveWeekDayIndex(r, weekId, dayId);
+      if (!resolved) return r;
+      const { weekIdx, dayIdx } = resolved;
+      return applyRoutineChangeWithVersioning(r, weekIdx, dayIdx, (day) => ({ ...day, type }));
     });
+
+    if (dbDayId && routine?.id && !routine.id.startsWith('routine-')) {
+      apiPatch(`/api/routines/${routine.id}/days/${dbDayId}`, { dayType: type })
+        .catch((e: any) => console.error('[Routine] Error updating day type:', e));
+    } else if (routine?.id && !routine.id.startsWith('routine-')) {
+      schedulePlanBulkSync();
+    }
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 font-sans selection:bg-indigo-100 selection:text-indigo-900 overflow-hidden px-2 max-[400px]:px-2 sm:px-4 md:px-6 py-2 sm:py-4">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 font-sans selection:bg-indigo-100 selection:text-indigo-900 overflow-hidden px-2 max-[400px]:px-2 sm:px-4 md:px-6 py-2 sm:py-4 relative">
+      {isSwitchingAccount && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/50 backdrop-blur-sm">
+          <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+        </div>
+      )}
       <motion.div 
         drag="x"
         dragConstraints={{ left: 0, right: 0 }}
@@ -2026,9 +2915,7 @@ export default function App() {
                 sameTemplateAllWeeks={activeRoutine?.sameTemplateAllWeeks !== false}
                 onToggleSameTemplateAllWeeks={handleToggleSameTemplateAllWeeks}
                 trainingMaxes={tms}
-                history={history}
-                referenceCalendarWeek={viewAsOfWeek ?? currentWeekOfYear}
-                calendarYear={new Date().getFullYear()}
+                tmHistory={sortedHistory}
                 tmAutoHighlightIds={
                   (viewAsOfWeek ?? currentWeekOfYear) === currentWeekOfYear ? tmAutoHighlightIds : []
                 }
@@ -2041,11 +2928,23 @@ export default function App() {
                 isHistoryMode={isHistoryMode}
                 versionWeeks={activeRoutine?.versions?.map(v => v.effectiveFromWeek) ?? []}
                 onUpdateTM={handleUpdateTM}
-                onAddTM={handleAddTM}
+                onCreateTM={handleCreateTM}
+                planViewAnchorRef={planViewAnchorRef}
                 onRemoveTM={handleRemoveTM}
                 onAddExercise={isHistoryMode ? () => {} : handleAddExercise}
                 onRemoveExercise={isHistoryMode ? () => {} : handleRemoveExercise}
                 onUpdateExercise={isHistoryMode ? () => {} : handleUpdateExercise}
+                onRoutinePlanFlush={
+                  isHistoryMode
+                    ? undefined
+                    : async () => {
+                        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+                        const r = routineForSyncRef.current;
+                        if (!r || r.id !== activeRoutineId) return;
+                        rescanTmBumpsFromLogs(r);
+                        await syncDirtyLogsForRoutine(r);
+                      }
+                }
                 onUpdateDayType={isHistoryMode ? () => {} : handleUpdateDayType}
                 onLogChange={isHistoryMode ? () => {} : handleLogChange}
                 onSetLogChange={isHistoryMode ? () => {} : handleSetLogChange}
@@ -2083,6 +2982,10 @@ export default function App() {
               user={user}
               onUpdateUser={handleUpdateUser}
               onLogout={handleLogout}
+              savedAccountSummaries={toSummaries(savedAccountsState)}
+              onSwitchAccount={(id) => void switchToAccount(id)}
+              onAddAccount={() => setAddAccountMode(true)}
+              onRemoveSavedAccount={handleRemoveSavedAccount}
             />
           )}
         </AnimatePresence>
