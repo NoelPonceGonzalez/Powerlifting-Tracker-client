@@ -14,6 +14,7 @@ import { SettingsView } from '@/src/views/Settings';
 // Components
 import { ToastContainer } from '@/src/components/ui/Toast';
 import { useToast } from '@/src/hooks/useToast';
+import { useRealtimeUpdates } from '@/src/hooks/useRealtimeUpdates';
 
 // Types
 import { 
@@ -543,6 +544,15 @@ export default function App() {
   /** Refetch TM, TM internos e historial (progreso / gráficas) sin cerrar sesión. */
   const [routineDataRefreshTick, setRoutineDataRefreshTick] = useState(0);
   const bumpRoutineDataRefresh = useCallback(() => setRoutineDataRefreshTick(t => t + 1), []);
+
+  // SSE real-time: server pushes events → bump the corresponding refresh tick
+  useRealtimeUpdates(user?.id ?? null, {
+    onSocialUpdate: bumpSocialRefresh,
+    onCheckinUpdate: bumpSocialRefresh,
+    onChallengeUpdate: bumpSocialRefresh,
+    onRoutineUpdate: bumpRoutineDataRefresh,
+  });
+
   const goToSocial = useCallback(
     (tab?: 'friends' | 'challenges' | 'checkins', opts?: { openCheckInModal?: boolean }) => {
       setSocialTab(tab ?? 'friends');
@@ -1215,10 +1225,12 @@ export default function App() {
   }, [view, user?.id, bumpSocialRefresh, bumpRoutineDataRefresh]);
 
   // Sin polling periódico: solo al volver a primer plano (sincronía con el servidor sin intervalos 12/30 s).
+  // Al volver a la app: siempre pantalla Progreso (dashboard).
   useEffect(() => {
     if (!user) return;
     const onVis = () => {
       if (document.visibilityState === 'visible') {
+        setView('dashboard');
         bumpSocialRefresh();
         bumpRoutineDataRefresh();
       }
