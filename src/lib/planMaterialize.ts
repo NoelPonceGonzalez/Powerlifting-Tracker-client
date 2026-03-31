@@ -1,6 +1,6 @@
 /**
- * Materializa 52 semanas desde la plantilla de 4 (mesociclo).
- * La API puede devolver solo 4 semanas; el cliente expande en memoria para no recibir JSON gigante.
+ * Materializa 52 semanas desde una plantilla de N semanas (ciclo).
+ * La API puede devolver solo N semanas; el cliente expande en memoria para no recibir JSON gigante.
  */
 import type { DayType, LogEntry, TrainingWeek, RoutineVersion } from '@/src/types';
 import { getWeekTypeSlot } from '@/src/lib/mesocycleWeek';
@@ -22,11 +22,11 @@ export function normalizeTemplateWeek(week: TrainingWeek, weekType: number): Tra
   };
 }
 
-export function deriveBaseTemplateFromWeeks(weeks: TrainingWeek[]): TrainingWeek[] {
+export function deriveBaseTemplateFromWeeks(weeks: TrainingWeek[], cycleLength = 4): TrainingWeek[] {
+  const cl = Math.max(1, cycleLength);
   const byType = new Map<number, TrainingWeek>();
   weeks.forEach((week) => {
-    const slot = getWeekTypeSlot(week.number);
-    /** Última semana del año por tipo (1–4): si editas semana 13, la semana 1 del mismo tipo seguía vieja y “primera” ganaba → plantilla incorrecta al guardar. */
+    const slot = getWeekTypeSlot(week.number, cl);
     byType.set(slot, week);
   });
   const fallback =
@@ -36,37 +36,49 @@ export function deriveBaseTemplateFromWeeks(weeks: TrainingWeek[]): TrainingWeek
       number: 1,
       days: [],
     } as TrainingWeek);
-  return [1, 2, 3, 4].map((slot) => normalizeTemplateWeek(byType.get(slot) || fallback, slot));
+  return Array.from({ length: cl }, (_, i) => i + 1).map((slot) =>
+    normalizeTemplateWeek(byType.get(slot) || fallback, slot)
+  );
 }
 
 const DAY_NAMES_ES = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'] as const;
 
-/** Plantilla 1–4 sin ejercicios (rutinas nuevas / respuesta API incompleta). */
-export const EMPTY_FOUR_WEEK_TEMPLATE: TrainingWeek[] = [1, 2, 3, 4].map((n) => ({
-  id: `template-w${n}`,
-  number: n,
-  days: DAY_NAMES_ES.map((name, dIdx) => ({
-    id: `template-w${n}-d${dIdx}`,
-    name,
-    type: (dIdx === 0 || dIdx === 2 || dIdx === 4 ? 'workout' : 'rest') as DayType,
-    exercises: [],
-  })),
-}));
+/** Plantilla de N semanas sin ejercicios (rutinas nuevas / respuesta API incompleta). */
+export function createEmptyTemplate(cycleLength = 4): TrainingWeek[] {
+  const cl = Math.max(1, cycleLength);
+  return Array.from({ length: cl }, (_, i) => {
+    const n = i + 1;
+    return {
+      id: `template-w${n}`,
+      number: n,
+      days: DAY_NAMES_ES.map((name, dIdx) => ({
+        id: `template-w${n}-d${dIdx}`,
+        name,
+        type: (dIdx === 0 || dIdx === 2 || dIdx === 4 ? 'workout' : 'rest') as DayType,
+        exercises: [],
+      })),
+    };
+  });
+}
+
+/** Compat: backward-compatible 4-week empty template */
+export const EMPTY_FOUR_WEEK_TEMPLATE: TrainingWeek[] = createEmptyTemplate(4);
 
 /** Compat: antes incluía un ejercicio de ejemplo; ahora equivale a plantilla vacía. */
 export const FALLBACK_FOUR_WEEK_TEMPLATE = EMPTY_FOUR_WEEK_TEMPLATE;
 
-export function materialize52WeeksFromFourTemplateWeeks(templateWeeks: TrainingWeek[]): TrainingWeek[] {
+export function materialize52WeeksFromTemplateWeeks(templateWeeks: TrainingWeek[], cycleLength = 4): TrainingWeek[] {
+  const cl = Math.max(1, cycleLength);
   const slots: Record<number, TrainingWeek> = {};
   for (const tw of templateWeeks) {
     const slot =
-      tw.number >= 1 && tw.number <= 4 ? tw.number : getWeekTypeSlot(tw.number);
+      tw.number >= 1 && tw.number <= cl ? tw.number : getWeekTypeSlot(tw.number, cl);
     slots[slot] = tw;
   }
   const fallback = slots[1] || { id: 'template-empty', number: 1, days: [] };
   return Array.from({ length: 52 }, (_, i) => {
     const weekNumber = i + 1;
-    const type = getWeekTypeSlot(weekNumber);
+    const type = getWeekTypeSlot(weekNumber, cl);
     const template = slots[type] || fallback;
     return {
       ...template,
@@ -84,21 +96,26 @@ export function materialize52WeeksFromFourTemplateWeeks(templateWeeks: TrainingW
   });
 }
 
-/** Solo plantilla 1–4 semanas (mesociclo). Nunca 52 aquí — evita duplicar megabytes en memoria. */
-export function versionWeeksToTemplateOnly(weeks: TrainingWeek[] | undefined): TrainingWeek[] {
+/** Backward-compatible alias */
+export const materialize52WeeksFromFourTemplateWeeks = materialize52WeeksFromTemplateWeeks;
+
+/** Solo plantilla 1–N semanas (mesociclo). Nunca 52 aquí. */
+export function versionWeeksToTemplateOnly(weeks: TrainingWeek[] | undefined, cycleLength = 4): TrainingWeek[] {
   if (!weeks?.length) return [];
-  if (weeks.length <= 4) return weeks;
-  if (weeks.length >= 52) return deriveBaseTemplateFromWeeks(weeks);
-  return deriveBaseTemplateFromWeeks(weeks);
+  const cl = Math.max(1, cycleLength);
+  if (weeks.length <= cl) return weeks;
+  return deriveBaseTemplateFromWeeks(weeks, cl);
 }
 
-/** Convierte respuesta API (plan ligero) al RoutinePlan en memoria: una sola materialización w1…w52 en `weeks`. */
+/** Convierte respuesta API (plan ligero) al RoutinePlan en memoria. */
 export function expandRoutineFromApi(raw: {
   _id?: unknown;
   id?: string;
   name?: string;
   sameTemplateAllWeeks?: boolean;
   hiddenFromSocial?: boolean;
+  cycleLength?: number;
+  skippedWeeks?: number[];
   weeks?: TrainingWeek[];
   versions?: RoutineVersion[];
   baseTemplate?: TrainingWeek[];
@@ -109,29 +126,32 @@ export function expandRoutineFromApi(raw: {
   name: string;
   sameTemplateAllWeeks: boolean;
   hiddenFromSocial: boolean;
+  cycleLength: number;
+  skippedWeeks: number[];
   weeks: TrainingWeek[];
   versions: RoutineVersion[];
   baseTemplate: TrainingWeek[];
   weekTypeOverrides: Array<{ weekType: number; week: TrainingWeek }>;
   logs: Record<string, LogEntry>;
 } {
+  const cycleLength = Number.isFinite(raw.cycleLength) && raw.cycleLength! >= 1 ? raw.cycleLength! : 4;
   const logs = parseRoutineLogsFromMongo(raw.logs);
   const baseTemplateRaw = raw.baseTemplate?.length ? raw.baseTemplate : [];
 
   let versions: RoutineVersion[] = (raw.versions || []).map((v) => ({
     ...v,
-    weeks: versionWeeksToTemplateOnly(v.weeks),
+    weeks: versionWeeksToTemplateOnly(v.weeks, cycleLength),
   }));
 
   if (versions.length === 0) {
     if (raw.weeks?.length) {
       if (raw.weeks.length >= 52) {
-        versions = [{ effectiveFromWeek: 1, weeks: deriveBaseTemplateFromWeeks(raw.weeks) }];
+        versions = [{ effectiveFromWeek: 1, weeks: deriveBaseTemplateFromWeeks(raw.weeks, cycleLength) }];
       } else {
-        versions = [{ effectiveFromWeek: 1, weeks: versionWeeksToTemplateOnly(raw.weeks) }];
+        versions = [{ effectiveFromWeek: 1, weeks: versionWeeksToTemplateOnly(raw.weeks, cycleLength) }];
       }
     } else if (baseTemplateRaw.length) {
-      versions = [{ effectiveFromWeek: 1, weeks: versionWeeksToTemplateOnly(baseTemplateRaw) }];
+      versions = [{ effectiveFromWeek: 1, weeks: versionWeeksToTemplateOnly(baseTemplateRaw, cycleLength) }];
     }
   }
 
@@ -139,40 +159,41 @@ export function expandRoutineFromApi(raw: {
     versions.length > 0 ? versions[versions.length - 1].weeks : [];
   const derivedBase =
     baseTemplateRaw.length > 0
-      ? versionWeeksToTemplateOnly(baseTemplateRaw)
+      ? versionWeeksToTemplateOnly(baseTemplateRaw, cycleLength)
       : latestTemplate.length > 0
         ? latestTemplate
         : [];
 
   let weeks52: TrainingWeek[] = [];
   if (derivedBase.length > 0) {
-    weeks52 = materialize52WeeksFromFourTemplateWeeks(derivedBase);
+    weeks52 = materialize52WeeksFromTemplateWeeks(derivedBase, cycleLength);
   } else if (raw.weeks && raw.weeks.length >= 52) {
     weeks52 = raw.weeks;
   }
 
   if (versions.length === 0 && weeks52.length > 0) {
-    versions = [{ effectiveFromWeek: 1, weeks: deriveBaseTemplateFromWeeks(weeks52) }];
+    versions = [{ effectiveFromWeek: 1, weeks: deriveBaseTemplateFromWeeks(weeks52, cycleLength) }];
   }
 
   let baseTemplateOut =
-    derivedBase.length > 0 ? derivedBase : weeks52.length > 0 ? deriveBaseTemplateFromWeeks(weeks52) : [];
+    derivedBase.length > 0 ? derivedBase : weeks52.length > 0 ? deriveBaseTemplateFromWeeks(weeks52, cycleLength) : [];
 
   let outWeeks = weeks52;
   let outVersions = versions;
 
+  const emptyTpl = createEmptyTemplate(cycleLength);
+
   if (outWeeks.length === 0) {
-    const fb = EMPTY_FOUR_WEEK_TEMPLATE;
-    outWeeks = materialize52WeeksFromFourTemplateWeeks(fb);
-    outVersions = [{ effectiveFromWeek: 1, weeks: fb }];
-    baseTemplateOut = fb;
+    outWeeks = materialize52WeeksFromTemplateWeeks(emptyTpl, cycleLength);
+    outVersions = [{ effectiveFromWeek: 1, weeks: emptyTpl }];
+    baseTemplateOut = emptyTpl;
   } else if (outVersions.length > 0 && outVersions.every((v) => !v.weeks?.length)) {
-    const fb = baseTemplateOut.length > 0 ? baseTemplateOut : deriveBaseTemplateFromWeeks(outWeeks);
-    outVersions = [{ effectiveFromWeek: outVersions[0]?.effectiveFromWeek ?? 1, weeks: fb.length ? fb : EMPTY_FOUR_WEEK_TEMPLATE }];
+    const fb = baseTemplateOut.length > 0 ? baseTemplateOut : deriveBaseTemplateFromWeeks(outWeeks, cycleLength);
+    outVersions = [{ effectiveFromWeek: outVersions[0]?.effectiveFromWeek ?? 1, weeks: fb.length ? fb : emptyTpl }];
   }
 
   if (!outVersions.length && outWeeks.length > 0) {
-    outVersions = [{ effectiveFromWeek: 1, weeks: deriveBaseTemplateFromWeeks(outWeeks) }];
+    outVersions = [{ effectiveFromWeek: 1, weeks: deriveBaseTemplateFromWeeks(outWeeks, cycleLength) }];
   }
 
   return {
@@ -180,9 +201,11 @@ export function expandRoutineFromApi(raw: {
     name: raw.name || 'Rutina',
     sameTemplateAllWeeks: raw.sameTemplateAllWeeks !== false,
     hiddenFromSocial: !!raw.hiddenFromSocial,
+    cycleLength,
+    skippedWeeks: Array.isArray(raw.skippedWeeks) ? raw.skippedWeeks : [],
     weeks: outWeeks,
     versions: outVersions,
-    baseTemplate: baseTemplateOut.length > 0 ? baseTemplateOut : deriveBaseTemplateFromWeeks(outWeeks),
+    baseTemplate: baseTemplateOut.length > 0 ? baseTemplateOut : deriveBaseTemplateFromWeeks(outWeeks, cycleLength),
     weekTypeOverrides: raw.weekTypeOverrides || [],
     logs,
   };

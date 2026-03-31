@@ -23,6 +23,18 @@ import {
   progressValueFromHistoryEntry,
 } from '@/src/lib/routineProgressTotal';
 
+/** Torneo a destacar en el dashboard: más participantes; empate → más reciente. */
+function pickFeaturedChallenge(list: Challenge[]): Challenge | undefined {
+  if (list.length === 0) return undefined;
+  return [...list].sort((a, b) => {
+    const byCount = b.participants.length - a.participants.length;
+    if (byCount !== 0) return byCount;
+    const ta = a.createdAt ? Date.parse(a.createdAt) : 0;
+    const tb = b.createdAt ? Date.parse(b.createdAt) : 0;
+    return tb - ta;
+  })[0];
+}
+
 interface DashboardProps {
   user: User;
   /** Historial de `save-period` solo de la rutina activa (progresión por rutina, no global). */
@@ -38,7 +50,7 @@ interface DashboardProps {
   checkIns: GymCheckIn[];
   onUpdateUser?: (updates: Partial<User>) => void;
   onOpenProgram: () => void;
-  onOpenSocial: (tab?: 'friends' | 'challenges' | 'checkins') => void;
+  onOpenSocial: (tab?: 'friends' | 'challenges' | 'checkins', options?: { openCheckInModal?: boolean }) => void;
   onJoinFriendCheckIn: (checkIn: GymCheckIn) => void;
 }
 
@@ -262,6 +274,16 @@ export const DashboardView: React.FC<DashboardProps> = ({
       return true;
     });
   }, [challenges, user.id, now]);
+
+  const featuredFriendTournament = useMemo(
+    () => pickFeaturedChallenge(friendTournamentsToJoin),
+    [friendTournamentsToJoin]
+  );
+
+  const featuredJoinedChallenge = useMemo(
+    () => pickFeaturedChallenge(joinedChallenges),
+    [joinedChallenges]
+  );
 
   const todayCheckInGroups = useMemo(() => {
     const todayCheckIns = checkIns.filter(ci => {
@@ -688,49 +710,42 @@ export const DashboardView: React.FC<DashboardProps> = ({
             </Button>
           </div>
 
-          {friendTournamentsToJoin.length > 0 && (
+          {featuredFriendTournament && (
             <Card padding="md" rounded="2xl" className="mb-4 border-amber-200/80 dark:border-amber-700/50 bg-amber-50/40 dark:bg-amber-950/20">
               <p className="text-[10px] font-black uppercase tracking-widest text-amber-800 dark:text-amber-300 mb-2">
                 Tus amigos — únete
               </p>
               <p className="text-xs text-slate-600 dark:text-slate-400 mb-3">
-                Torneos en curso creados por amigos; ábrelos en Comunidad para registrar tu marca.
+                Destacamos el torneo con más participantes (si empatan, el más reciente). El resto en Comunidad.
               </p>
-              <div className="space-y-2">
-                {friendTournamentsToJoin.slice(0, 4).map(c => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    onClick={() => onOpenSocial('challenges')}
-                    className="w-full text-left flex items-center justify-between gap-2 py-2 px-3 rounded-xl bg-white/80 dark:bg-slate-900/80 border border-amber-100 dark:border-amber-900/40 hover:border-indigo-300 dark:hover:border-indigo-600 transition-colors"
-                  >
-                    <div className="min-w-0">
-                      <p className="font-bold text-slate-900 dark:text-slate-100 truncate text-sm">{c.title}</p>
-                      <p className="text-[10px] text-slate-500 dark:text-slate-400">
-                        Por {c.createdBy?.name ?? 'Amigo'} · {c.exercise}
-                      </p>
-                    </div>
-                    <span className="text-[10px] font-black uppercase text-indigo-600 dark:text-indigo-400 flex-shrink-0">Unirse</span>
-                  </button>
-                ))}
-              </div>
-              {friendTournamentsToJoin.length > 4 && (
-                <Button variant="outline" size="sm" className="w-full mt-2 rounded-xl text-xs" onClick={() => onOpenSocial('challenges')}>
-                  Ver {friendTournamentsToJoin.length - 4} más en Comunidad
-                </Button>
-              )}
+              <button
+                type="button"
+                onClick={() => onOpenSocial('challenges')}
+                className="w-full text-left flex items-center justify-between gap-2 py-2 px-3 rounded-xl bg-white/80 dark:bg-slate-900/80 border border-amber-100 dark:border-amber-900/40 hover:border-indigo-300 dark:hover:border-indigo-600 transition-colors"
+              >
+                <div className="min-w-0">
+                  <p className="font-bold text-slate-900 dark:text-slate-100 truncate text-sm">{featuredFriendTournament.title}</p>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                    Por {featuredFriendTournament.createdBy?.name ?? 'Amigo'} · {featuredFriendTournament.exercise}
+                  </p>
+                  <p className="text-[10px] text-amber-700/90 dark:text-amber-400/90 mt-0.5">
+                    {featuredFriendTournament.participants.length} {featuredFriendTournament.participants.length === 1 ? 'persona unida' : 'personas unidas'}
+                  </p>
+                </div>
+                <span className="text-[10px] font-black uppercase text-indigo-600 dark:text-indigo-400 flex-shrink-0">Unirse</span>
+              </button>
             </Card>
           )}
           
           <div className="space-y-4">
-            {joinedChallenges.length === 0 ? (
-              <Card padding="md" className="text-center border-dashed border-2 border-slate-200 dark:border-slate-600 bg-transparent">
-                <p className="text-slate-400 dark:text-slate-500 text-sm font-medium">No te has unido a ningún torneo aún</p>
-                <Button variant="outline" size="sm" className="mt-2 rounded-xl" onClick={() => onOpenSocial('challenges')}>Explorar</Button>
-              </Card>
-            ) : (
-              joinedChallenges.map(challenge => {
-                const sorted = [...challenge.participants].sort((a, b) => b.score - a.score);
+            {featuredJoinedChallenge ? (
+              (() => {
+                const challenge = featuredJoinedChallenge;
+                const usePts = challenge.usePointsSystem !== false;
+                const sorted = [...challenge.participants].sort((a, b) => {
+                  if (!usePts) return b.value - a.value;
+                  return b.score - a.score;
+                });
                 const myRank = sorted.findIndex(p => p.userId === user.id) + 1;
                 return (
                   <Card key={challenge.id} padding="md" rounded="2xl" className="hover:border-indigo-200 dark:hover:border-indigo-700/50 transition-colors cursor-pointer" onClick={() => onOpenSocial('challenges')}>
@@ -744,6 +759,9 @@ export const DashboardView: React.FC<DashboardProps> = ({
                         <div className="min-w-0">
                           <h3 className="font-bold text-slate-900 dark:text-slate-100 truncate">{challenge.title}</h3>
                           <p className="text-[10px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-400">{challenge.exercise}</p>
+                          {joinedChallenges.length > 1 && (
+                            <p className="text-[10px] text-slate-400 mt-0.5">Tu torneo con más movimiento · Ver más en Comunidad</p>
+                          )}
                         </div>
                       </div>
                       <div className="text-right flex-shrink-0">
@@ -756,8 +774,13 @@ export const DashboardView: React.FC<DashboardProps> = ({
                     </div>
                   </Card>
                 );
-              })
-            )}
+              })()
+            ) : !featuredFriendTournament ? (
+              <Card padding="md" className="text-center border-dashed border-2 border-slate-200 dark:border-slate-600 bg-transparent">
+                <p className="text-slate-400 dark:text-slate-500 text-sm font-medium">No te has unido a ningún torneo aún</p>
+                <Button variant="outline" size="sm" className="mt-2 rounded-xl" onClick={() => onOpenSocial('challenges')}>Explorar</Button>
+              </Card>
+            ) : null}
           </div>
         </section>
 
@@ -777,7 +800,14 @@ export const DashboardView: React.FC<DashboardProps> = ({
             {todayCheckInGroups.length === 0 ? (
               <Card padding="md" className="text-center border-dashed border-2 border-slate-200 bg-transparent">
                 <p className="text-slate-400 text-sm font-medium">Nadie ha avisado hoy todavía</p>
-                <Button variant="outline" size="sm" className="mt-2 rounded-xl" onClick={() => onOpenSocial('checkins')}>Avisar yo</Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-2 rounded-xl"
+                  onClick={() => onOpenSocial('checkins', { openCheckInModal: true })}
+                >
+                  Avisar yo
+                </Button>
               </Card>
             ) : (
               todayCheckInGroups.map(group => {

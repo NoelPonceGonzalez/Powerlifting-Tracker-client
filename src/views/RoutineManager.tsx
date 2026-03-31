@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowLeft, Calendar, CalendarDays, Eye, EyeOff, Pencil, Plus, Trash2 } from 'lucide-react';
+import { ArrowLeft, Calendar, CalendarDays, Settings2, Eye, EyeOff, Pencil, Plus, Trash2 } from 'lucide-react';
 import { Card } from '@/src/components/ui/Card';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { cn } from '@/src/lib/utils';
+
+type CycleMode = 'month' | 'week' | 'custom';
 
 interface RoutineSummary {
   id: string;
@@ -18,7 +20,7 @@ interface RoutineManagerViewProps {
   routines: RoutineSummary[];
   onBack: () => void;
   onActivateRoutine: (routineId: string) => void;
-  onCreateRoutine: (name: string, options?: { sameTemplateAllWeeks: boolean }) => void;
+  onCreateRoutine: (name: string, options?: { sameTemplateAllWeeks: boolean; cycleLength?: number }) => void;
   onRenameRoutine: (routineId: string, name: string) => void;
   onDeleteRoutine: (routineId: string) => void;
   onToggleHiddenRoutine?: (routineId: string) => void;
@@ -35,24 +37,28 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
 }) => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newRoutineName, setNewRoutineName] = useState('');
-  /** true = mes (por defecto), false = semana (ciclo 4 semanas). */
-  const [createPlanSameTemplateAllWeeks, setCreatePlanSameTemplateAllWeeks] = useState(true);
+  const [cycleMode, setCycleMode] = useState<CycleMode>('month');
+  const [customCycleLength, setCustomCycleLength] = useState(4);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
 
   const handleCreate = () => {
     const trimmed = newRoutineName.trim();
     if (!trimmed) return;
-    onCreateRoutine(trimmed, { sameTemplateAllWeeks: createPlanSameTemplateAllWeeks });
+    const sameTemplateAllWeeks = cycleMode === 'month';
+    const cycleLength = cycleMode === 'custom' ? Math.max(1, customCycleLength) : 4;
+    onCreateRoutine(trimmed, { sameTemplateAllWeeks, cycleLength });
     setNewRoutineName('');
-    setCreatePlanSameTemplateAllWeeks(true);
+    setCycleMode('month');
+    setCustomCycleLength(4);
     setShowCreateModal(false);
   };
 
   const closeCreateModal = () => {
     setShowCreateModal(false);
     setNewRoutineName('');
-    setCreatePlanSameTemplateAllWeeks(true);
+    setCycleMode('month');
+    setCustomCycleLength(4);
   };
 
   return (
@@ -78,7 +84,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
         <Button
           variant="primary"
           onClick={() => {
-            setCreatePlanSameTemplateAllWeeks(true);
+            setCycleMode('month');
             setShowCreateModal(true);
           }}
           className="w-full sm:w-auto rounded-xl"
@@ -115,42 +121,76 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                 onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
               />
               <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 mb-2">
-                Cómo ver el plan
+                Modo del ciclo
               </p>
-              <div className="grid grid-cols-2 gap-2 mb-4">
+              <div className="grid grid-cols-3 gap-2 mb-4">
                 <button
                   type="button"
-                  onClick={() => setCreatePlanSameTemplateAllWeeks(true)}
+                  onClick={() => setCycleMode('month')}
                   className={cn(
-                    'flex flex-col items-center gap-1.5 rounded-xl border-2 px-3 py-3 text-left transition-all',
-                    createPlanSameTemplateAllWeeks
+                    'flex flex-col items-center gap-1.5 rounded-xl border-2 px-2 py-3 text-left transition-all',
+                    cycleMode === 'month'
                       ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-900 dark:text-indigo-100'
                       : 'border-slate-200 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400 hover:border-slate-300'
                   )}
                 >
                   <Calendar className="size-5 shrink-0" />
                   <span className="text-xs font-black">Mes</span>
-                  <span className="text-[10px] font-medium leading-tight opacity-90">
-                    Mismo contenido en todas las semanas (recomendado)
+                  <span className="text-[10px] font-medium leading-tight opacity-90 text-center">
+                    Misma plantilla siempre
                   </span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => setCreatePlanSameTemplateAllWeeks(false)}
+                  onClick={() => setCycleMode('week')}
                   className={cn(
-                    'flex flex-col items-center gap-1.5 rounded-xl border-2 px-3 py-3 text-left transition-all',
-                    !createPlanSameTemplateAllWeeks
+                    'flex flex-col items-center gap-1.5 rounded-xl border-2 px-2 py-3 text-left transition-all',
+                    cycleMode === 'week'
                       ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-900 dark:text-indigo-100'
                       : 'border-slate-200 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400 hover:border-slate-300'
                   )}
                 >
                   <CalendarDays className="size-5 shrink-0" />
                   <span className="text-xs font-black">Semana</span>
-                  <span className="text-[10px] font-medium leading-tight opacity-90">
-                    Ciclo de 4 semanas (tipos 1–4)
+                  <span className="text-[10px] font-medium leading-tight opacity-90 text-center">
+                    Ciclo de 4 semanas
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCycleMode('custom')}
+                  className={cn(
+                    'flex flex-col items-center gap-1.5 rounded-xl border-2 px-2 py-3 text-left transition-all',
+                    cycleMode === 'custom'
+                      ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-900 dark:text-indigo-100'
+                      : 'border-slate-200 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400 hover:border-slate-300'
+                  )}
+                >
+                  <Settings2 className="size-5 shrink-0" />
+                  <span className="text-xs font-black">Custom</span>
+                  <span className="text-[10px] font-medium leading-tight opacity-90 text-center">
+                    Tú eliges la duración
                   </span>
                 </button>
               </div>
+              {cycleMode === 'custom' && (
+                <div className="mb-4">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 mb-1 block">
+                    Semanas por ciclo
+                  </label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={52}
+                    value={customCycleLength}
+                    onChange={(e) => setCustomCycleLength(Math.max(1, Math.min(52, parseInt(e.target.value) || 1)))}
+                    className="text-center font-black"
+                  />
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1">
+                    La plantilla se repite cada {customCycleLength} semana{customCycleLength !== 1 ? 's' : ''}
+                  </p>
+                </div>
+              )}
               <div className="flex gap-2">
                 <Button variant="outline" className="flex-1" onClick={closeCreateModal}>
                   Cancelar

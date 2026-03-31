@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useState, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { motion } from 'motion/react';
-import { User as UserIcon, Camera, Image as ImageIcon, Weight, Moon, Sun, LogOut, Users, Plus, Check, X } from 'lucide-react';
+import { User as UserIcon, Camera, Image as ImageIcon, Weight, Moon, Sun, LogOut, Users, Plus, Check, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { Card } from '@/src/components/ui/Card';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { Button } from '@/src/components/ui/Button';
@@ -46,37 +47,62 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     return () => document.removeEventListener('mousedown', onDoc);
   }, [photoMenuOpen]);
 
+  const [cropImage, setCropImage] = useState<string | null>(null);
+  const [cropPos, setCropPos] = useState({ x: 0, y: 0 });
+  const [cropScale, setCropScale] = useState(1);
+  const cropDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
+  const cropImgRef = useRef<HTMLImageElement | null>(null);
+
   const handleAvatarFile = (file?: File) => {
     if (!file) return;
     if (!file.type.startsWith('image/')) return;
-    if (file.size > 3 * 1024 * 1024) return; // max 3MB para fotos de móvil
+    if (file.size > 3 * 1024 * 1024) return;
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = typeof reader.result === 'string' ? reader.result : '';
       if (!dataUrl) return;
-      // Recortar y redimensionar a cuadrado para que se vea bien en el avatar
-      const img = new Image();
-      img.onload = () => {
-        const size = Math.min(img.width, img.height, 400);
-        const canvas = document.createElement('canvas');
-        canvas.width = size;
-        canvas.height = size;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          onUpdateUser({ avatar: dataUrl });
-          return;
-        }
-        const sx = (img.width - size) / 2;
-        const sy = (img.height - size) / 2;
-        ctx.drawImage(img, sx, sy, size, size, 0, 0, size, size);
-        const result = canvas.toDataURL('image/jpeg', 0.85);
-        onUpdateUser({ avatar: result });
-      };
-      img.onerror = () => onUpdateUser({ avatar: dataUrl });
-      img.src = dataUrl;
+      setCropImage(dataUrl);
+      setCropPos({ x: 0, y: 0 });
+      setCropScale(1);
     };
     reader.readAsDataURL(file);
   };
+
+  const handleCropConfirm = useCallback(() => {
+    if (!cropImage) return;
+    const img = cropImgRef.current;
+    if (!img) return;
+    const OUTPUT_SIZE = 400;
+    const canvas = document.createElement('canvas');
+    canvas.width = OUTPUT_SIZE;
+    canvas.height = OUTPUT_SIZE;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) { onUpdateUser({ avatar: cropImage }); setCropImage(null); return; }
+    const containerSize = 280;
+    const scale = cropScale;
+    const drawW = img.naturalWidth * scale;
+    const drawH = img.naturalHeight * scale;
+    const offsetX = (containerSize / 2 + cropPos.x) - drawW / 2;
+    const offsetY = (containerSize / 2 + cropPos.y) - drawH / 2;
+    const ratio = OUTPUT_SIZE / containerSize;
+    ctx.drawImage(img, offsetX * ratio, offsetY * ratio, drawW * ratio, drawH * ratio);
+    const result = canvas.toDataURL('image/jpeg', 0.85);
+    onUpdateUser({ avatar: result });
+    setCropImage(null);
+  }, [cropImage, cropPos, cropScale, onUpdateUser]);
+
+  const handleCropPointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    cropDragRef.current = { startX: e.clientX, startY: e.clientY, origX: cropPos.x, origY: cropPos.y };
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  };
+  const handleCropPointerMove = (e: React.PointerEvent) => {
+    if (!cropDragRef.current) return;
+    const dx = e.clientX - cropDragRef.current.startX;
+    const dy = e.clientY - cropDragRef.current.startY;
+    setCropPos({ x: cropDragRef.current.origX + dx, y: cropDragRef.current.origY + dy });
+  };
+  const handleCropPointerUp = () => { cropDragRef.current = null; };
 
   return (
     <motion.div 
@@ -151,7 +177,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                                 variant="outline"
                                 size="sm"
                                 className="rounded-lg text-xs font-black uppercase"
-                                onClick={() => onSwitchAccount(acc.id)}
+                                onClick={(e) => { e.stopPropagation(); onSwitchAccount(acc.id); }}
+                                onTouchEnd={(e) => { e.stopPropagation(); e.preventDefault(); onSwitchAccount(acc.id); }}
                               >
                                 Usar
                               </Button>
@@ -375,6 +402,65 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </Button>
         </section>
       </div>
+
+      {cropImage && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 flex items-center justify-center p-4" style={{ zIndex: 100000 }}>
+          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setCropImage(null)} />
+          <div className="relative bg-white dark:bg-slate-900 w-full max-w-sm rounded-2xl p-5 shadow-2xl dark:border dark:border-slate-700">
+            <h3 className="text-lg font-black text-slate-900 dark:text-slate-100 mb-4 text-center">Ajustar foto</h3>
+            <div
+              className="relative mx-auto overflow-hidden rounded-full border-4 border-indigo-500 touch-none"
+              style={{ width: 280, height: 280 }}
+              onPointerDown={handleCropPointerDown}
+              onPointerMove={handleCropPointerMove}
+              onPointerUp={handleCropPointerUp}
+            >
+              <img
+                ref={cropImgRef}
+                src={cropImage}
+                alt="Crop preview"
+                draggable={false}
+                className="absolute select-none"
+                style={{
+                  left: '50%',
+                  top: '50%',
+                  transform: `translate(calc(-50% + ${cropPos.x}px), calc(-50% + ${cropPos.y}px)) scale(${cropScale})`,
+                  maxWidth: 'none',
+                  maxHeight: 'none',
+                  width: 'auto',
+                  height: 280,
+                }}
+              />
+            </div>
+            <div className="flex items-center justify-center gap-3 mt-4">
+              <button onClick={() => setCropScale(s => Math.max(0.3, s - 0.1))} className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
+                <ZoomOut size={18} className="text-slate-600 dark:text-slate-300" />
+              </button>
+              <input
+                type="range"
+                min="0.3"
+                max="3"
+                step="0.05"
+                value={cropScale}
+                onChange={(e) => setCropScale(parseFloat(e.target.value))}
+                className="flex-1 accent-indigo-600"
+              />
+              <button onClick={() => setCropScale(s => Math.min(3, s + 0.1))} className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
+                <ZoomIn size={18} className="text-slate-600 dark:text-slate-300" />
+              </button>
+            </div>
+            <div className="flex gap-2 mt-4">
+              <Button variant="outline" className="flex-1 rounded-xl" onClick={() => setCropImage(null)}>
+                Cancelar
+              </Button>
+              <Button variant="primary" className="flex-1 rounded-xl" onClick={handleCropConfirm}>
+                Guardar
+              </Button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </motion.div>
   );
 };

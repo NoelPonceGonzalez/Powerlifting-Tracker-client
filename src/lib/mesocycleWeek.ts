@@ -1,13 +1,13 @@
 /**
- * Semana 1–4 dentro del bloque de mesociclo (ciclo de 4 semanas).
- * Usa la semana del año (1–52 del modelo de la app), no el calendario mensual
- * (evita meses con 5 “semanas” que rompían el 1–4).
+ * Semana 1–N dentro del bloque de mesociclo (ciclo de N semanas).
+ * Por defecto N=4 (compatibilidad con planes existentes).
  */
-export function getMesocycleWeekIndex(weekNumber: number): number {
-  return ((Math.max(1, weekNumber) - 1) % 4) + 1;
+export function getMesocycleWeekIndex(weekNumber: number, cycleLength = 4): number {
+  const cl = Math.max(1, cycleLength);
+  return ((Math.max(1, weekNumber) - 1) % cl) + 1;
 }
 
-/** Alias al editar plantillas por “tipo” de semana (1–4). */
+/** Alias al editar plantillas por "tipo" de semana (1–N). */
 export const getWeekTypeSlot = getMesocycleWeekIndex;
 
 /** Semana civil 1–52 aproximada (mismo criterio que TrainingPlan: días desde 1 ene). */
@@ -19,8 +19,6 @@ export function weekOfYearFromDate(d: Date, year: number): number {
 
 /**
  * Primera semana del plan (1–52) cuyo día inicial cae en ese mes civil.
- * Evita el bug de usar `weekOfYearFromDate(1 del mes)`: esa semana puede empezar aún en el mes anterior
- * (ej. feb → semana 5 empieza 29 ene → la UI mostraba "enero").
  */
 export function firstWeekOfYearStartingInMonth(year: number, monthIndex0: number): number {
   const jan1 = new Date(year, 0, 1);
@@ -35,7 +33,7 @@ export function firstWeekOfYearStartingInMonth(year: number, monthIndex0: number
 }
 
 /**
- * Primer día civil de la ventana de 7 días de la "semana N" del plan (misma regla que `weekOfYearFromDate`).
+ * Primer día civil de la ventana de 7 días de la "semana N" del plan.
  */
 export function weekStartDateForWeekOfYear(weekOfYear: number, year: number): Date {
   const jan1 = new Date(year, 0, 1);
@@ -45,13 +43,11 @@ export function weekStartDateForWeekOfYear(weekOfYear: number, year: number): Da
 }
 
 /**
- * Posición 1–4 dentro del mes natural (reinicia cada mes).
- * Se usa el **inicio** de la ventana de la semana (no el miércoles), para que semanas que cruzan
- * fin de mes no se etiqueten como mes siguiente por error.
- * Bloques: días 1–7 → 1, 8–14 → 2, 15–21 → 3, 22–fin → 4.
+ * Posición 1–N dentro del mes natural (reinicia cada mes).
+ * Bloques: días 1–7 → 1, 8–14 → 2, 15–21 → 3, 22–fin → 4, etc.
  */
-export function getWeekSlotInNaturalMonth(weekOfYear: number, year: number): number {
+export function getWeekSlotInNaturalMonth(weekOfYear: number, year: number, cycleLength = 4): number {
   const weekStart = weekStartDateForWeekOfYear(weekOfYear, year);
   const dayOfMonth = weekStart.getDate();
-  return Math.min(4, Math.floor((dayOfMonth - 1) / 7) + 1);
+  return Math.min(cycleLength, Math.floor((dayOfMonth - 1) / 7) + 1);
 }

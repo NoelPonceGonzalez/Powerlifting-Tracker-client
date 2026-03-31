@@ -14,14 +14,18 @@ export function usePushNotifications(userId: string | null) {
     const key = `${uid}::${token.trim()}`;
     if (key === lastSentKeyRef.current) return;
     try {
+      console.log('[PUSH-REG] Registrando token para usuario', uid, '→', token.substring(0, 30) + '…');
       await apiPut('/api/notifications/push-token', { token: token.trim() });
       lastSentKeyRef.current = key;
-    } catch {
+      console.log('[PUSH-REG] Token registrado con éxito');
+    } catch (err) {
+      console.error('[PUSH-REG] Error registrando token:', err);
       lastSentKeyRef.current = null;
     }
   }, []);
 
-  const tryRegister = useCallback(() => {
+  const tryRegister = useCallback((forceResend = false) => {
+    if (forceResend) lastSentKeyRef.current = null;
     const t = (typeof window !== 'undefined' && (window as unknown as { __EXPO_PUSH_TOKEN__?: string }).__EXPO_PUSH_TOKEN__) as
       | string
       | undefined;
@@ -37,7 +41,7 @@ export function usePushNotifications(userId: string | null) {
     if (!userId) return;
 
     tryRegister();
-    const onTokenReady = () => tryRegister();
+    const onTokenReady = () => tryRegister(true);
     if (typeof window !== 'undefined') {
       window.addEventListener('expoPushTokenReady', onTokenReady);
       return () => window.removeEventListener('expoPushTokenReady', onTokenReady);
@@ -61,14 +65,21 @@ export function usePushNotifications(userId: string | null) {
     return () => timers.forEach(clearTimeout);
   }, [userId, tryRegister]);
 
-  // Al volver a primer plano (app móvil), reintentar por si el token llegó en background
+  // Al volver a primer plano: re-enviar ExponentPushToken al servidor (sin cerrar sesión).
   useEffect(() => {
     if (!userId || typeof document === 'undefined') return;
     const onVis = () => {
-      if (document.visibilityState === 'visible') tryRegister();
+      if (document.visibilityState === 'visible') tryRegister(true);
     };
     document.addEventListener('visibilitychange', onVis);
     return () => document.removeEventListener('visibilitychange', onVis);
+  }, [userId, tryRegister]);
+
+  // Cada 20 min: re-registrar el token en el backend por si falló antes o el servidor lo perdió.
+  useEffect(() => {
+    if (!userId) return;
+    const id = setInterval(() => tryRegister(true), 20 * 60 * 1000);
+    return () => clearInterval(id);
   }, [userId, tryRegister]);
 
   // El token Expo lo obtiene solo la capa nativa (client/App.tsx) e inyecta __EXPO_PUSH_TOKEN__

@@ -14,12 +14,19 @@ export interface User {
 
 export type ChallengeType = 'max_reps' | 'weight' | 'seconds';
 
+/** En reps/seg: cómo pondera el peso corporal (en tipo fuerza solo aplica IPF GL). */
+export type BodyWeightScoringMode = 'heavier_more' | 'lighter_more' | 'neutral';
+
 export interface Challenge {
   id: string;
   title: string;
   description?: string;
   type: ChallengeType;
   exercise: string;
+  /** true: IPF GL (kg) y puntos por peso/género (reps/seg). false: gana quien tenga mejor marca bruta. */
+  usePointsSystem?: boolean;
+  /** Solo afecta al cálculo de puntos en reps y segundos. */
+  bodyWeightScoring?: BodyWeightScoringMode;
   participants: {
     userId: string;
     name: string;
@@ -33,6 +40,20 @@ export interface Challenge {
   endDate: string;
   status?: 'active' | 'finished';
   createdBy?: { id: string; name: string };
+  /** ISO; para ordenar torneos destacados (más reciente). */
+  createdAt?: string;
+}
+
+/** Fila del ranking de mejora de rutina (tú + amigos) en Social → Torneos → Progreso. */
+export interface RoutineProgressLeaderboardEntry {
+  userId: string;
+  name: string;
+  avatar: string;
+  isSelf: boolean;
+  routineName?: string;
+  snapshotCount: number;
+  /** % de mejora del agregado entre primer y último punto del historial; null sin rutina o sin datos. */
+  improvementPct: number | null;
 }
 
 export interface GymCheckIn {

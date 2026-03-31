@@ -6,7 +6,14 @@ import { Input } from '@/src/components/ui/Input';
 import { Card } from '@/src/components/ui/Card';
 import { User as AppUser } from '@/src/types';
 import { useToast } from '@/src/hooks/useToast';
-import { getApiBaseUrl } from '@/src/lib/api';
+import { getApiBaseUrl, isLocalDevApiBase } from '@/src/lib/api';
+
+/** Mensaje de conexión: en local menciona puerto 3000; en AWS/producción no. */
+function serverUnreachableHint(): string {
+  return isLocalDevApiBase()
+    ? 'Verifica que el servidor esté en marcha (en local, puerto 3000).'
+    : 'Comprueba la conexión y que la URL del API sea la correcta (HTTPS en producción).';
+}
 
 interface LoginProps {
   onLogin: (user: AppUser) => void;
@@ -138,7 +145,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
         } else if (healthError.message?.includes('Failed to fetch') || healthError.message?.includes('NetworkError')) {
           errorMsg += `Error de red. Verifica que el servidor esté accesible en ${baseUrl}`;
         } else {
-          errorMsg += healthError.message || 'Verifica que esté corriendo en el puerto 3000.';
+          errorMsg += healthError.message || serverUnreachableHint();
         }
         
         toast.error(errorMsg);
@@ -188,7 +195,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
         // Si no es JSON, puede ser HTML (página de error) o texto plano
         const textResponse = await res.text();
         console.error('[CLIENT-LOGIN] Respuesta no JSON recibida:', textResponse.substring(0, 200));
-        throw new Error('El servidor no respondió correctamente. Verifica que esté corriendo en el puerto 3000.');
+        throw new Error(`El servidor no respondió correctamente. ${serverUnreachableHint()}`);
       }
       
       if (!res.ok) {
@@ -272,10 +279,10 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
         // Filtrar mensajes de autenticación
         if (errorMsg.toLowerCase().includes('not authenticated') || 
             errorMsg.toLowerCase().includes('no autenticado')) {
-          errorMsg = 'No se pudo conectar al servidor. Verifica que esté corriendo en el puerto 3000.';
+          errorMsg = `No se pudo conectar al servidor. ${serverUnreachableHint()}`;
         }
       } else if (err.name === 'TypeError' && (err.message?.includes('fetch') || err.message?.includes('Failed to fetch'))) {
-        errorMsg = 'No se pudo conectar al servidor. Verifica que esté corriendo en el puerto 3000.';
+        errorMsg = `No se pudo conectar al servidor. ${serverUnreachableHint()}`;
       } else if (err.name === 'NetworkError' || err.message?.includes('Failed to fetch')) {
         errorMsg = 'Error de red. Verifica tu conexión y que el servidor esté corriendo.';
       }
@@ -349,7 +356,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
         } else if (healthError.message?.includes('Failed to fetch') || healthError.message?.includes('NetworkError')) {
           errorMsg += `Error de red. Verifica que el servidor esté accesible en ${baseUrl}`;
         } else {
-          errorMsg += healthError.message || 'Verifica que esté corriendo en el puerto 3000.';
+          errorMsg += healthError.message || serverUnreachableHint();
         }
         
         toast.error(errorMsg);
@@ -398,7 +405,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
         // Si no es JSON, puede ser HTML (página de error) o texto plano
         const textResponse = await res.text();
         console.error('[CLIENT-REGISTER] Respuesta no JSON recibida:', textResponse.substring(0, 200));
-        throw new Error('El servidor no respondió correctamente. Verifica que esté corriendo en el puerto 3000.');
+        throw new Error(`El servidor no respondió correctamente. ${serverUnreachableHint()}`);
       }
       
       if (!res.ok) {

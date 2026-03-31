@@ -14,7 +14,10 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.srhit.powerliftingtracker",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        }
       }
     },
     "android": {
@@ -50,7 +53,7 @@
         {
           "android": {
             "usesCleartextTraffic": true,
-            "kotlinVersion": "2.0.21",
+            "kotlinVersion": "2.1.20",
             "firebaseBomVersion": "33.6.0",
             "playServicesMeasurementVersion": "21.6.2"
           }
@@ -63,7 +66,8 @@
     "extra": {
       "eas": {
         "projectId": "5a67afac-761c-4709-9665-9d85e9f1901c"
-      }
+      },
+      "apiUrl": "http://3.231.3.49:3000"
     },
     "owner": "noelponcegonzalez"
   }

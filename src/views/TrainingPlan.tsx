@@ -19,14 +19,15 @@ import {
   Clock,
   MessageSquare,
   X,
-  Lightbulb
+  Lightbulb,
+  SkipForward
 } from 'lucide-react';
 import { Card } from '@/src/components/ui/Card';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { LogEntry, TrainingMax, TrainingWeek, TrainingDay, PlannedExercise, ExerciseMode, DayType, SetLog, InternalExerciseMax, getInternalValueForMode, HistoryEntry } from '@/src/types';
 import { cn } from '@/src/lib/utils';
-import { firstWeekOfYearStartingInMonth, getWeekSlotInNaturalMonth } from '@/src/lib/mesocycleWeek';
+import { firstWeekOfYearStartingInMonth } from '@/src/lib/mesocycleWeek';
 import { normalizeExerciseNameKey } from '@/src/lib/normalizeExerciseName';
 import { getTMsForView } from '@/src/lib/historyTm';
 import { dateISOFromYearWeekDay, weekOfYearFromDate } from '@/src/lib/calendarWeekDate';
@@ -76,6 +77,7 @@ const DayTypeBadge = ({ type, onClick }: DayTypeBadgeProps) => {
 interface TrainingPlanViewProps {
   activeRoutineName: string;
   sameTemplateAllWeeks?: boolean;
+  cycleLength?: number;
   onToggleSameTemplateAllWeeks?: () => void;
   trainingMaxes: TrainingMax[];
   /** Snapshots de TM por semana/día (misma rutina); para mostrar el TM “como era” al ver otro día/semana. */
@@ -111,6 +113,8 @@ interface TrainingPlanViewProps {
   onMarkCompleted: (logId: string, completed: boolean) => void;
   onOpenRoutineManager: () => void;
   onExport: () => void;
+  skippedWeeks?: number[];
+  onSkipWeek?: (weekNumber: number, mode: 'shift' | 'skip_only') => void;
   /** Sincroniza año/semana/día del plan visible para anclar TM manual (no “hoy”). */
   planViewAnchorRef?: React.MutableRefObject<{
     year: number;
@@ -123,6 +127,7 @@ interface TrainingPlanViewProps {
 export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({ 
   activeRoutineName,
   sameTemplateAllWeeks = true,
+  cycleLength = 4,
   onToggleSameTemplateAllWeeks,
   trainingMaxes,
   tmHistory = [],
@@ -148,6 +153,8 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   onMarkCompleted,
   onOpenRoutineManager,
   onExport,
+  skippedWeeks = [],
+  onSkipWeek,
   planViewAnchorRef
 }) => {
   const displayWeekNum = viewAsOfWeek ?? currentWeekOfYear;
@@ -196,6 +203,8 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   /** Borrador local para poder vaciar el campo al editar (evita 3→32 al no poder borrar). Se confirma en onBlur. */
   const [setsInputDraft, setSetsInputDraft] = useState<Record<string, string>>({});
   const [repsInputDraft, setRepsInputDraft] = useState<Record<string, string>>({});
+  const [pctInputDraft, setPctInputDraft] = useState<Record<string, string>>({});
+  const [targetInputDraft, setTargetInputDraft] = useState<Record<string, string>>({});
 
   // Scroll al día actual cuando se carga la semana
   useEffect(() => {
@@ -218,10 +227,10 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   const currentWeek = weeks[activeWeekIdx];
   const currentDay = currentWeek?.days[activeDayIdx];
   const currentMonth = getMonthForWeek(displayWeekNum);
-  /** Semana 1–4 dentro del mes natural (reinicia cada mes). */
-  const mesocycleWeek = useMemo(
-    () => getWeekSlotInNaturalMonth(displayWeekNum, displayPlanYear),
-    [displayWeekNum, displayPlanYear]
+  /** Semana del ciclo (1–N) según cycleLength de la rutina. */
+  const cycleWeek = useMemo(
+    () => ((Math.max(1, displayWeekNum) - 1) % Math.max(1, cycleLength)) + 1,
+    [displayWeekNum, cycleLength]
   );
 
   useEffect(() => {
@@ -567,7 +576,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
             </div>
             <div>
               <h2 className="text-base sm:text-xl font-black text-slate-800 dark:text-white uppercase tracking-tight">
-                Semana {mesocycleWeek} {viewMode === 'daily' && <span className="hidden sm:inline">— {currentDay.name}</span>}
+                Semana {cycleWeek}{!sameTemplateAllWeeks ? ` / ${cycleLength}` : ''} {viewMode === 'daily' && <span className="hidden sm:inline">— {currentDay.name}</span>}
               </h2>
               {viewMode === 'daily' && (
                 <span className="text-sm sm:hidden text-slate-500 font-medium">{currentDay.name}</span>
@@ -576,7 +585,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 <p className="mt-1 text-[10px] sm:text-xs font-semibold text-indigo-600 dark:text-indigo-400">
                   {sameTemplateAllWeeks
                     ? "Los cambios se aplican a todas las semanas futuras."
-                    : `Los cambios se aplican a futuras semanas tipo ${mesocycleWeek} (1-4 del bloque).`}
+                    : `Semana ${cycleWeek} del ciclo de ${cycleLength}. Los cambios se aplican a futuras semanas tipo ${cycleWeek}.`}
                 </p>
               )}
             </div>
@@ -644,6 +653,41 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 <ChevronRight size={18} />
               </Button>
             </div>
+
+            {!isHistoryMode && onSkipWeek && !sameTemplateAllWeeks && (
+              <div className="relative group">
+                <button
+                  className={cn(
+                    "flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-bold border-2 transition-all",
+                    skippedWeeks.includes(displayWeekNum)
+                      ? "border-amber-400 bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400"
+                      : "border-slate-200 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:border-slate-300"
+                  )}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <SkipForward size={12} />
+                  {skippedWeeks.includes(displayWeekNum) ? 'Saltada' : 'Saltar'}
+                </button>
+                <div className="absolute right-0 top-full mt-1 hidden group-hover:block z-50">
+                  <div className="bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-600 rounded-xl shadow-lg p-2 min-w-[10rem] space-y-1">
+                    <button
+                      onClick={() => onSkipWeek(displayWeekNum, 'shift')}
+                      className="w-full text-left px-3 py-2 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors"
+                    >
+                      Saltar y mover todo
+                      <span className="block text-[10px] font-normal text-slate-500 dark:text-slate-400 mt-0.5">Las semanas siguientes avanzan 1</span>
+                    </button>
+                    <button
+                      onClick={() => onSkipWeek(displayWeekNum, 'skip_only')}
+                      className="w-full text-left px-3 py-2 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors"
+                    >
+                      Solo saltar esta semana
+                      <span className="block text-[10px] font-normal text-slate-500 dark:text-slate-400 mt-0.5">No mueve nada, solo la marca</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1004,14 +1048,54 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                               {/* % RM + objetivo por serie (TM rutina o interno: peso / reps / seg) */}
                                 {effectiveTM && effectiveTM.mode === ex.mode ? (
                                 <div className="col-span-5 flex flex-wrap justify-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-                                  {Array.from({ length: Math.max(ex.sets || 1, 1) }).map((_, idx) => (
+                                  {Array.from({ length: Math.max(ex.sets || 1, 1) }).map((_, idx) => {
+                                    const pctDraftKey = `${k}-pct-${idx}`;
+                                    const targetDraftKey = `${k}-target-${idx}`;
+                                    const pctShown = pctInputDraft[pctDraftKey] !== undefined ? pctInputDraft[pctDraftKey] : String(getPctForSet(idx));
+                                    const targetShown = targetInputDraft[targetDraftKey] !== undefined ? targetInputDraft[targetDraftKey] : String(getTargetForSet(idx));
+                                    return (
                                     <div key={idx} className="flex items-center gap-1 bg-indigo-50 dark:bg-indigo-950/40 rounded-lg px-2 py-1.5 border border-indigo-200 dark:border-indigo-800">
-                                      <input type="number" min="0" max="100" value={getPctForSet(idx)} onChange={(e) => updatePctForSet(idx, parseFloat(e.target.value) || 0)} className="w-9 bg-transparent text-center font-black text-indigo-700 dark:text-indigo-300 text-xs focus:outline-none" />
+                                      <input
+                                        type="text"
+                                        inputMode="numeric"
+                                        value={pctShown}
+                                        onChange={(e) => {
+                                          const raw = e.target.value.replace(/[^\d.]/g, '');
+                                          setPctInputDraft(prev => ({ ...prev, [pctDraftKey]: raw }));
+                                        }}
+                                        onBlur={() => {
+                                          const raw = pctInputDraft[pctDraftKey];
+                                          setPctInputDraft(prev => { const n = { ...prev }; delete n[pctDraftKey]; return n; });
+                                          if (raw !== undefined) {
+                                            const v = parseFloat(raw);
+                                            updatePctForSet(idx, Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : getPctForSet(idx));
+                                          }
+                                        }}
+                                        className="w-9 bg-transparent text-center font-black text-indigo-700 dark:text-indigo-300 text-xs focus:outline-none"
+                                      />
                                       <span className="text-[10px] opacity-80">%</span>
-                                      <input type="number" step={ex.mode === 'weight' ? '0.5' : '1'} value={getTargetForSet(idx)} onChange={(e) => updateTargetFromAbsolute(idx, parseFloat(e.target.value) || 0)} className="w-12 bg-indigo-600 dark:bg-indigo-700 text-white text-center font-black text-xs rounded focus:outline-none" />
+                                      <input
+                                        type="text"
+                                        inputMode="decimal"
+                                        value={targetShown}
+                                        onChange={(e) => {
+                                          const raw = e.target.value.replace(/[^\d.]/g, '');
+                                          setTargetInputDraft(prev => ({ ...prev, [targetDraftKey]: raw }));
+                                        }}
+                                        onBlur={() => {
+                                          const raw = targetInputDraft[targetDraftKey];
+                                          setTargetInputDraft(prev => { const n = { ...prev }; delete n[targetDraftKey]; return n; });
+                                          if (raw !== undefined) {
+                                            const v = parseFloat(raw);
+                                            if (Number.isFinite(v)) updateTargetFromAbsolute(idx, v);
+                                          }
+                                        }}
+                                        className="w-12 bg-indigo-600 dark:bg-indigo-700 text-white text-center font-black text-xs rounded focus:outline-none"
+                                      />
                                       <span className="text-[10px] opacity-80">{ex.mode === 'weight' ? 'kg' : ex.mode === 'reps' ? 'rep' : 's'}</span>
                                     </div>
-                                  ))}
+                                    );
+                                  })}
                                 </div>
                                 ) : !effectiveTM && (ex.mode === 'weight' || ex.mode === 'reps' || ex.mode === 'seconds') ? (
                                 currentDay.exercises.some((e) => !!resolveEffectiveTM(e)) ? (
@@ -1369,33 +1453,40 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                         </span>
                                         {effectiveMode === 'pct' ? (
                                           <input
-                                            type="number"
-                                            min="0"
-                                            max="100"
+                                            type="text"
                                             inputMode="decimal"
                                             placeholder={pctForSet.toString()}
                                             value={
-                                              setLog.weight !== null
-                                                ? Math.round((setLog.weight / effectiveTM.value) * 100).toString()
-                                                : ''
+                                              pctInputDraft[`log-${logId}-${idx}`] !== undefined
+                                                ? pctInputDraft[`log-${logId}-${idx}`]
+                                                : setLog.weight !== null
+                                                  ? Math.round((setLog.weight / effectiveTM.value) * 100).toString()
+                                                  : ''
                                             }
                                             onChange={(e) => {
-                                              const val = e.target.value;
-                                              if (val === '') onSetLogChange(logId, idx, { weight: null });
-                                              else {
-                                                const pct = parseFloat(val);
-                                                if (!Number.isNaN(pct))
-                                                  onSetLogChange(logId, idx, {
-                                                    weight: roundTo25(effectiveTM.value * (pct / 100)),
-                                                  });
+                                              const raw = e.target.value.replace(/[^\d.]/g, '');
+                                              setPctInputDraft(prev => ({ ...prev, [`log-${logId}-${idx}`]: raw }));
+                                            }}
+                                            onBlur={() => {
+                                              const draftKey = `log-${logId}-${idx}`;
+                                              const raw = pctInputDraft[draftKey];
+                                              setPctInputDraft(prev => { const n = { ...prev }; delete n[draftKey]; return n; });
+                                              if (raw !== undefined) {
+                                                if (raw === '') onSetLogChange(logId, idx, { weight: null });
+                                                else {
+                                                  const pct = parseFloat(raw);
+                                                  if (!Number.isNaN(pct))
+                                                    onSetLogChange(logId, idx, {
+                                                      weight: roundTo25(effectiveTM.value * (pct / 100)),
+                                                    });
+                                                }
                                               }
                                             }}
                                             className={inputClass}
                                           />
                                         ) : (
                                           <input
-                                            type="number"
-                                            step="0.5"
+                                            type="text"
                                             inputMode="decimal"
                                             placeholder={targetWeight.toString()}
                                             value={setLog.weight ?? ''}
@@ -1541,36 +1632,40 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                   </span>
                                   {effectiveMode === 'pct' ? (
                                     <input
-                                      type="number"
-                                      min="0"
-                                      max="100"
+                                      type="text"
                                       inputMode="decimal"
                                       placeholder={pctForSet.toString()}
                                       value={
-                                        setLog.reps != null && effectiveTM.value > 0
-                                          ? Math.round((setLog.reps / effectiveTM.value) * 100).toString()
-                                          : ''
+                                        pctInputDraft[`logrep-${logId}-${idx}`] !== undefined
+                                          ? pctInputDraft[`logrep-${logId}-${idx}`]
+                                          : setLog.reps != null && effectiveTM.value > 0
+                                            ? Math.round((setLog.reps / effectiveTM.value) * 100).toString()
+                                            : ''
                                       }
                                       onChange={(e) => {
-                                        const val = e.target.value;
-                                        if (val === '') onSetLogChange(logId, idx, { reps: null });
-                                        else {
-                                          const pct = parseFloat(val);
-                                          if (!Number.isNaN(pct))
-                                            onSetLogChange(logId, idx, {
-                                              reps: Math.max(
-                                                1,
-                                                Math.round(effectiveTM.value * (pct / 100))
-                                              ),
-                                            });
+                                        const raw = e.target.value.replace(/[^\d.]/g, '');
+                                        setPctInputDraft(prev => ({ ...prev, [`logrep-${logId}-${idx}`]: raw }));
+                                      }}
+                                      onBlur={() => {
+                                        const draftKey = `logrep-${logId}-${idx}`;
+                                        const raw = pctInputDraft[draftKey];
+                                        setPctInputDraft(prev => { const n = { ...prev }; delete n[draftKey]; return n; });
+                                        if (raw !== undefined) {
+                                          if (raw === '') onSetLogChange(logId, idx, { reps: null });
+                                          else {
+                                            const pct = parseFloat(raw);
+                                            if (!Number.isNaN(pct))
+                                              onSetLogChange(logId, idx, {
+                                                reps: Math.max(1, Math.round(effectiveTM.value * (pct / 100))),
+                                              });
+                                          }
                                         }
                                       }}
                                       className={inputClass}
                                     />
                                   ) : (
                                     <input
-                                      type="number"
-                                      step="1"
+                                      type="text"
                                       inputMode="numeric"
                                       placeholder={targetReps.toString()}
                                       value={setLog.reps ?? ''}
@@ -1965,11 +2060,14 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     <div>
                       <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-[0.15em]">Sets *</label>
                       <Input 
-                        type="number"
-                        value={newExForm.sets || ''}
+                        type="text"
+                        inputMode="numeric"
+                        value={newExForm.sets === 0 ? '' : newExForm.sets}
                         placeholder="3"
-                        min={1}
-                        onChange={(e) => setNewExForm({ ...newExForm, sets: Math.max(1, parseInt(e.target.value) || 1) })}
+                        onChange={(e) => {
+                          const raw = e.target.value.replace(/\D/g, '');
+                          setNewExForm({ ...newExForm, sets: raw === '' ? 0 : parseInt(raw, 10) });
+                        }}
                         className="h-12 text-lg font-black text-center rounded-xl border-2 border-slate-100 focus:border-indigo-500 shadow-sm"
                       />
                     </div>

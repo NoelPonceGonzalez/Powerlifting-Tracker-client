@@ -4,9 +4,13 @@ import App from './App.tsx';
 import './index.css';
 import { API_URL } from './config';
 
-// API: siempre usar servidor AWS (EC2); WebView en APK puede inyectar __API_BASE__ antes
-if (typeof window !== 'undefined' && !(window as any).__API_BASE__) {
-  (window as any).__API_BASE__ = API_URL;
+// WebView (APK) inyecta __API_BASE__ antes; si queda vacío o la cadena "null" (origin file://), usar URL del bundle.
+if (typeof window !== 'undefined') {
+  const w = (window as any).__API_BASE__;
+  const bad = w == null || String(w).trim() === '' || String(w) === 'null';
+  if (API_URL && bad) {
+    (window as any).__API_BASE__ = API_URL;
+  }
 }
 
 function Root() {

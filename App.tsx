@@ -1,10 +1,21 @@
 import { StatusBar } from 'expo-status-bar';
 import Constants from 'expo-constants';
 import React, { useMemo, useRef, useState, useEffect } from 'react';
-import { ActivityIndicator, Linking, Platform, Pressable, SafeAreaView, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, Linking, Platform, Pressable, SafeAreaView, Text, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 
 const DEV_WEB_PORT = parseInt(process.env.EXPO_PUBLIC_WEB_APP_PORT || '3000', 10);
+
+/**
+ * URL pública del backend (Express). Obligatoria para APK/AAB con web empaquetada (file://).
+ * Orden: variable de entorno del build (EAS) → app.json extra.apiUrl.
+ */
+function getResolvedApiBaseUrl(): string {
+  const fromEnv = (process.env.EXPO_PUBLIC_API_URL || '').trim();
+  const extra = Constants.expoConfig?.extra as { apiUrl?: string } | undefined;
+  const fromExtra = (extra?.apiUrl || '').trim();
+  return fromEnv || fromExtra;
+}
 
 /** Extrae hostname desde debuggerHost / hostUri de Expo (misma IP que Metro → sirve para móvil físico). */
 function hostnameFromDebuggerLike(value: string): string | null {
@@ -88,6 +99,12 @@ export default function App() {
   useEffect(() => {
     if (__DEV__) {
       console.log('[WEBVIEW] URL de la app web:', webAppUrl);
+    }
+    if (webAppUrl.startsWith('file://') && !getResolvedApiBaseUrl()) {
+      console.warn(
+        '[API] Sin EXPO_PUBLIC_API_URL ni extra.apiUrl: la app no podrá hablar con el servidor. ' +
+          'Pon la URL del API en app.json → expo.extra.apiUrl o en EAS (EXPO_PUBLIC_API_URL).'
+      );
     }
   }, [webAppUrl]);
 
@@ -270,6 +287,34 @@ export default function App() {
     }
   }, [pushToken, isWebViewReady, injectPushToken]);
 
+  // Foreground nativo: volver a leer ExponentPushToken e inyectar (re-dispara expoPushTokenReady → PUT en servidor).
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+    const sub = AppState.addEventListener('change', async (next) => {
+      if (next !== 'active') return;
+      try {
+        const Constants = await import('expo-constants').then(m => m.default);
+        if (Constants.executionEnvironment === 'storeClient') return;
+        const Notifications = await import('expo-notifications');
+        const Device = await import('expo-device');
+        if (!Device.isDevice) return;
+        const { status } = await Notifications.getPermissionsAsync();
+        if (status !== 'granted') return;
+        const projectId = Constants.expoConfig?.extra?.eas?.projectId ?? (Constants as any).easConfig?.projectId;
+        const tokenData = await Notifications.getExpoPushTokenAsync({ projectId: projectId || undefined });
+        const token = tokenData?.data;
+        if (token) {
+          pushTokenRef.current = token;
+          setPushToken(token);
+        }
+      } catch (e) {
+        if (__DEV__) console.warn('[PUSH] Al volver a activa:', e);
+      }
+      setTimeout(() => injectPushToken(), 150);
+    });
+    return () => sub.remove();
+  }, [injectPushToken]);
+
   const handleOpenInBrowser = async () => {
     if (webAppUrl.startsWith('file://')) {
       // La app usa web empaquetada; no hay URL externa para abrir
@@ -374,10 +419,10 @@ export default function App() {
           mixedContentMode="always"
           injectedJavaScriptBeforeContentLoaded={
             webAppUrl.startsWith('file://')
-              ? `window.__API_BASE__=${JSON.stringify(process.env.EXPO_PUBLIC_API_URL || '')};true;`
+              ? `window.__API_BASE__=${JSON.stringify(getResolvedApiBaseUrl())};true;`
               : webAppUrl.startsWith('http')
                 ? `window.__API_BASE__=${JSON.stringify(
-                    (process.env.EXPO_PUBLIC_API_URL || '').trim() || webAppUrl.replace(/\/$/, '')
+                    getResolvedApiBaseUrl() || webAppUrl.replace(/\/$/, '')
                   )};true;`
                 : undefined
           }

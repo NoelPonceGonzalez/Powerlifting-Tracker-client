@@ -5,8 +5,8 @@
 import type { RoutineVersion, TrainingWeek } from '@/src/types';
 import {
   deriveBaseTemplateFromWeeks,
-  materialize52WeeksFromFourTemplateWeeks,
-  EMPTY_FOUR_WEEK_TEMPLATE,
+  materialize52WeeksFromTemplateWeeks,
+  createEmptyTemplate,
 } from '@/src/lib/planMaterialize';
 
 export interface RoutinePlanPatchInput {
@@ -16,9 +16,11 @@ export interface RoutinePlanPatchInput {
   weekTypeOverrides?: Array<{ weekType: number; week: TrainingWeek }>;
   sameTemplateAllWeeks?: boolean;
   hiddenFromSocial?: boolean;
+  cycleLength?: number;
 }
 
 export function buildPlanPatchPayload(r: RoutinePlanPatchInput) {
+  const cl = r.cycleLength ?? 4;
   let fullWeeksForTemplate: TrainingWeek[] =
     r.weeks.length >= 52 ? r.weeks : [];
   if (fullWeeksForTemplate.length < 52) {
@@ -31,17 +33,17 @@ export function buildPlanPatchPayload(r: RoutinePlanPatchInput) {
     const tplWeeks =
       (latestV?.weeks?.length ? latestV.weeks : null) ||
       (r.baseTemplate?.length ? r.baseTemplate : null) ||
-      EMPTY_FOUR_WEEK_TEMPLATE;
-    fullWeeksForTemplate = materialize52WeeksFromFourTemplateWeeks(tplWeeks);
+      createEmptyTemplate(cl);
+    fullWeeksForTemplate = materialize52WeeksFromTemplateWeeks(tplWeeks, cl);
   }
-  const baseTemplate = deriveBaseTemplateFromWeeks(fullWeeksForTemplate);
+  const baseTemplate = deriveBaseTemplateFromWeeks(fullWeeksForTemplate, cl);
   const weekTypeOverrides = r.weekTypeOverrides || [];
   const versionsPayload =
     r.versions?.length && r.versions.length > 0
       ? r.versions.map((v) => ({
           effectiveFromWeek: v.effectiveFromWeek,
           weeks:
-            v.weeks && v.weeks.length > 4 ? deriveBaseTemplateFromWeeks(v.weeks) : v.weeks,
+            v.weeks && v.weeks.length > cl ? deriveBaseTemplateFromWeeks(v.weeks, cl) : v.weeks,
         }))
       : [{ effectiveFromWeek: 1, weeks: baseTemplate }];
 
@@ -51,5 +53,6 @@ export function buildPlanPatchPayload(r: RoutinePlanPatchInput) {
     weekTypeOverrides,
     sameTemplateAllWeeks: r.sameTemplateAllWeeks,
     hiddenFromSocial: r.hiddenFromSocial,
+    cycleLength: cl,
   };
 }
