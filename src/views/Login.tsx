@@ -18,7 +18,7 @@ function serverUnreachableHint(): string {
 interface LoginProps {
   onLogin: (user: AppUser) => void;
   toast: ReturnType<typeof useToast>;
-  /** Añadir otra cuenta sin cerrar la sesión actual (solo login, sin pestaña registro). */
+  /** Añadir otra cuenta sin cerrar la sesión actual. */
   variant?: 'default' | 'addAccount';
   onCancel?: () => void;
 }
@@ -46,7 +46,6 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
 
   React.useEffect(() => {
     if (variant === 'addAccount') {
-      setMode('login');
       setError('');
     }
   }, [variant]);
@@ -266,6 +265,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
         bodyWeight: data.user.bodyWeight ?? 80,
         theme: (data.user.theme ?? (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) as 'light' | 'dark',
         progressMode: data.user.progressMode === 'year' ? 'year' : data.user.progressMode === 'month' ? 'month' : undefined,
+        mbMode: !!data.user.mbMode,
       });
     } catch (err: any) {
       console.error('[CLIENT-LOGIN] Error completo:', err);
@@ -567,6 +567,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
         bodyWeight: data.user.bodyWeight ?? bw,
         theme: (data.user.theme ?? (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) as 'light' | 'dark',
         progressMode: data.user.progressMode === 'year' ? 'year' : data.user.progressMode === 'month' ? 'month' : undefined,
+        mbMode: !!data.user.mbMode,
       });
     } catch (err: any) {
       const msg = err?.message || 'Error al completar el registro';
@@ -623,14 +624,14 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
             className="text-slate-500 dark:text-slate-400 font-medium"
           >
             {isAddAccount
-              ? 'Inicia sesión; la cuenta quedará guardada en este dispositivo para cambiar rápido.'
+              ? 'Inicia sesión o regístrate; la cuenta quedará guardada en este dispositivo.'
               : 'Entrena como un profesional'}
           </motion.p>
         </div>
 
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
           <Card padding="xl" rounded="2xl" className="shadow-xl shadow-slate-200/50 dark:shadow-xl dark:shadow-black/30 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border border-white/60 dark:border-slate-700/60">
-            {mode !== 'complete' && !isAddAccount && (
+            {mode !== 'complete' && (
               <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl mb-6">
                 <button
                   type="button"

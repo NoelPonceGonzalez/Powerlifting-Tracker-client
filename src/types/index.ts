@@ -9,6 +9,8 @@ export interface User {
   avatar: string;
   bodyWeight: number;
   theme: 'light' | 'dark';
+  /** Acento rosa (MB); independiente de claro/oscuro. */
+  mbMode?: boolean;
   progressMode?: 'month' | 'year';
 }
 
@@ -64,6 +66,8 @@ export interface GymCheckIn {
   gymName: string;
   time: string;
   timestamp: number;
+  /** ms desde epoch; al pasar, el check-in deja de mostrarse (TTL en servidor + limpieza local). */
+  expiresAt?: number;
 }
 
 export interface RMData {

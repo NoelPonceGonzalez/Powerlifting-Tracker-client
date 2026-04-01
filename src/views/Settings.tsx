@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion } from 'motion/react';
-import { User as UserIcon, Camera, Image as ImageIcon, Weight, Moon, Sun, LogOut, Users, Plus, Check, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { User as UserIcon, Camera, Image as ImageIcon, Weight, Moon, Sun, LogOut, Users, Plus, Check, X, ZoomIn, ZoomOut, Crop } from 'lucide-react';
 import { Card } from '@/src/components/ui/Card';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { Button } from '@/src/components/ui/Button';
@@ -52,6 +52,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [cropScale, setCropScale] = useState(1);
   const cropDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
   const cropImgRef = useRef<HTMLImageElement | null>(null);
+  const cropAreaRef = useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    if (!cropImage) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [cropImage]);
 
   const handleAvatarFile = (file?: File) => {
     if (!file) return;
@@ -71,22 +81,55 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const handleCropConfirm = useCallback(() => {
     if (!cropImage) return;
     const img = cropImgRef.current;
-    if (!img) return;
+    if (!img || img.naturalWidth < 1 || img.naturalHeight < 1) return;
+
+    const containerSize = 280;
+    const baseScale = containerSize / img.naturalHeight;
+    const effectiveW = img.naturalWidth * baseScale * cropScale;
+    const effectiveH = containerSize * cropScale;
+    const drawX = containerSize / 2 + cropPos.x - effectiveW / 2;
+    const drawY = containerSize / 2 + cropPos.y - effectiveH / 2;
+
+    const work = document.createElement('canvas');
+    work.width = containerSize;
+    work.height = containerSize;
+    const wctx = work.getContext('2d');
+    if (!wctx) {
+      onUpdateUser({ avatar: cropImage });
+      setCropImage(null);
+      return;
+    }
+    wctx.clearRect(0, 0, containerSize, containerSize);
+    wctx.save();
+    wctx.beginPath();
+    wctx.arc(containerSize / 2, containerSize / 2, containerSize / 2, 0, Math.PI * 2);
+    wctx.clip();
+    wctx.drawImage(
+      img,
+      0,
+      0,
+      img.naturalWidth,
+      img.naturalHeight,
+      drawX,
+      drawY,
+      effectiveW,
+      effectiveH
+    );
+    wctx.restore();
+
     const OUTPUT_SIZE = 400;
     const canvas = document.createElement('canvas');
     canvas.width = OUTPUT_SIZE;
     canvas.height = OUTPUT_SIZE;
     const ctx = canvas.getContext('2d');
-    if (!ctx) { onUpdateUser({ avatar: cropImage }); setCropImage(null); return; }
-    const containerSize = 280;
-    const scale = cropScale;
-    const drawW = img.naturalWidth * scale;
-    const drawH = img.naturalHeight * scale;
-    const offsetX = (containerSize / 2 + cropPos.x) - drawW / 2;
-    const offsetY = (containerSize / 2 + cropPos.y) - drawH / 2;
-    const ratio = OUTPUT_SIZE / containerSize;
-    ctx.drawImage(img, offsetX * ratio, offsetY * ratio, drawW * ratio, drawH * ratio);
-    const result = canvas.toDataURL('image/jpeg', 0.85);
+    if (!ctx) {
+      onUpdateUser({ avatar: cropImage });
+      setCropImage(null);
+      return;
+    }
+    ctx.clearRect(0, 0, OUTPUT_SIZE, OUTPUT_SIZE);
+    ctx.drawImage(work, 0, 0, containerSize, containerSize, 0, 0, OUTPUT_SIZE, OUTPUT_SIZE);
+    const result = canvas.toDataURL('image/png');
     onUpdateUser({ avatar: result });
     setCropImage(null);
   }, [cropImage, cropPos, cropScale, onUpdateUser]);
@@ -94,15 +137,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const handleCropPointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
     cropDragRef.current = { startX: e.clientX, startY: e.clientY, origX: cropPos.x, origY: cropPos.y };
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    cropAreaRef.current?.setPointerCapture(e.pointerId);
   };
   const handleCropPointerMove = (e: React.PointerEvent) => {
     if (!cropDragRef.current) return;
+    e.preventDefault();
     const dx = e.clientX - cropDragRef.current.startX;
     const dy = e.clientY - cropDragRef.current.startY;
     setCropPos({ x: cropDragRef.current.origX + dx, y: cropDragRef.current.origY + dy });
   };
-  const handleCropPointerUp = () => { cropDragRef.current = null; };
+  const handleCropPointerUp = (e: React.PointerEvent) => {
+    cropDragRef.current = null;
+    if (cropAreaRef.current?.hasPointerCapture?.(e.pointerId)) {
+      cropAreaRef.current.releasePointerCapture(e.pointerId);
+    }
+  };
 
   return (
     <motion.div 
@@ -269,6 +318,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       <Camera size={18} className="text-indigo-600 dark:text-indigo-400" />
                       Hacer foto
                     </button>
+                    {user.avatar && !user.avatar.startsWith('https://ui-avatars') && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="w-full flex items-center gap-2 px-4 py-3 text-left text-sm font-bold text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-700/80"
+                        onClick={() => {
+                          setCropImage(user.avatar!);
+                          setCropPos({ x: 0, y: 0 });
+                          setCropScale(1);
+                          setPhotoMenuOpen(false);
+                        }}
+                      >
+                        <Crop size={18} className="text-indigo-600 dark:text-indigo-400" />
+                        Ajustar foto actual
+                      </button>
+                    )}
                   </div>
                 )}
                 <input
@@ -387,6 +452,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 />
               </button>
             </div>
+            <label className="mt-5 flex cursor-pointer items-center justify-between gap-4 rounded-xl border border-slate-100 bg-slate-50/80 px-4 py-3 dark:border-slate-700 dark:bg-slate-800/50">
+              <div>
+                <p className="font-bold text-slate-900 dark:text-slate-100">Modo MB</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Acentos rosa en botones y gráficos (independiente de claro/oscuro).
+                </p>
+              </div>
+              <input
+                type="checkbox"
+                checked={!!user.mbMode}
+                onChange={(e) => onUpdateUser({ mbMode: e.target.checked })}
+                className="h-5 w-5 shrink-0 rounded border-slate-300 text-pink-600 accent-pink-600 focus:ring-2 focus:ring-pink-500/30 dark:border-slate-600 dark:bg-slate-900"
+              />
+            </label>
           </Card>
         </section>
 
@@ -404,16 +483,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       </div>
 
       {cropImage && typeof document !== 'undefined' && createPortal(
-        <div className="fixed inset-0 flex items-center justify-center p-4" style={{ zIndex: 100000 }}>
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => setCropImage(null)} />
-          <div className="relative bg-white dark:bg-slate-900 w-full max-w-sm rounded-2xl p-5 shadow-2xl dark:border dark:border-slate-700">
+        <div className="fixed inset-0 z-[100000] flex items-center justify-center p-4 overscroll-contain">
+          <div
+            className="absolute inset-0 bg-black/80 backdrop-blur-sm"
+            onClick={() => setCropImage(null)}
+            aria-hidden
+          />
+          <div className="relative z-10 max-h-[min(100dvh,100vh)] overflow-y-auto overscroll-contain bg-white dark:bg-slate-900 w-full max-w-sm rounded-2xl p-5 shadow-2xl dark:border dark:border-slate-700 touch-auto">
             <h3 className="text-lg font-black text-slate-900 dark:text-slate-100 mb-4 text-center">Ajustar foto</h3>
             <div
-              className="relative mx-auto overflow-hidden rounded-full border-4 border-indigo-500 touch-none"
+              ref={cropAreaRef}
+              className="relative mx-auto overflow-hidden rounded-full border-4 border-indigo-500 touch-none bg-slate-900/20 dark:bg-slate-950/40"
               style={{ width: 280, height: 280 }}
               onPointerDown={handleCropPointerDown}
               onPointerMove={handleCropPointerMove}
               onPointerUp={handleCropPointerUp}
+              onPointerCancel={handleCropPointerUp}
+              onLostPointerCapture={() => {
+                cropDragRef.current = null;
+              }}
             >
               <img
                 ref={cropImgRef}

@@ -38,7 +38,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newRoutineName, setNewRoutineName] = useState('');
   const [cycleMode, setCycleMode] = useState<CycleMode>('month');
-  const [customCycleLength, setCustomCycleLength] = useState(4);
+  const [customCycleLength, setCustomCycleLength] = useState<number | ''>(4);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
 
@@ -46,8 +46,9 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
     const trimmed = newRoutineName.trim();
     if (!trimmed) return;
     const sameTemplateAllWeeks = cycleMode === 'month';
-    const cycleLength = cycleMode === 'custom' ? Math.max(1, customCycleLength) : 4;
-    onCreateRoutine(trimmed, { sameTemplateAllWeeks, cycleLength });
+    const resolvedCycleLength = cycleMode === 'custom' ? (typeof customCycleLength === 'number' && customCycleLength >= 1 ? customCycleLength : 0) : 4;
+    if (cycleMode === 'custom' && resolvedCycleLength < 1) return;
+    onCreateRoutine(trimmed, { sameTemplateAllWeeks, cycleLength: resolvedCycleLength });
     setNewRoutineName('');
     setCycleMode('month');
     setCustomCycleLength(4);
@@ -179,15 +180,21 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                     Semanas por ciclo
                   </label>
                   <Input
-                    type="number"
-                    min={1}
-                    max={52}
+                    type="text"
+                    inputMode="numeric"
                     value={customCycleLength}
-                    onChange={(e) => setCustomCycleLength(Math.max(1, Math.min(52, parseInt(e.target.value) || 1)))}
+                    onChange={(e) => {
+                      const raw = e.target.value.replace(/\D/g, '');
+                      if (raw === '') { setCustomCycleLength(''); return; }
+                      const n = parseInt(raw, 10);
+                      setCustomCycleLength(Math.min(52, n));
+                    }}
                     className="text-center font-black"
                   />
                   <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1">
-                    La plantilla se repite cada {customCycleLength} semana{customCycleLength !== 1 ? 's' : ''}
+                    {customCycleLength === '' || customCycleLength === 0
+                      ? 'Introduce un número de semanas (1–52)'
+                      : `La plantilla se repite cada ${customCycleLength} semana${customCycleLength !== 1 ? 's' : ''}`}
                   </p>
                 </div>
               )}
@@ -195,7 +202,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                 <Button variant="outline" className="flex-1" onClick={closeCreateModal}>
                   Cancelar
                 </Button>
-                <Button variant="primary" className="flex-1" onClick={handleCreate} disabled={!newRoutineName.trim()}>
+                <Button variant="primary" className="flex-1" onClick={handleCreate} disabled={!newRoutineName.trim() || (cycleMode === 'custom' && (customCycleLength === '' || customCycleLength < 1))}>
                   Crear
                 </Button>
               </div>

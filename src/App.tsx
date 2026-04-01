@@ -81,6 +81,29 @@ import {
   toSummaries,
   type SavedAccount,
 } from '@/src/lib/savedAccounts';
+import { checkInExpiresAtMs, expiresAtFromSaved } from '@/src/lib/checkInExpires';
+
+function mapCheckInFromApi(c: Record<string, unknown>): GymCheckIn {
+  const ts =
+    typeof c.timestamp === 'number'
+      ? c.timestamp
+      : new Date(String(c.timestamp)).getTime();
+  const time = String(c.time ?? '00:00');
+  let expiresAt: number | undefined;
+  if (typeof c.expiresAt === 'number') expiresAt = c.expiresAt;
+  else if (c.expiresAt != null) expiresAt = new Date(String(c.expiresAt)).getTime();
+  else expiresAt = checkInExpiresAtMs(new Date(ts), time);
+  return {
+    id: String(c.id ?? c._id),
+    userId: String(c.userId),
+    userName: String(c.userName ?? 'Usuario'),
+    avatar: c.avatar != null ? String(c.avatar) : undefined,
+    gymName: String(c.gymName ?? ''),
+    time,
+    timestamp: ts,
+    expiresAt,
+  };
+}
 
 // --- Constants & Mock Data ---
 const INITIAL_USER: User = {
@@ -534,6 +557,7 @@ export default function App() {
           ? 'dark'
           : 'light')) as 'light' | 'dark',
       progressMode: u.progressMode === 'year' ? 'year' : u.progressMode === 'month' ? 'month' : undefined,
+      mbMode: !!u.mbMode,
     };
   };
 
@@ -819,6 +843,15 @@ export default function App() {
     }
   }, [user?.id, user?.theme]);
 
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    if (user?.mbMode) {
+      document.documentElement.setAttribute('data-mb', 'true');
+    } else {
+      document.documentElement.removeAttribute('data-mb');
+    }
+  }, [user?.mbMode]);
+
   // Notificar a la capa nativa al iniciar sesión (reinyectar token push en la WebView)
   useEffect(() => {
     if (user?.id && typeof window !== 'undefined' && (window as any).ReactNativeWebView) {
@@ -936,15 +969,7 @@ export default function App() {
         // Historial: se carga por rutina activa en un efecto dedicado
         // Check-ins
         if (checkInsRes?.length > 0) {
-          setCheckIns(checkInsRes.map((c: any) => ({
-            id: c.id || String(c._id),
-            userId: c.userId,
-            userName: c.userName || 'Usuario',
-            avatar: c.avatar,
-            gymName: c.gymName,
-            time: c.time,
-            timestamp: c.timestamp,
-          })));
+          setCheckIns(checkInsRes.map((c: any) => mapCheckInFromApi(c)));
         }
       } catch (e) {
         console.error('[App] Error cargando datos:', e);
@@ -1278,15 +1303,7 @@ export default function App() {
         ]);
         if (cancelled) return;
         if (Array.isArray(checkInsRes)) {
-          setCheckIns(checkInsRes.map((c: any) => ({
-            id: c.id || String(c._id),
-            userId: c.userId,
-            userName: c.userName || 'Usuario',
-            avatar: c.avatar,
-            gymName: c.gymName,
-            time: c.time,
-            timestamp: c.timestamp,
-          })));
+          setCheckIns(checkInsRes.map((c: any) => mapCheckInFromApi(c)));
         }
         if (Array.isArray(challengesRes)) {
           setChallenges(challengesRes);
@@ -1298,6 +1315,26 @@ export default function App() {
     loadData();
     return () => { cancelled = true; };
   }, [user?.id, socialRefreshTick]);
+
+  /** Quitar check-ins caducados en todos los clientes sin recargar (misma regla que TTL en Mongo). */
+  useEffect(() => {
+    if (!user) return;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const now = Date.now();
+    for (const ci of checkIns) {
+      const exp = ci.expiresAt;
+      if (typeof exp !== 'number' || exp <= now) continue;
+      const delay = Math.min(Math.max(0, exp - now) + 400, 2147483647);
+      timers.push(
+        setTimeout(() => {
+          setCheckIns((prev) => prev.filter((x) => x.id !== ci.id));
+        }, delay)
+      );
+    }
+    return () => {
+      timers.forEach(clearTimeout);
+    };
+  }, [user?.id, checkIns]);
 
   // Swipe logic
   const x = useMotionValue(0);
@@ -1326,7 +1363,7 @@ export default function App() {
   const handleUpdateUser = async (updates: Partial<User>) => {
     setUser(prev => (prev ? { ...prev, ...updates } : prev));
     // Persistir en el servidor: theme, name, bodyWeight, avatar, progressMode
-    const toSync = ['theme', 'name', 'bodyWeight', 'avatar', 'progressMode'] as const;
+    const toSync = ['theme', 'name', 'bodyWeight', 'avatar', 'progressMode', 'mbMode'] as const;
     const hasSync = toSync.some(k => k in updates);
     if (hasSync) {
       try {
@@ -1427,6 +1464,7 @@ export default function App() {
 
   const handleCheckIn = async (gymName: string, time: string) => {
     if (!user) return;
+    const ts = Date.now();
     const optimisticCheckIn: GymCheckIn = {
       id: `ci-${Math.random().toString(36).substr(2, 5)}`,
       userId: user.id,
@@ -1434,11 +1472,13 @@ export default function App() {
       avatar: user.avatar,
       gymName,
       time,
-      timestamp: Date.now()
+      timestamp: ts,
+      expiresAt: checkInExpiresAtMs(new Date(ts), time),
     };
     upsertLocalDailyCheckIn(optimisticCheckIn);
     try {
       const saved = await apiPost<any>('/api/checkins', { gymName, time });
+      const savedTs = saved?.timestamp ? new Date(saved.timestamp).getTime() : optimisticCheckIn.timestamp;
       upsertLocalDailyCheckIn({
         id: String(saved?._id || saved?.id || optimisticCheckIn.id),
         userId: String(saved?.userId || optimisticCheckIn.userId),
@@ -1446,7 +1486,8 @@ export default function App() {
         avatar: optimisticCheckIn.avatar,
         gymName: saved?.gymName || optimisticCheckIn.gymName,
         time: saved?.time || optimisticCheckIn.time,
-        timestamp: saved?.timestamp ? new Date(saved.timestamp).getTime() : optimisticCheckIn.timestamp,
+        timestamp: savedTs,
+        expiresAt: expiresAtFromSaved(saved, savedTs, saved?.time || time),
       });
       bumpSocialRefresh();
     } catch (e) {
@@ -1458,6 +1499,7 @@ export default function App() {
     if (!user) return;
     try {
       const saved = await apiPut<any>(`/api/checkins/${checkInId}`, { gymName, time });
+      const savedTs = saved?.timestamp ? new Date(saved.timestamp).getTime() : Date.now();
       upsertLocalDailyCheckIn({
         id: checkInId,
         userId: user.id,
@@ -1465,7 +1507,8 @@ export default function App() {
         avatar: user.avatar,
         gymName: saved?.gymName || gymName,
         time: saved?.time || time,
-        timestamp: saved?.timestamp ? new Date(saved.timestamp).getTime() : Date.now(),
+        timestamp: savedTs,
+        expiresAt: expiresAtFromSaved(saved, savedTs, saved?.time || time),
       });
       bumpSocialRefresh();
     } catch {
@@ -1488,6 +1531,7 @@ export default function App() {
     if (!user) return;
 
     // Crear check-in propio a la misma hora/gimnasio para reflejarlo en Progreso y Comunidad.
+    const joinTs = Date.now();
     const myCheckIn: GymCheckIn = {
       id: `ci-${Math.random().toString(36).substr(2, 5)}`,
       userId: user.id,
@@ -1495,7 +1539,8 @@ export default function App() {
       avatar: user.avatar,
       gymName: friendCheckIn.gymName,
       time: friendCheckIn.time,
-      timestamp: Date.now()
+      timestamp: joinTs,
+      expiresAt: checkInExpiresAtMs(new Date(joinTs), friendCheckIn.time),
     };
 
     upsertLocalDailyCheckIn(myCheckIn);
@@ -1523,6 +1568,7 @@ export default function App() {
         gymName: friendCheckIn.gymName,
         time: friendCheckIn.time,
       });
+      const savedTs = saved?.timestamp ? new Date(saved.timestamp).getTime() : myCheckIn.timestamp;
       upsertLocalDailyCheckIn({
         id: String(saved?._id || saved?.id || myCheckIn.id),
         userId: String(saved?.userId || myCheckIn.userId),
@@ -1530,7 +1576,8 @@ export default function App() {
         avatar: myCheckIn.avatar,
         gymName: saved?.gymName || myCheckIn.gymName,
         time: saved?.time || myCheckIn.time,
-        timestamp: saved?.timestamp ? new Date(saved.timestamp).getTime() : myCheckIn.timestamp,
+        timestamp: savedTs,
+        expiresAt: expiresAtFromSaved(saved, savedTs, saved?.time || friendCheckIn.time),
       });
 
       await apiPost('/api/notifications/same-time', {
@@ -1857,7 +1904,10 @@ export default function App() {
 
   const handleDeleteRoutine = async (routineId: string) => {
     if (routines.length <= 1) {
-        alert('Debe existir al menos una rutina activa.');
+      toast.warning(
+        'No puedes borrar tu única rutina. Crea otra rutina primero y luego podrás eliminar esta.',
+        5500
+      );
       return;
     }
     try {
@@ -2584,6 +2634,32 @@ export default function App() {
   };
 
   const handleLoginComplete = useCallback((userData: User) => {
+    void (async () => {
+      const prevId = user?.id;
+      const newId = userData.id;
+      if (prevId && prevId !== newId) {
+        const prevAcc = loadSavedAccounts().find((a) => a.id === prevId);
+        const expo =
+          typeof window !== 'undefined'
+            ? (window as unknown as { __EXPO_PUSH_TOKEN__?: string }).__EXPO_PUSH_TOKEN__
+            : undefined;
+        if (prevAcc?.token && expo?.trim()) {
+          try {
+            const base = getApiBaseUrl() || '';
+            await fetch(`${base}/api/auth/logout`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${prevAcc.token}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ token: expo.trim() }),
+            });
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    })();
     const token = localStorage.getItem('auth_token');
     if (token) {
       upsertAccount({
@@ -2597,7 +2673,7 @@ export default function App() {
       setSavedAccountsState(loadSavedAccounts());
     }
     setUser(userData);
-  }, []);
+  }, [user?.id]);
 
   const switchToAccount = useCallback(
     async (userId: string) => {
@@ -2610,6 +2686,25 @@ export default function App() {
       setIsSwitchingAccount(true);
       const prevToken = localStorage.getItem('auth_token');
       try {
+        const basePre = getApiBaseUrl() || '';
+        const expoPre =
+          typeof window !== 'undefined'
+            ? (window as unknown as { __EXPO_PUSH_TOKEN__?: string }).__EXPO_PUSH_TOKEN__
+            : undefined;
+        if (prevToken && expoPre?.trim()) {
+          try {
+            await fetch(`${basePre}/api/auth/logout`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${prevToken}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ token: expoPre.trim() }),
+            });
+          } catch {
+            /* ignore */
+          }
+        }
         localStorage.setItem('auth_token', acc.token);
         setActiveAccountId(userId);
         const base = getApiBaseUrl() || '';
@@ -2661,11 +2756,19 @@ export default function App() {
     const uid = user?.id;
     if (!uid) return;
     try {
-      const token = localStorage.getItem('auth_token');
+      const authToken = localStorage.getItem('auth_token');
       const base = getApiBaseUrl() || '';
+      const expoPush =
+        typeof window !== 'undefined'
+          ? (window as unknown as { __EXPO_PUSH_TOKEN__?: string }).__EXPO_PUSH_TOKEN__
+          : undefined;
       await fetch(`${base}/api/auth/logout`, {
         method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        headers: {
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(expoPush?.trim() ? { token: expoPush.trim() } : {}),
       });
     } catch {
       /* ignore */
@@ -3156,8 +3259,8 @@ export default function App() {
         <button 
           onClick={() => setView('dashboard')} 
           className={cn(
-            "flex flex-col items-center gap-0.5 sm:gap-1 transition-all min-w-0 flex-1 min-h-[44px] justify-center py-1",
-            view === 'dashboard' ? "text-indigo-600 scale-105 sm:scale-110" : "text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-200"
+            "flex flex-col items-center gap-0.5 sm:gap-1 transition-all duration-300 min-w-0 flex-1 min-h-[44px] justify-center py-1",
+            view === 'dashboard' ? "text-indigo-600 dark:text-indigo-400 scale-105 sm:scale-110" : "text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-200"
           )}
         >
           <LayoutDashboard className="size-5 max-[360px]:size-4 sm:size-5" strokeWidth={view === 'dashboard' ? 2.5 : 2} />
@@ -3169,8 +3272,8 @@ export default function App() {
             setView('program');
           }} 
           className={cn(
-            "flex flex-col items-center gap-0.5 sm:gap-1 transition-all min-w-0 flex-1 min-h-[44px] justify-center py-1",
-            view === 'program' ? "text-indigo-600 scale-105 sm:scale-110" : "text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-200"
+            "flex flex-col items-center gap-0.5 sm:gap-1 transition-all duration-300 min-w-0 flex-1 min-h-[44px] justify-center py-1",
+            view === 'program' ? "text-indigo-600 dark:text-indigo-400 scale-105 sm:scale-110" : "text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-200"
           )}
         >
           <Dumbbell className="size-5 max-[360px]:size-4 sm:size-5" strokeWidth={view === 'program' ? 2.5 : 2} />
@@ -3180,8 +3283,8 @@ export default function App() {
           type="button"
           onClick={() => goToSocial('friends')} 
           className={cn(
-            "flex flex-col items-center gap-0.5 sm:gap-1 transition-all min-w-0 flex-1 min-h-[44px] justify-center py-1",
-            view === 'social' ? "text-indigo-600 scale-105 sm:scale-110" : "text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-200"
+            "flex flex-col items-center gap-0.5 sm:gap-1 transition-all duration-300 min-w-0 flex-1 min-h-[44px] justify-center py-1",
+            view === 'social' ? "text-indigo-600 dark:text-indigo-400 scale-105 sm:scale-110" : "text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-200"
           )}
         >
           <Users className="size-5 max-[360px]:size-4 sm:size-5" strokeWidth={view === 'social' ? 2.5 : 2} />
@@ -3190,8 +3293,8 @@ export default function App() {
         <button 
           onClick={() => setView('settings')} 
           className={cn(
-            "flex flex-col items-center gap-0.5 sm:gap-1 transition-all min-w-0 flex-1 min-h-[44px] justify-center py-1",
-            view === 'settings' ? "text-indigo-600 scale-105 sm:scale-110" : "text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-200"
+            "flex flex-col items-center gap-0.5 sm:gap-1 transition-all duration-300 min-w-0 flex-1 min-h-[44px] justify-center py-1",
+            view === 'settings' ? "text-indigo-600 dark:text-indigo-400 scale-105 sm:scale-110" : "text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-200"
           )}
         >
           <Settings className="size-5 max-[360px]:size-4 sm:size-5" strokeWidth={view === 'settings' ? 2.5 : 2} />

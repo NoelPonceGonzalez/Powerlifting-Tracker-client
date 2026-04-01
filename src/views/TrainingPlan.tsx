@@ -168,6 +168,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   const [showMonthSelector, setShowMonthSelector] = useState(false);
   const [expandedExerciseId, setExpandedExerciseId] = useState<string | null>(null);
   const [showDayTypeDropdown, setShowDayTypeDropdown] = useState(false);
+  const [showSkipDropdown, setShowSkipDropdown] = useState(false);
   
   // Add Exercise Modal State
   const [showAddModal, setShowAddModal] = useState(false);
@@ -205,6 +206,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   const [repsInputDraft, setRepsInputDraft] = useState<Record<string, string>>({});
   const [pctInputDraft, setPctInputDraft] = useState<Record<string, string>>({});
   const [targetInputDraft, setTargetInputDraft] = useState<Record<string, string>>({});
+  const [logInputDraft, setLogInputDraft] = useState<Record<string, string>>({});
 
   // Scroll al día actual cuando se carga la semana
   useEffect(() => {
@@ -439,26 +441,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   <ChevronRight className="text-slate-400 group-hover:text-indigo-600 transition-colors shrink-0" size={20} />
                 </div>
               </button>
-              {onToggleSameTemplateAllWeeks && (
-                <button
-                  onClick={onToggleSameTemplateAllWeeks}
-                  className={cn(
-                    "flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all border-2 shrink-0 ml-2",
-                  sameTemplateAllWeeks
-                    ? "bg-indigo-600 border-indigo-600 text-white"
-                    : "bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:border-indigo-300 dark:hover:border-indigo-500"
-                )}
-                title={sameTemplateAllWeeks ? "Mes: mismo contenido todas las semanas" : "Sem: ciclo 4 semanas (1,2,3,4)"}
-              >
-                <span className={cn(
-                  "w-9 h-5 rounded-full flex items-center p-0.5 transition-colors",
-                  sameTemplateAllWeeks ? "bg-white/30 justify-end" : "bg-slate-300 dark:bg-slate-600 justify-start"
-                )}>
-                  <span className="w-4 h-4 rounded-full bg-white shadow-md" />
-                </span>
-                {sameTemplateAllWeeks ? "Mes" : "Sem"}
-              </button>
-            )}
+              {/* Sem/Mes toggle removed — not user-modifiable */}
             </div>
           </div>
           <p className="text-sm sm:text-base text-slate-500 dark:text-slate-400 font-medium mt-1">Toca el nombre para gestionar tus rutinas</p>
@@ -655,7 +638,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
             </div>
 
             {!isHistoryMode && onSkipWeek && !sameTemplateAllWeeks && (
-              <div className="relative group">
+              <div className="relative">
                 <button
                   className={cn(
                     "flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-bold border-2 transition-all",
@@ -663,29 +646,34 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                       ? "border-amber-400 bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400"
                       : "border-slate-200 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:border-slate-300"
                   )}
-                  onClick={(e) => e.stopPropagation()}
+                  onClick={(e) => { e.stopPropagation(); setShowSkipDropdown(v => !v); }}
                 >
                   <SkipForward size={12} />
                   {skippedWeeks.includes(displayWeekNum) ? 'Saltada' : 'Saltar'}
                 </button>
-                <div className="absolute right-0 top-full mt-1 hidden group-hover:block z-50">
-                  <div className="bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-600 rounded-xl shadow-lg p-2 min-w-[10rem] space-y-1">
-                    <button
-                      onClick={() => onSkipWeek(displayWeekNum, 'shift')}
-                      className="w-full text-left px-3 py-2 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors"
-                    >
-                      Saltar y mover todo
-                      <span className="block text-[10px] font-normal text-slate-500 dark:text-slate-400 mt-0.5">Las semanas siguientes avanzan 1</span>
-                    </button>
-                    <button
-                      onClick={() => onSkipWeek(displayWeekNum, 'skip_only')}
-                      className="w-full text-left px-3 py-2 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors"
-                    >
-                      Solo saltar esta semana
-                      <span className="block text-[10px] font-normal text-slate-500 dark:text-slate-400 mt-0.5">No mueve nada, solo la marca</span>
-                    </button>
-                  </div>
-                </div>
+                {showSkipDropdown && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setShowSkipDropdown(false)} />
+                    <div className="absolute right-0 top-full mt-1 z-50">
+                      <div className="bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-600 rounded-xl shadow-lg p-2 min-w-[10rem] space-y-1">
+                        <button
+                          onClick={() => { onSkipWeek(displayWeekNum, 'skip_only'); setShowSkipDropdown(false); }}
+                          className="w-full text-left px-3 py-2 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors"
+                        >
+                          Saltar el día
+                          <span className="block text-[10px] font-normal text-slate-500 dark:text-slate-400 mt-0.5">Queda marcado, sin más cambios</span>
+                        </button>
+                        <button
+                          onClick={() => { onSkipWeek(displayWeekNum, 'shift'); setShowSkipDropdown(false); }}
+                          className="w-full text-left px-3 py-2 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors"
+                        >
+                          Saltar la semana
+                          <span className="block text-[10px] font-normal text-slate-500 dark:text-slate-400 mt-0.5">Todo se desplaza una semana</span>
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -1250,7 +1238,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={() => setLoggingExercise(null)}
+              onClick={() => { setLoggingExercise(null); setLogInputDraft({}); }}
               className="fixed inset-0 min-h-[100dvh] bg-black/75 backdrop-blur-sm"
             />
             <motion.div 
@@ -1282,7 +1270,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     </p>
                   </div>
                   <button 
-                    onClick={() => setLoggingExercise(null)} 
+                    onClick={() => { setLoggingExercise(null); setLogInputDraft({}); }} 
                     className="p-2 bg-slate-50 dark:bg-slate-800 text-slate-400 dark:text-slate-500 hover:text-rose-500 dark:hover:text-rose-400 rounded-full transition-colors"
                   >
                     <X size={24} />
@@ -1359,14 +1347,20 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                           <div className="absolute right-2 top-2 z-10 flex gap-0.5" role="group" aria-label="Acciones de la serie">
                             <button
                               type="button"
-                              onClick={() =>
+                              onClick={() => {
+                                setLogInputDraft(prev => {
+                                  const n = { ...prev };
+                                  delete n[`w-${logId}-${idx}`];
+                                  delete n[`r-${logId}-${idx}`];
+                                  return n;
+                                });
                                 onSetLogChange(logId, idx, {
                                   weight: null,
                                   reps: null,
                                   completed: false,
                                   inputMode: 'kg',
-                                })
-                              }
+                                });
+                              }}
                               className={cn(
                                 'flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-transparent transition-colors',
                                 hasData
@@ -1489,12 +1483,19 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                             type="text"
                                             inputMode="decimal"
                                             placeholder={targetWeight.toString()}
-                                            value={setLog.weight ?? ''}
-                                            onChange={(e) =>
-                                              onSetLogChange(logId, idx, {
-                                                weight: e.target.value === '' ? null : parseFloat(e.target.value),
-                                              })
-                                            }
+                                            value={logInputDraft[`w-${logId}-${idx}`] ?? (setLog.weight ?? '')}
+                                            onChange={(e) => {
+                                              const raw = e.target.value.replace(/[^\d.,]/g, '');
+                                              setLogInputDraft(prev => ({ ...prev, [`w-${logId}-${idx}`]: raw }));
+                                            }}
+                                            onBlur={() => {
+                                              const raw = logInputDraft[`w-${logId}-${idx}`];
+                                              setLogInputDraft(prev => { const n = { ...prev }; delete n[`w-${logId}-${idx}`]; return n; });
+                                              if (raw !== undefined) {
+                                                const v = parseFloat(raw.replace(',', '.'));
+                                                onSetLogChange(logId, idx, { weight: raw === '' ? null : Number.isFinite(v) ? v : null });
+                                              }
+                                            }}
                                             className={inputClass}
                                           />
                                         )}
@@ -1504,15 +1505,22 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                           Reps
                                         </span>
                                         <input
-                                          type="number"
+                                          type="text"
                                           inputMode="numeric"
                                           placeholder={targetReps.toString()}
-                                          value={setLog.reps ?? ''}
-                                          onChange={(e) =>
-                                            onSetLogChange(logId, idx, {
-                                              reps: e.target.value === '' ? null : parseInt(e.target.value, 10),
-                                            })
-                                          }
+                                          value={logInputDraft[`r-${logId}-${idx}`] ?? (setLog.reps ?? '')}
+                                          onChange={(e) => {
+                                            const raw = e.target.value.replace(/\D/g, '');
+                                            setLogInputDraft(prev => ({ ...prev, [`r-${logId}-${idx}`]: raw }));
+                                          }}
+                                          onBlur={() => {
+                                            const raw = logInputDraft[`r-${logId}-${idx}`];
+                                            setLogInputDraft(prev => { const n = { ...prev }; delete n[`r-${logId}-${idx}`]; return n; });
+                                            if (raw !== undefined) {
+                                              const v = parseInt(raw, 10);
+                                              onSetLogChange(logId, idx, { reps: raw === '' ? null : Number.isFinite(v) ? v : null });
+                                            }
+                                          }}
                                           className={inputClass}
                                         />
                                       </div>
@@ -1544,16 +1552,22 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                           Peso (kg)
                                         </span>
                                         <input
-                                          type="number"
-                                          step="0.5"
+                                          type="text"
                                           inputMode="decimal"
                                           placeholder={(loggingExercise.exercise.weight || 0).toString()}
-                                          value={setLog.weight ?? ''}
-                                          onChange={(e) =>
-                                            onSetLogChange(logId, idx, {
-                                              weight: e.target.value === '' ? null : parseFloat(e.target.value),
-                                            })
-                                          }
+                                          value={logInputDraft[`w-${logId}-${idx}`] ?? (setLog.weight ?? '')}
+                                          onChange={(e) => {
+                                            const raw = e.target.value.replace(/[^\d.,]/g, '');
+                                            setLogInputDraft(prev => ({ ...prev, [`w-${logId}-${idx}`]: raw }));
+                                          }}
+                                          onBlur={() => {
+                                            const raw = logInputDraft[`w-${logId}-${idx}`];
+                                            setLogInputDraft(prev => { const n = { ...prev }; delete n[`w-${logId}-${idx}`]; return n; });
+                                            if (raw !== undefined) {
+                                              const v = parseFloat(raw.replace(',', '.'));
+                                              onSetLogChange(logId, idx, { weight: raw === '' ? null : Number.isFinite(v) ? v : null });
+                                            }
+                                          }}
                                           className={inputClass}
                                         />
                                       </div>
@@ -1562,15 +1576,22 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                           Reps
                                         </span>
                                         <input
-                                          type="number"
+                                          type="text"
                                           inputMode="numeric"
                                           placeholder={targetReps.toString()}
-                                          value={setLog.reps ?? ''}
-                                          onChange={(e) =>
-                                            onSetLogChange(logId, idx, {
-                                              reps: e.target.value === '' ? null : parseInt(e.target.value, 10),
-                                            })
-                                          }
+                                          value={logInputDraft[`r-${logId}-${idx}`] ?? (setLog.reps ?? '')}
+                                          onChange={(e) => {
+                                            const raw = e.target.value.replace(/\D/g, '');
+                                            setLogInputDraft(prev => ({ ...prev, [`r-${logId}-${idx}`]: raw }));
+                                          }}
+                                          onBlur={() => {
+                                            const raw = logInputDraft[`r-${logId}-${idx}`];
+                                            setLogInputDraft(prev => { const n = { ...prev }; delete n[`r-${logId}-${idx}`]; return n; });
+                                            if (raw !== undefined) {
+                                              const v = parseInt(raw, 10);
+                                              onSetLogChange(logId, idx, { reps: raw === '' ? null : Number.isFinite(v) ? v : null });
+                                            }
+                                          }}
                                           className={inputClass}
                                         />
                                       </div>
@@ -1668,13 +1689,19 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                       type="text"
                                       inputMode="numeric"
                                       placeholder={targetReps.toString()}
-                                      value={setLog.reps ?? ''}
-                                      onChange={(e) =>
-                                        onSetLogChange(logId, idx, {
-                                          reps:
-                                            e.target.value === '' ? null : parseInt(e.target.value, 10),
-                                        })
-                                      }
+                                      value={logInputDraft[`r-${logId}-${idx}`] ?? (setLog.reps ?? '')}
+                                      onChange={(e) => {
+                                        const raw = e.target.value.replace(/\D/g, '');
+                                        setLogInputDraft(prev => ({ ...prev, [`r-${logId}-${idx}`]: raw }));
+                                      }}
+                                      onBlur={() => {
+                                        const raw = logInputDraft[`r-${logId}-${idx}`];
+                                        setLogInputDraft(prev => { const n = { ...prev }; delete n[`r-${logId}-${idx}`]; return n; });
+                                        if (raw !== undefined) {
+                                          const v = parseInt(raw, 10);
+                                          onSetLogChange(logId, idx, { reps: raw === '' ? null : Number.isFinite(v) ? v : null });
+                                        }
+                                      }}
                                       className={inputClass}
                                     />
                                   )}
@@ -1699,16 +1726,22 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                     {exerciseMode === 'reps' ? 'Reps' : 'Segundos'}
                                   </span>
                                   <input
-                                    type="number"
-                                    step="1"
+                                    type="text"
                                     inputMode="numeric"
                                     placeholder={targetReps.toString()}
-                                    value={setLog.reps ?? ''}
-                                    onChange={(e) =>
-                                      onSetLogChange(logId, idx, {
-                                        reps: e.target.value === '' ? null : parseInt(e.target.value, 10),
-                                      })
-                                    }
+                                    value={logInputDraft[`r-${logId}-${idx}`] ?? (setLog.reps ?? '')}
+                                    onChange={(e) => {
+                                      const raw = e.target.value.replace(/\D/g, '');
+                                      setLogInputDraft(prev => ({ ...prev, [`r-${logId}-${idx}`]: raw }));
+                                    }}
+                                    onBlur={() => {
+                                      const raw = logInputDraft[`r-${logId}-${idx}`];
+                                      setLogInputDraft(prev => { const n = { ...prev }; delete n[`r-${logId}-${idx}`]; return n; });
+                                      if (raw !== undefined) {
+                                        const v = parseInt(raw, 10);
+                                        onSetLogChange(logId, idx, { reps: raw === '' ? null : Number.isFinite(v) ? v : null });
+                                      }
+                                    }}
                                     className={inputClass}
                                   />
                                 </div>
@@ -1731,7 +1764,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                       className="w-full h-11 sm:h-12 rounded-xl font-black uppercase tracking-wider text-xs sm:text-sm text-rose-600 border-2 border-rose-200 hover:bg-rose-50 dark:text-rose-400 dark:border-rose-800 dark:hover:bg-rose-950/30"
                       onClick={() => {
                         onRemoveExercise(loggingExercise.weekId, loggingExercise.dayId, loggingExercise.exercise.id);
-                        setLoggingExercise(null);
+                        setLoggingExercise(null); setLogInputDraft({});
                       }}
                     >
                       <Trash2 size={15} className="mr-1.5" />
@@ -1745,7 +1778,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                       if (!isHistoryMode && loggingExercise) {
                         await onRoutinePlanFlush?.();
                       }
-                      setLoggingExercise(null);
+                      setLoggingExercise(null); setLogInputDraft({});
                     }}
                   >
                     Guardar sesión

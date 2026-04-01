@@ -3,8 +3,9 @@ import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { Trophy, TrendingUp, Dumbbell, ChevronRight, MapPin, Clock, Bell } from 'lucide-react';
 import { 
-  AreaChart, 
+  ComposedChart, 
   Area, 
+  Line,
   XAxis, 
   YAxis, 
   CartesianGrid, 
@@ -82,9 +83,9 @@ const ProgressModeSwitch = React.memo(function ProgressModeSwitch({
         type="button"
         onClick={() => onChange('month')}
         className={cn(
-          "px-2.5 sm:px-3 py-1.5 text-[10px] sm:text-xs font-black uppercase tracking-wider rounded-lg transition-all",
+          "px-2.5 sm:px-3 py-1.5 text-[10px] sm:text-xs font-black uppercase tracking-wider rounded-lg transition-all duration-300",
           mode === 'month'
-            ? "bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-300 shadow-sm"
+            ? "bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-sm"
             : "text-slate-500 dark:text-slate-400"
         )}
       >
@@ -94,9 +95,9 @@ const ProgressModeSwitch = React.memo(function ProgressModeSwitch({
         type="button"
         onClick={() => onChange('year')}
         className={cn(
-          "px-2.5 sm:px-3 py-1.5 text-[10px] sm:text-xs font-black uppercase tracking-wider rounded-lg transition-all",
+          "px-2.5 sm:px-3 py-1.5 text-[10px] sm:text-xs font-black uppercase tracking-wider rounded-lg transition-all duration-300",
           mode === 'year'
-            ? "bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-300 shadow-sm"
+            ? "bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-sm"
             : "text-slate-500 dark:text-slate-400"
         )}
       >
@@ -303,11 +304,30 @@ export const DashboardView: React.FC<DashboardProps> = ({
 
   const getTMConfig = (name: string) => {
     const lower = name.toLowerCase();
+    if (user.mbMode) {
+      if (lower.includes('banca')) return { color: '#ec4899', bg: 'bg-pink-100', text: 'text-pink-600' };
+      if (lower.includes('sentadilla')) return { color: '#f472b6', bg: 'bg-pink-50', text: 'text-pink-500' };
+      if (lower.includes('muerto')) return { color: '#db2777', bg: 'bg-pink-100', text: 'text-pink-700' };
+      return { color: '#f9a8d4', bg: 'bg-pink-50', text: 'text-pink-600' };
+    }
     if (lower.includes('banca')) return { color: '#3b82f6', bg: 'bg-blue-50', text: 'text-blue-600' };
     if (lower.includes('sentadilla')) return { color: '#10b981', bg: 'bg-emerald-50', text: 'text-emerald-600' };
     if (lower.includes('muerto')) return { color: '#f43f5e', bg: 'bg-rose-50', text: 'text-rose-600' };
-    return { color: '#6366f1', bg: 'bg-indigo-50', text: 'text-indigo-600' };
+    return {
+      color: '#6366f1',
+      bg: 'bg-indigo-50',
+      text: 'text-indigo-600',
+    };
   };
+
+  const routineMainStroke = user.mbMode
+    ? user.theme === 'dark'
+      ? '#f9a8d4'
+      : '#ec4899'
+    : user.theme === 'dark'
+      ? '#818cf8'
+      : '#6366f1';
+  const routineMainGradTop = routineMainStroke;
 
   const parsedHistory = useMemo(() => {
     const currentYear = new Date().getFullYear();
@@ -564,15 +584,15 @@ export const DashboardView: React.FC<DashboardProps> = ({
                 style={{ touchAction: 'pan-x pan-y', WebkitTapHighlightColor: 'transparent', outline: 'none' }}
               >
                 <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={mainChartData} margin={{ top: 4, right: 4, left: 4, bottom: 4 }}>
+                <ComposedChart data={mainChartData} margin={{ top: 4, right: 4, left: 4, bottom: 4 }}>
                   <defs>
                     <linearGradient id="colorTotalLight" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#6366f1" stopOpacity={0.35}/>
-                      <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                      <stop offset="5%" stopColor={routineMainGradTop} stopOpacity={0.35}/>
+                      <stop offset="95%" stopColor={routineMainGradTop} stopOpacity={0}/>
                     </linearGradient>
                     <linearGradient id="colorTotalDark" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#818cf8" stopOpacity={0.3}/>
-                      <stop offset="95%" stopColor="#818cf8" stopOpacity={0}/>
+                      <stop offset="5%" stopColor={routineMainGradTop} stopOpacity={0.3}/>
+                      <stop offset="95%" stopColor={routineMainGradTop} stopOpacity={0}/>
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="2 2" vertical={false} stroke={user.theme === 'dark' ? 'rgba(255,255,255,0.03)' : 'rgba(148,163,184,0.06)'} />
@@ -583,14 +603,33 @@ export const DashboardView: React.FC<DashboardProps> = ({
                     contentStyle={user.theme === 'dark' 
                       ? { backgroundColor: 'rgba(15,23,42,0.95)', borderRadius: '8px', border: 'none', color: '#fff', padding: '6px 10px', fontSize: 12 } 
                       : { backgroundColor: 'rgba(255,255,255,0.98)', borderRadius: '8px', border: '1px solid #e2e8f0', boxShadow: '0 4px 12px -4px rgba(0,0,0,0.1)', padding: '6px 10px', fontSize: 12 }} 
-                    itemStyle={{ color: user.theme === 'dark' ? '#818cf8' : '#6366f1' }} 
+                    itemStyle={{ color: routineMainStroke }} 
                     formatter={(value: number | null) => [
                       formatRoutineAggregate(value, routineProgressMeta.kind, routineProgressMeta.unit),
                       '',
                     ]}
                   />
-                  <Area type="monotone" dataKey="total" stroke={user.theme === 'dark' ? '#818cf8' : '#6366f1'} strokeWidth={3} fillOpacity={1} fill={`url(#colorTotal${user.theme === 'dark' ? 'Dark' : 'Light'})`} />
-                </AreaChart>
+                  <Area
+                    type="monotone"
+                    dataKey="total"
+                    stroke="none"
+                    fillOpacity={1}
+                    fill={`url(#colorTotal${user.theme === 'dark' ? 'Dark' : 'Light'})`}
+                    isAnimationActive={false}
+                    connectNulls
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="total"
+                    stroke={routineMainStroke}
+                    strokeWidth={3}
+                    dot={{ r: 3, fill: routineMainStroke, strokeWidth: 0 }}
+                    activeDot={{ r: 5, fill: routineMainStroke, stroke: user.theme === 'dark' ? '#1e293b' : '#fff', strokeWidth: 2 }}
+                    fill="none"
+                    isAnimationActive={false}
+                    connectNulls
+                  />
+                </ComposedChart>
               </ResponsiveContainer>
             </motion.div>
           </AnimatePresence>
@@ -661,7 +700,7 @@ export const DashboardView: React.FC<DashboardProps> = ({
                     style={{ touchAction: 'pan-x pan-y', WebkitTapHighlightColor: 'transparent', outline: 'none' }}
                   >
                     <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={chartData} margin={{ top: 4, right: 4, left: 4, bottom: 4 }}>
+                    <ComposedChart data={chartData} margin={{ top: 4, right: 4, left: 4, bottom: 4 }}>
                       <defs>
                         <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
                           <stop offset="5%" stopColor={config.color} stopOpacity={0.35}/>
@@ -679,15 +718,27 @@ export const DashboardView: React.FC<DashboardProps> = ({
                         itemStyle={{ color: config.color }}
                         formatter={(value: number | null) => [value == null ? '—' : `${Math.round(value)} ${unit}`, '']}
                       />
-                      <Area 
-                        type="monotone" 
-                        dataKey="value" 
-                        stroke={config.color} 
-                        strokeWidth={3} 
-                        fillOpacity={1} 
+                      <Area
+                        type="monotone"
+                        dataKey="value"
+                        stroke="none"
+                        fillOpacity={1}
                         fill={`url(#${gradId})`}
+                        isAnimationActive={false}
+                        connectNulls
                       />
-                    </AreaChart>
+                      <Line
+                        type="monotone"
+                        dataKey="value"
+                        stroke={config.color}
+                        strokeWidth={3}
+                        dot={{ r: 3, fill: config.color, strokeWidth: 0 }}
+                        activeDot={{ r: 5, fill: config.color, stroke: user.theme === 'dark' ? '#1e293b' : '#fff', strokeWidth: 2 }}
+                        fill="none"
+                        isAnimationActive={false}
+                        connectNulls
+                      />
+                    </ComposedChart>
                   </ResponsiveContainer>
                   </motion.div>
                 </AnimatePresence>

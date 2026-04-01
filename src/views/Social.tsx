@@ -397,7 +397,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
               key={tab}
               onClick={() => setActiveTab(tab)}
               className={cn(
-                "flex-1 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all",
+                "flex-1 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all duration-300",
                 activeTab === tab ? "bg-white text-indigo-600 shadow-sm dark:bg-slate-900 dark:text-indigo-400" : "text-slate-400 hover:text-slate-600 dark:text-slate-400 dark:hover:text-slate-200"
               )}
             >
@@ -1207,21 +1207,21 @@ export const SocialView: React.FC<SocialViewProps> = ({
                     {selectedChallengeDetail.type === 'max_reps' && (
                       <>
                         {(selectedChallengeDetail.bodyWeightScoring ?? 'heavier_more') === 'neutral' &&
-                          'Repeticiones × factor de género (sin ponderar peso corporal). '}
+                          'Repeticiones × factor de género (sin ponderar peso corporal). Mujer: +25% ajuste. '}
                         {(selectedChallengeDetail.bodyWeightScoring ?? 'heavier_more') === 'lighter_more' &&
-                          'Repeticiones ponderadas favoreciendo menos peso corporal; dominadas/tracciones usan factor 1/(peso/70). '}
+                          'Repeticiones ponderadas favoreciendo menos peso corporal; dominadas/tracciones usan factor 1/(peso/70). Mujer: +25% ajuste. '}
                         {(selectedChallengeDetail.bodyWeightScoring ?? 'heavier_more') === 'heavier_more' &&
-                          'Dominadas/tracciones: más peso = más puntos por rep; otros reps: factor suave (peso/70)^0,35. Mujeres: +15% ajuste. '}
+                          'Dominadas/tracciones: más peso = más puntos por rep; otros reps: factor suave (peso/70)^0,35. Mujeres: +25% ajuste. '}
                       </>
                     )}
                     {selectedChallengeDetail.type === 'seconds' && (
                       <>
                         {(selectedChallengeDetail.bodyWeightScoring ?? 'heavier_more') === 'neutral' &&
-                          'Segundos × factor de género (sin ponderar peso). '}
+                          'Segundos × factor de género (sin ponderar peso). Mujer: +25% ajuste. '}
                         {(selectedChallengeDetail.bodyWeightScoring ?? 'heavier_more') === 'lighter_more' &&
-                          'Segundos × √(70/peso) × factor de género. '}
+                          'Segundos × √(70/peso) × factor de género. Mujer: +25% ajuste. '}
                         {(selectedChallengeDetail.bodyWeightScoring ?? 'heavier_more') === 'heavier_more' &&
-                          'Segundos × √(peso/70) × factor de género. '}
+                          'Segundos × √(peso/70) × factor de género. Mujer: +25% ajuste. '}
                       </>
                     )}
                   </>
