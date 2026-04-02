@@ -448,7 +448,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               >
                 <motion.div 
                   animate={{ x: user.theme === 'dark' ? 24 : 0 }}
-                  className="w-6 h-6 bg-white rounded-full shadow-sm"
+                  className="w-6 h-6 bg-white dark:bg-slate-200 rounded-full shadow-sm dark:shadow-slate-950/80"
                 />
               </button>
             </div>

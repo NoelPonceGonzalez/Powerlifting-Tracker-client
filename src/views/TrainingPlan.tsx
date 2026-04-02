@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -20,7 +20,9 @@ import {
   MessageSquare,
   X,
   Lightbulb,
-  SkipForward
+  SkipForward,
+  Flag,
+  Loader2
 } from 'lucide-react';
 import { Card } from '@/src/components/ui/Card';
 import { Button } from '@/src/components/ui/Button';
@@ -115,6 +117,9 @@ interface TrainingPlanViewProps {
   onExport: () => void;
   skippedWeeks?: number[];
   onSkipWeek?: (weekNumber: number, mode: 'shift' | 'skip_only') => void;
+  /** Reinicia la referencia de % en gráficos (no modifica TM). */
+  onRoutineProgressCheckpoint?: () => void | Promise<void>;
+  routineProgressCheckpointLoading?: boolean;
   /** Sincroniza año/semana/día del plan visible para anclar TM manual (no “hoy”). */
   planViewAnchorRef?: React.MutableRefObject<{
     year: number;
@@ -155,6 +160,8 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   onExport,
   skippedWeeks = [],
   onSkipWeek,
+  onRoutineProgressCheckpoint,
+  routineProgressCheckpointLoading = false,
   planViewAnchorRef
 }) => {
   const displayWeekNum = viewAsOfWeek ?? currentWeekOfYear;
@@ -233,6 +240,24 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   const cycleWeek = useMemo(
     () => ((Math.max(1, displayWeekNum) - 1) % Math.max(1, cycleLength)) + 1,
     [displayWeekNum, cycleLength]
+  );
+
+  /** Semana civil visible marcada como saltada (persistido en Mongo: `skippedWeeks`). No muta el plan: es una capa visual. */
+  const calendarWeekSkipped = skippedWeeks.includes(displayWeekNum);
+
+  /** Con semana saltada, entreno/descarga se muestran como descanso; al quitar el salto vuelve el plan tal cual estaba guardado. */
+  const effectiveDayType = useCallback(
+    (day: TrainingDay): DayType => {
+      if (!calendarWeekSkipped) return day.type;
+      if (day.type === 'workout' || day.type === 'deload') return 'rest';
+      return day.type;
+    },
+    [calendarWeekSkipped]
+  );
+
+  const effectiveCurrentDayType = useMemo(
+    () => (currentDay ? effectiveDayType(currentDay) : 'rest'),
+    [currentDay, effectiveDayType]
   );
 
   useEffect(() => {
@@ -372,6 +397,15 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     return Math.round(weight * (1 + reps / 30) * 10) / 10;
   };
 
+  /** Pie de serie en modo kg: 1RM estimado (Epley), mismo criterio que el veredicto fuerte/débil. */
+  const estimatedOneRmFooterKg = (weight: number | null, reps: number | null): string => {
+    if (weight == null || reps == null || reps <= 0) return '—';
+    const e = calculateRM(weight, reps);
+    if (e <= 0) return '—';
+    const s = Number.isInteger(e) ? `${e}` : e.toFixed(1);
+    return `1RM est. ≈ ${s} kg`;
+  };
+
   const getIntensity = (weight: number, tmValue: number) => {
     if (tmValue === 0) return 0;
     return Math.round((weight / tmValue) * 100);
@@ -441,7 +475,29 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   <ChevronRight className="text-slate-400 group-hover:text-indigo-600 transition-colors shrink-0" size={20} />
                 </div>
               </button>
-              {/* Sem/Mes toggle removed — not user-modifiable */}
+              {!isHistoryMode && onRoutineProgressCheckpoint && (
+                <button
+                  type="button"
+                  title="Guarda un punto de referencia: los % de mejora en Progreso pasan a calcularse desde ahora (no cambia tus TM)."
+                  onClick={() => void onRoutineProgressCheckpoint()}
+                  disabled={routineProgressCheckpointLoading}
+                  className={cn(
+                    'shrink-0 flex items-center gap-1.5 rounded-xl border-2 px-2.5 py-2 text-[10px] sm:text-xs font-black uppercase tracking-wider transition-colors',
+                    'border-slate-200 bg-white text-slate-600 hover:border-indigo-300 hover:text-indigo-600',
+                    'dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-indigo-500 dark:hover:text-indigo-300',
+                    routineProgressCheckpointLoading && 'opacity-70 pointer-events-none'
+                  )}
+                >
+                  {routineProgressCheckpointLoading ? (
+                    <Loader2 size={16} className="animate-spin shrink-0" />
+                  ) : (
+                    <Flag size={16} className="shrink-0 text-indigo-500 dark:text-indigo-400" />
+                  )}
+                  <span className="hidden sm:inline max-w-[9rem] md:max-w-none leading-tight text-left">
+                    Checkpoint gráficos
+                  </span>
+                </button>
+              )}
             </div>
           </div>
           <p className="text-sm sm:text-base text-slate-500 dark:text-slate-400 font-medium mt-1">Toca el nombre para gestionar tus rutinas</p>
@@ -640,13 +696,27 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
             {!isHistoryMode && onSkipWeek && !sameTemplateAllWeeks && (
               <div className="relative">
                 <button
+                  type="button"
+                  title={
+                    skippedWeeks.includes(displayWeekNum)
+                      ? 'Pulsa para quitar el salto (puedes ir a otras semanas con las flechas y desmarcarlas igual)'
+                      : 'Marcar semana como saltada'
+                  }
                   className={cn(
                     "flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-bold border-2 transition-all",
                     skippedWeeks.includes(displayWeekNum)
                       ? "border-amber-400 bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400"
                       : "border-slate-200 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:border-slate-300"
                   )}
-                  onClick={(e) => { e.stopPropagation(); setShowSkipDropdown(v => !v); }}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (skippedWeeks.includes(displayWeekNum)) {
+                      onSkipWeek(displayWeekNum, 'skip_only');
+                      setShowSkipDropdown(false);
+                      return;
+                    }
+                    setShowSkipDropdown((v) => !v);
+                  }}
                 >
                   <SkipForward size={12} />
                   {skippedWeeks.includes(displayWeekNum) ? 'Saltada' : 'Saltar'}
@@ -657,6 +727,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     <div className="absolute right-0 top-full mt-1 z-50">
                       <div className="bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-600 rounded-xl shadow-lg p-2 min-w-[10rem] space-y-1">
                         <button
+                          type="button"
                           onClick={() => { onSkipWeek(displayWeekNum, 'skip_only'); setShowSkipDropdown(false); }}
                           className="w-full text-left px-3 py-2 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors"
                         >
@@ -664,6 +735,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                           <span className="block text-[10px] font-normal text-slate-500 dark:text-slate-400 mt-0.5">Queda marcado, sin más cambios</span>
                         </button>
                         <button
+                          type="button"
                           onClick={() => { onSkipWeek(displayWeekNum, 'shift'); setShowSkipDropdown(false); }}
                           className="w-full text-left px-3 py-2 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors"
                         >
@@ -722,7 +794,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                           : "bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-600 hover:border-indigo-300 dark:hover:border-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-400"
                       )}
                     >
-                      <span className={cn("w-2 h-2 rounded-full flex-shrink-0", isActive ? "bg-white" : dayTypeDot[day.type])} />
+                      <span className={cn("w-2 h-2 rounded-full flex-shrink-0", isActive ? "bg-white" : dayTypeDot[effectiveDayType(day)])} />
                       <span className="sm:hidden">{day.name.slice(0, 3)}</span>
                       <span className="hidden sm:inline">{day.name}</span>
                   </button>
@@ -730,7 +802,12 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 })}
               </div>
 
-              <Card padding="md" rounded="xl" className="shadow-xl shadow-slate-200/50 dark:shadow-slate-900/50 sm:rounded-2xl sm:p-8">
+              <Card padding="md" rounded="xl" className="shadow-xl shadow-slate-200/50 dark:shadow-black/40 sm:rounded-2xl sm:p-8">
+                {calendarWeekSkipped && (
+                  <div className="mb-4 rounded-xl border-2 border-amber-200 bg-amber-50 px-3 py-2.5 text-xs font-bold text-amber-900 dark:border-amber-800 dark:bg-amber-950/35 dark:text-amber-100">
+                    Semana saltada: los días de entreno o descarga se muestran como descanso. El plan guardado no cambia; al pulsar «Saltada» vuelve todo como estaba (incluido el bloque por semanas).
+                  </div>
+                )}
                 <div className="flex flex-col gap-4 mb-6">
                   <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                     <h3 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-slate-100">{currentDay.name}</h3>
@@ -738,6 +815,28 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                       <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-2 block">
                         Tipo de día
                       </label>
+                      {calendarWeekSkipped ? (
+                        <div
+                          title="Quita el salto de semana con el botón «Saltada» para editar el tipo de día real del plan."
+                          className={cn(
+                            'w-full rounded-xl border-2 px-4 py-3 text-xs font-black uppercase tracking-wider flex items-center justify-between opacity-90',
+                            effectiveCurrentDayType === 'workout'
+                              ? 'border-indigo-500 text-indigo-700 bg-indigo-50 dark:border-indigo-500 dark:text-indigo-300 dark:bg-indigo-950/40'
+                              : effectiveCurrentDayType === 'deload'
+                                ? 'border-amber-500 text-amber-700 bg-amber-50 dark:border-amber-500 dark:text-amber-300 dark:bg-amber-950/30'
+                                : 'border-slate-300 text-slate-600 bg-slate-50 dark:border-slate-600 dark:text-slate-400 dark:bg-slate-800'
+                          )}
+                        >
+                          <span>
+                            {effectiveCurrentDayType === 'workout'
+                              ? 'Entrenamiento'
+                              : effectiveCurrentDayType === 'deload'
+                                ? 'Descarga'
+                                : 'Descanso'}
+                          </span>
+                          <span className="text-[10px] font-bold normal-case text-slate-500 dark:text-slate-400">(vista)</span>
+                        </div>
+                      ) : (
                       <div className="relative">
                         <button
                           type="button"
@@ -797,11 +896,12 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                           </>
                         )}
                   </div>
+                      )}
                     </div>
                   </div>
                 </div>
 
-                {currentDay.type === 'workout' || currentDay.type === 'deload' ? (
+                {effectiveCurrentDayType === 'workout' || effectiveCurrentDayType === 'deload' ? (
                   <div className="space-y-3">
                     {/* Table Header - Solo desktop. % RM solo si alguno tiene TM vinculado */}
                     <div className="hidden md:grid grid-cols-12 gap-4 px-4 py-3 bg-gradient-to-r from-slate-50 to-indigo-50/30 dark:from-slate-800 dark:to-indigo-950/30 rounded-xl text-[10px] font-black uppercase tracking-wider text-slate-600 dark:text-slate-400 border border-slate-100 dark:border-slate-700">
@@ -1129,7 +1229,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                           setNewExModalError('');
                           setShowAddModal(true);
                         }}
-                          className="inline-flex items-center gap-2 text-indigo-600 bg-indigo-600 text-white hover:bg-indigo-700 transition-all py-3 px-6 rounded-xl border-2 border-indigo-600 group active:scale-95 shadow-lg shadow-indigo-200"
+                          className="inline-flex items-center gap-2 text-indigo-600 bg-indigo-600 text-white hover:bg-indigo-700 transition-all py-3 px-6 rounded-xl border-2 border-indigo-600 group active:scale-95 shadow-lg shadow-indigo-200 dark:shadow-indigo-950/50"
                       >
                           <Plus size={18} />
                           <span className="font-black uppercase text-sm tracking-wider">Añadir primer ejercicio</span>
@@ -1175,7 +1275,9 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
               exit={{ opacity: 0, scale: 0.95 }}
               className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
             >
-              {currentWeek.days.map((day, dayIdx) => (
+              {currentWeek.days.map((day, dayIdx) => {
+                const effType = effectiveDayType(day);
+                return (
                 <Card 
                   key={day.id} 
                   padding="md" 
@@ -1186,15 +1288,15 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   }}
                   className={cn(
                     "border-2 transition-all cursor-pointer hover:border-indigo-200 dark:hover:border-indigo-600",
-                    day.type === 'rest' ? "bg-slate-50 dark:bg-slate-800/50 border-slate-100 dark:border-slate-700" : "bg-white dark:bg-slate-800/50 border-slate-100 dark:border-slate-700"
+                    effType === 'rest' ? "bg-slate-50 dark:bg-slate-800/50 border-slate-100 dark:border-slate-700" : "bg-white dark:bg-slate-800/50 border-slate-100 dark:border-slate-700"
                   )}
                 >
                   <div className="flex items-center justify-between mb-4">
                     <h3 className="font-black text-slate-900 dark:text-slate-100 uppercase text-xs tracking-widest">{day.name}</h3>
-                    <DayTypeBadge type={day.type} />
+                    <DayTypeBadge type={effType} />
                   </div>
 
-                  {day.type === 'workout' || day.type === 'deload' ? (
+                  {effType === 'workout' || effType === 'deload' ? (
                     <div className="space-y-2">
                       {day.exercises.length === 0 ? (
                         <p className="text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase">Sin ejercicios</p>
@@ -1214,7 +1316,8 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     </div>
                   )}
                 </Card>
-              ))}
+              );
+              })}
             </motion.div>
           )}
         </AnimatePresence>
@@ -1533,7 +1636,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                             ? `${Math.round((setLog.weight / effectiveTM.value) * 100)}% de tu máx. (${roundTo25(effectiveTM.value)} kg)`
                                             : '—'
                                           : setLog.weight != null && setLog.reps != null && setLog.reps > 0
-                                            ? `${roundTo25(setLog.weight)} kg × ${setLog.reps} reps`
+                                            ? estimatedOneRmFooterKg(setLog.weight, setLog.reps)
                                             : setLog.weight !== null && effectiveTM
                                               ? `${Math.round((setLog.weight / effectiveTM.value) * 100)}% RM`
                                               : '—'}
@@ -1598,7 +1701,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                     </div>
                                     <p className="mt-2 text-center text-xs font-bold text-indigo-600 dark:text-indigo-400">
                                       {setLog.weight != null && setLog.reps != null && setLog.reps > 0
-                                        ? `${roundTo25(setLog.weight)} kg × ${setLog.reps} reps`
+                                        ? estimatedOneRmFooterKg(setLog.weight, setLog.reps)
                                         : '—'}
                                     </p>
                                   </>
@@ -1773,7 +1876,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   )}
                   <Button 
                     variant="primary" 
-                    className="w-full h-11 sm:h-12 rounded-xl font-black uppercase tracking-wider text-xs sm:text-sm bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-100"
+                    className="w-full h-11 sm:h-12 rounded-xl font-black uppercase tracking-wider text-xs sm:text-sm bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-100 dark:shadow-indigo-950/50"
                     onClick={async () => {
                       if (!isHistoryMode && loggingExercise) {
                         await onRoutinePlanFlush?.();
@@ -1820,7 +1923,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
               <div className="p-6 sm:p-8 md:p-10">
                 <div className="flex items-center justify-between mb-8">
                   <div className="flex items-center gap-4">
-                    <div className="bg-indigo-600 p-3 rounded-2xl shadow-lg shadow-indigo-100">
+                    <div className="bg-indigo-600 p-3 rounded-2xl shadow-lg shadow-indigo-100 dark:shadow-indigo-950/50">
                       <Settings2 className="text-white" size={24} />
                     </div>
                     <div>
@@ -1919,7 +2022,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 <div className="flex flex-col gap-3 mt-10">
                   <Button 
                     variant="primary" 
-                    className="w-full h-16 rounded-3xl font-black uppercase tracking-widest bg-indigo-600 hover:bg-indigo-700 shadow-xl shadow-indigo-100 transition-all active:scale-95"
+                    className="w-full h-16 rounded-3xl font-black uppercase tracking-widest bg-indigo-600 hover:bg-indigo-700 shadow-xl shadow-indigo-100 dark:shadow-indigo-950/50 transition-all active:scale-95"
                     onClick={async () => {
                       if (editingTM.id === NEW_TM_DRAFT_ID) {
                         const name = editingTM.name.trim();
@@ -2044,7 +2147,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                           onClick={() => setNewExForm({ ...newExForm, mode: m.id as ExerciseMode })}
                           className={cn(
                             "flex flex-col items-center gap-2 p-3 rounded-2xl border-2 transition-all",
-                            newExForm.mode === m.id ? "bg-indigo-600 border-indigo-600 text-white shadow-lg shadow-indigo-100" : "bg-slate-50 border-transparent text-slate-400 hover:bg-slate-100",
+                            newExForm.mode === m.id ? "bg-indigo-600 border-indigo-600 text-white shadow-lg shadow-indigo-100 dark:shadow-indigo-950/50" : "bg-slate-50 border-transparent text-slate-400 hover:bg-slate-100",
                             newExForm.linkedTo && "opacity-50 cursor-not-allowed"
                           )}
                         >
@@ -2159,7 +2262,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   </Button>
                   <Button 
                     variant="primary" 
-                    className="flex-1 h-12 rounded-xl font-black uppercase tracking-wider text-xs bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-100 transition-all active:scale-95"
+                    className="flex-1 h-12 rounded-xl font-black uppercase tracking-wider text-xs bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-100 dark:shadow-indigo-950/50 transition-all active:scale-95"
                     onClick={() => {
                       const name = newExForm.name.trim();
                       if (!name) {

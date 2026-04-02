@@ -11,7 +11,7 @@ export interface User {
   theme: 'light' | 'dark';
   /** Acento rosa (MB); independiente de claro/oscuro. */
   mbMode?: boolean;
-  progressMode?: 'month' | 'year';
+  progressMode?: 'month' | 'week' | 'year';
 }
 
 export type ChallengeType = 'max_reps' | 'weight' | 'seconds';
@@ -110,6 +110,8 @@ export interface HistoryEntry {
   month?: number;
   /** ISO del servidor (puntos del gráfico / orden temporal). */
   createdAt?: string;
+  /** Última persistencia del snapshot en Mongo (mejor que createdAt para “cuándo aplica” el TM). */
+  updatedAt?: string;
   rms: RMData;
   /** Valor agregado del progreso de la rutina (ver `computeRoutineProgressTotal` en cliente). */
   total: number;

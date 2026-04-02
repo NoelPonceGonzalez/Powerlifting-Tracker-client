@@ -20,9 +20,76 @@ import { entryDateISO } from '@/src/lib/calendarWeekDate';
 import { cn } from '@/src/lib/utils';
 import {
   computeRoutineProgressTotal,
-  commonTmIdsForProgressDelta,
   progressValueFromHistoryEntry,
 } from '@/src/lib/routineProgressTotal';
+import { weekOfYearFromDate, getMesocycleWeekIndex, weekStartDateForWeekOfYear } from '@/src/lib/mesocycleWeek';
+import { weekOfMonthMondayBased, weekCountInMonth, lastCalendarDayOfWeekIndexInMonth } from '@/src/lib/weekOfMonth';
+import { TM_BASELINE_DATE_ISO } from '@/src/lib/historyTm';
+
+/** Último snapshot anterior al día 1 del mes; solo entradas con fecha ≥ inicio de rutina (sin baseline 1970). */
+function lastParsedBeforeMonth<
+  T extends { date: Date; order: number }
+>(sorted: T[], year: number, month: number, routineStartMs: number): T | null {
+  const start = new Date(year, month, 1).getTime();
+  let best: T | null = null;
+  for (const item of sorted) {
+    if (item.date.getTime() < routineStartMs) continue;
+    if (item.date.getTime() < start) {
+      if (!best || item.order > best.order) best = item;
+    }
+  }
+  return best;
+}
+
+function computeRoutineStartDate(createdAtIso: string | undefined, history: HistoryEntry[]): Date {
+  const times: number[] = [];
+  if (createdAtIso) {
+    const t = Date.parse(createdAtIso);
+    if (!Number.isNaN(t)) times.push(t);
+  }
+  for (const h of history) {
+    const iso = entryDateISO(h);
+    if (!iso || iso === TM_BASELINE_DATE_ISO || iso.startsWith('1970')) continue;
+    const t = Date.parse(`${iso}T12:00:00`);
+    if (!Number.isNaN(t)) times.push(t);
+  }
+  const ms = times.length ? Math.min(...times) : Date.now();
+  const d = new Date(ms);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function monthEntirelyBeforeRoutine(selectedYear: number, monthIndex0: number, rs: Date): boolean {
+  if (selectedYear < rs.getFullYear()) return true;
+  if (selectedYear > rs.getFullYear()) return false;
+  return monthIndex0 < rs.getMonth();
+}
+
+function weekSlotEndsBeforeRoutine(
+  selectedYear: number,
+  monthIndex0: number,
+  weekIndex1Based: number,
+  rs: Date
+): boolean {
+  const last = lastCalendarDayOfWeekIndexInMonth(selectedYear, monthIndex0, weekIndex1Based);
+  last.setHours(23, 59, 59, 999);
+  return last.getTime() < rs.getTime();
+}
+
+function blockSlotEndsBeforeRoutine(planWeek: number, cy: number, rs: Date): boolean {
+  const ws = weekStartDateForWeekOfYear(planWeek, cy);
+  const we = new Date(ws);
+  we.setDate(ws.getDate() + 6);
+  we.setHours(23, 59, 59, 999);
+  return we.getTime() < rs.getTime();
+}
+
+/** Evita verde/rojo por float cuando no hay cambio real. */
+function isEffectivelyZeroDelta(delta: number, kind: RoutineProgressKind): boolean {
+  if (!Number.isFinite(delta)) return true;
+  if (kind === 'mixed') return Math.abs(delta) < 0.015;
+  return Math.abs(delta) < 0.01;
+}
 
 /** Torneo a destacar en el dashboard: más participantes; empate → más reciente. */
 function pickFeaturedChallenge(list: Challenge[]): Challenge | undefined {
@@ -47,6 +114,18 @@ interface DashboardProps {
   activeRoutineName?: string;
   /** Id. de rutina activa; al cambiar se resetean filtros de fecha al mes actual. */
   activeRoutineId?: string;
+  /** ISO creación rutina (servidor); gráficos en 0 antes de esta fecha / primer snapshot real. */
+  routineCreatedAt?: string;
+  /** true = plantilla por mes (semanas del mes en el gráfico Semana); false = bloque de N semanas. */
+  sameTemplateAllWeeks?: boolean;
+  /** Duración del mesociclo cuando la rutina es por bloque. */
+  cycleLength?: number;
+  /** Semana civil 1–52 (ancla del bloque en modo Semana). */
+  currentWeekOfYear?: number;
+  /** Desde esta fecha/hora los % de mejora usan el último snapshot anterior como base (no modifica TM). */
+  progressCheckpointAt?: string;
+  /** TM snapshot al checkpoint ({ tmId: valor }). El baseline de % se toma directamente de aquí. */
+  progressCheckpointTms?: Record<string, number>;
   challenges: Challenge[];
   checkIns: GymCheckIn[];
   onUpdateUser?: (updates: Partial<User>) => void;
@@ -55,7 +134,7 @@ interface DashboardProps {
   onJoinFriendCheckIn: (checkIn: GymCheckIn) => void;
 }
 
-type ProgressMode = 'month' | 'year';
+type ProgressMode = 'week' | 'year';
 
 const MONTH_LABELS_SHORT = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 
@@ -81,15 +160,15 @@ const ProgressModeSwitch = React.memo(function ProgressModeSwitch({
     <div className="inline-flex rounded-xl bg-slate-100/90 dark:bg-slate-800/90 p-1 backdrop-blur-md border border-slate-200/70 dark:border-slate-700/70">
       <button
         type="button"
-        onClick={() => onChange('month')}
+        onClick={() => onChange('week')}
         className={cn(
           "px-2.5 sm:px-3 py-1.5 text-[10px] sm:text-xs font-black uppercase tracking-wider rounded-lg transition-all duration-300",
-          mode === 'month'
+          mode === 'week'
             ? "bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-400 shadow-sm"
             : "text-slate-500 dark:text-slate-400"
         )}
       >
-        Mes
+        Semana
       </button>
       <button
         type="button"
@@ -114,36 +193,38 @@ export const DashboardView: React.FC<DashboardProps> = ({
   trainingMaxes,
   activeRoutineName = 'Rutina activa',
   activeRoutineId,
+  routineCreatedAt: routineCreatedAtProp,
+  sameTemplateAllWeeks: sameTemplateAllWeeksProp = true,
+  cycleLength: cycleLengthProp = 4,
+  currentWeekOfYear: cwoyProp = 1,
   challenges,
   checkIns,
   onUpdateUser,
   onOpenProgram, 
   onOpenSocial,
-  onJoinFriendCheckIn
+  onJoinFriendCheckIn,
+  progressCheckpointAt,
+  progressCheckpointTms,
 }) => {
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth();
 
   const [selectedCheckIn, setSelectedCheckIn] = useState<GymCheckIn | null>(null);
-  const [progressMode, setProgressMode] = useState<ProgressMode>(() => user.progressMode === 'year' ? 'year' : 'month');
+  const [progressMode, setProgressMode] = useState<ProgressMode>(() => user.progressMode === 'year' ? 'year' : 'week');
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
   const [selectedMonth, setSelectedMonth] = useState<number>(currentMonth);
 
-  // Al volver a Progreso: si año/mes no son actuales, usar actuales
   useEffect(() => {
     setSelectedYear(currentYear);
     setSelectedMonth(currentMonth);
   }, []);
 
-  // Sincronizar progressMode desde user (ej. tras login)
   useEffect(() => {
-    if (user.progressMode === 'year' || user.progressMode === 'month') {
-      setProgressMode(user.progressMode);
-    }
+    if (user.progressMode === 'year') setProgressMode('year');
+    else if (user.progressMode === 'month' || user.progressMode === 'week') setProgressMode('week');
   }, [user.progressMode]);
 
-  /** Al cambiar de rutina, el selector año/mes se alinea con el mes actual (progresión de esa rutina, no el filtro anterior). */
   useEffect(() => {
     if (activeRoutineId == null) return;
     const n = new Date();
@@ -156,8 +237,17 @@ export const DashboardView: React.FC<DashboardProps> = ({
     setProgressMode(mode);
     onUpdateUser?.({ progressMode: mode });
   };
-  const lastHistory = history[history.length - 1];
-  const firstHistory = history[0];
+  /** Snapshot de referencia para % de mejora (checkpoint) o el primero del historial. */
+  const baselineEntryForGains = useMemo(() => {
+    if (!history.length) return undefined;
+    return history[0];
+  }, [history]);
+
+  const routineStart = useMemo(
+    () => computeRoutineStartDate(routineCreatedAtProp, history),
+    [routineCreatedAtProp, history]
+  );
+  const routineStartMs = routineStart.getTime();
 
   /** Cómo se agrega el progreso de esta rutina (kg / reps / s / índice mixto). */
   const routineProgressMeta = useMemo(
@@ -165,34 +255,34 @@ export const DashboardView: React.FC<DashboardProps> = ({
     [trainingMaxes]
   );
 
-  /** Valor mostrado: coherente con la misma fórmula que el gráfico (reconstruye desde `trainingMaxes` guardados). */
-  const displayRoutineProgress = useMemo(() => {
-    if (trainingMaxes.length === 0) return 0;
-    if (!lastHistory) return routineProgressMeta.value;
-    return progressValueFromHistoryEntry(lastHistory, trainingMaxes);
-  }, [lastHistory, trainingMaxes, routineProgressMeta.value]);
+  const displayRoutineProgress = routineProgressMeta.value;
 
   /**
-   * Ganancia solo sobre TM que ya existían en el primer y último snapshot; añadir un TM
-   * nuevo no suma un +% artificial frente a la base.
+   * Ganancia: checkpoint TMs (si existe) o primer historial vs TM vivos.
+   * progressCheckpointTms es bullet-proof: se guarda al pulsar la bandera y no depende del historial.
    */
   const { totalGain, totalGainPct } = useMemo(() => {
-    if (!firstHistory || !lastHistory) return { totalGain: 0, totalGainPct: 0 };
-    const common = commonTmIdsForProgressDelta(firstHistory, lastHistory);
-    if (common === null) {
-      const base = progressValueFromHistoryEntry(firstHistory, trainingMaxes);
-      const b = progressValueFromHistoryEntry(lastHistory, trainingMaxes);
-      const gain = b - base;
-      const pct = base > 0 ? Math.round((gain / base) * 100) : 0;
-      return { totalGain: gain, totalGainPct: pct };
+    const currentTotal = routineProgressMeta.value;
+    const kind = routineProgressMeta.kind;
+    let base: number;
+    if (progressCheckpointTms && Object.keys(progressCheckpointTms).length > 0) {
+      const tmsAtCp = trainingMaxes.map((tm) => ({
+        ...tm,
+        value: progressCheckpointTms[tm.id] ?? tm.value,
+      }));
+      base = computeRoutineProgressTotal(tmsAtCp).value;
+    } else if (baselineEntryForGains) {
+      base = progressValueFromHistoryEntry(baselineEntryForGains, trainingMaxes);
+    } else {
+      return { totalGain: 0, totalGainPct: 0 };
     }
-    if (common.size === 0) return { totalGain: 0, totalGainPct: 0 };
-    const base = progressValueFromHistoryEntry(firstHistory, trainingMaxes, { onlyIds: common });
-    const b = progressValueFromHistoryEntry(lastHistory, trainingMaxes, { onlyIds: common });
-    const gain = b - base;
+    const gain = currentTotal - base;
+    if (isEffectivelyZeroDelta(gain, kind)) {
+      return { totalGain: 0, totalGainPct: 0 };
+    }
     const pct = base > 0 ? Math.round((gain / base) * 100) : 0;
     return { totalGain: gain, totalGainPct: pct };
-  }, [firstHistory, lastHistory, trainingMaxes]);
+  }, [baselineEntryForGains, trainingMaxes, routineProgressMeta.value, routineProgressMeta.kind, progressCheckpointTms]);
 
   /** Modo global: todos los gráficos muestran kg/reps/s o % a la vez. Alterna cada 3s. */
   const [showPercent, setShowPercent] = useState(false);
@@ -204,18 +294,18 @@ export const DashboardView: React.FC<DashboardProps> = ({
   /** Variación del agregado de la rutina (misma unidad que `routineProgressMeta`). */
   const mainStatDisplay = useMemo(() => {
     const u = routineProgressMeta.unit;
+    const neutral =
+      showPercent ? totalGainPct === 0 : isEffectivelyZeroDelta(totalGain, routineProgressMeta.kind);
     const tone =
-      showPercent
-        ? totalGainPct > 0
-          ? ('positive' as const)
-          : totalGainPct < 0
-            ? ('negative' as const)
-            : ('neutral' as const)
-        : totalGain > 0
-          ? 'positive'
-          : totalGain < 0
-            ? 'negative'
-            : 'neutral';
+      neutral
+        ? ('neutral' as const)
+        : showPercent
+          ? totalGainPct > 0
+            ? ('positive' as const)
+            : ('negative' as const)
+          : totalGain > 0
+            ? 'positive'
+            : 'negative';
     if (showPercent) {
       return { value: `${totalGainPct > 0 ? '+' : ''}${totalGainPct}%`, tone };
     }
@@ -229,29 +319,28 @@ export const DashboardView: React.FC<DashboardProps> = ({
   /** Primer/último valor guardado de este TM en el historial de esta rutina (ids distintos por rutina). */
   const tmStatDisplay = useMemo(() => {
     const byId: Record<string, { value: string; tone: 'positive' | 'negative' | 'neutral' }> = {};
-    const firstSnap = (tmId: string) =>
-      history.find(h => h.trainingMaxes != null && h.trainingMaxes[tmId] != null)?.trainingMaxes?.[tmId];
-    const lastSnap = (tmId: string) => {
-      for (let i = history.length - 1; i >= 0; i--) {
-        const v = history[i]?.trainingMaxes?.[tmId];
-        if (v != null) return v;
-      }
-      return undefined;
+    const hasCpTms = progressCheckpointTms && Object.keys(progressCheckpointTms).length > 0;
+    const firstSnap = (tmId: string): number | undefined => {
+      if (hasCpTms) return progressCheckpointTms![tmId];
+      return history.find(h => h.trainingMaxes != null && h.trainingMaxes[tmId] != null)?.trainingMaxes?.[tmId];
     };
-
     trainingMaxes.forEach(tm => {
       const unit = tm.mode === 'weight' ? 'kg' : tm.mode === 'reps' ? 'reps' : 's';
       const firstVal = firstSnap(tm.id);
-      const lastVal = lastSnap(tm.id) ?? (tm.mode === 'weight' ? tm.value : undefined);
-      if (firstVal != null && lastVal != null) {
-        const gain = lastVal - firstVal;
-        const pct = firstVal > 0 ? Math.round((gain / firstVal) * 100) : 0;
+      const currentVal = tm.value;
+      if (firstVal != null) {
+        const gain = currentVal - firstVal;
+        const kind =
+          tm.mode === 'weight' ? ('weight' as RoutineProgressKind) : tm.mode === 'reps' ? 'reps' : 'seconds';
+        const flat = isEffectivelyZeroDelta(gain, kind);
+        const pct = flat ? 0 : firstVal > 0 ? Math.round((gain / firstVal) * 100) : 0;
         if (showPercent) {
-          const tone = pct > 0 ? 'positive' : pct < 0 ? 'negative' : 'neutral';
+          const tone = flat ? 'neutral' : pct > 0 ? 'positive' : pct < 0 ? 'negative' : 'neutral';
           byId[tm.id] = { value: `${pct > 0 ? '+' : ''}${pct}%`, tone };
         } else {
-          const tone = gain > 0 ? 'positive' : gain < 0 ? 'negative' : 'neutral';
-          byId[tm.id] = { value: `${gain > 0 ? '+' : ''}${gain} ${unit}`, tone };
+          const tone = flat ? 'neutral' : gain > 0 ? 'positive' : gain < 0 ? 'negative' : 'neutral';
+          const disp = flat ? 0 : Math.round(gain * 100) / 100;
+          byId[tm.id] = { value: `${disp > 0 ? '+' : ''}${disp} ${unit}`, tone };
         }
       } else {
         byId[tm.id] = showPercent
@@ -260,7 +349,7 @@ export const DashboardView: React.FC<DashboardProps> = ({
       }
     });
     return byId;
-  }, [history, trainingMaxes, showPercent]);
+  }, [history, trainingMaxes, showPercent, progressCheckpointTms]);
 
   const joinedChallenges = useMemo(() => challenges.filter(c => c.participants.some(p => p.userId === user.id)), [challenges, user.id]);
 
@@ -329,8 +418,12 @@ export const DashboardView: React.FC<DashboardProps> = ({
       : '#6366f1';
   const routineMainGradTop = routineMainStroke;
 
+  const cl = Math.max(1, cycleLengthProp);
+  const currentMesoSlot = getMesocycleWeekIndex(cwoyProp, cl);
+  const cycleStartWeek = cwoyProp - (currentMesoSlot - 1);
+
   const parsedHistory = useMemo(() => {
-    const currentYear = new Date().getFullYear();
+    const yearNow = new Date().getFullYear();
     const monthByText: Record<string, number> = {
       ene: 0, enero: 0, feb: 1, febrero: 1, mar: 2, marzo: 2, abr: 3, abril: 3,
       may: 4, mayo: 4, jun: 5, junio: 5, jul: 6, julio: 6, ago: 7, agosto: 7,
@@ -355,9 +448,9 @@ export const DashboardView: React.FC<DashboardProps> = ({
             const raw = (entry.date || '').toLowerCase().trim();
             const matchedMonth = Object.entries(monthByText).find(([key]) => raw.includes(key))?.[1];
             if (matchedMonth !== undefined) {
-              date = new Date(entry.year ?? currentYear, matchedMonth, 1);
+              date = new Date(entry.year ?? yearNow, matchedMonth, 1);
             } else {
-              date = new Date(entry.year ?? currentYear, 0, Math.min(28, idx + 1));
+              date = new Date(entry.year ?? yearNow, 0, Math.min(28, idx + 1));
             }
           }
         }
@@ -368,59 +461,125 @@ export const DashboardView: React.FC<DashboardProps> = ({
           : !Number.isNaN(created)
             ? created
             : date.getTime();
+        const planWeek = entry.week ?? weekOfYearFromDate(date, date.getFullYear());
+        const cl = Math.max(1, cycleLengthProp);
         return {
           source: entry,
           date,
           year: entry.year ?? date.getFullYear(),
           month: date.getMonth(),
-          weekOfMonth: Math.max(1, Math.min(4, Math.ceil(date.getDate() / 7))),
+          planWeek,
+          weekOfMonth: weekOfMonthMondayBased(date),
+          mesoSlot: getMesocycleWeekIndex(planWeek, cl),
           order: orderBase + idx * 0.001
         };
       })
       .sort((a, b) => a.order - b.order);
-  }, [history]);
+  }, [history, cycleLengthProp]);
 
   const availableYears = useMemo(() => {
-    const currentYear = new Date().getFullYear();
+    const y0 = new Date().getFullYear();
     const years: number[] = [];
-    for (let y = currentYear; y >= 2020; y--) years.push(y);
+    for (let y = y0; y >= 2020; y--) years.push(y);
     return years;
   }, []);
 
   useEffect(() => {
-    const now = new Date();
-    if (!availableYears.includes(selectedYear)) setSelectedYear(now.getFullYear());
-    if (selectedMonth < 0 || selectedMonth > 11) setSelectedMonth(now.getMonth());
+    const n = new Date();
+    if (!availableYears.includes(selectedYear)) setSelectedYear(n.getFullYear());
+    if (selectedMonth < 0 || selectedMonth > 11) setSelectedMonth(n.getMonth());
   }, [availableYears, selectedMonth, selectedYear]);
 
   const chartContext = useMemo(() => {
     const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth();
-    const currentWeekOfMonth = Math.max(1, Math.min(4, Math.ceil(now.getDate() / 7)));
+    const cy = now.getFullYear();
+    const cm = now.getMonth();
     const currentTotal = computeRoutineProgressTotal(trainingMaxes).value;
+    const rs = routineStart;
 
-    if (progressMode === 'month') {
-      const monthData = parsedHistory.filter(item => item.year === selectedYear && item.month === selectedMonth);
-      const latestByWeek = new Map<number, typeof monthData[number]>();
-      monthData.forEach(item => {
-        const prev = latestByWeek.get(item.weekOfMonth);
-        if (!prev || item.order >= prev.order) latestByWeek.set(item.weekOfMonth, item);
+    if (progressMode === 'week') {
+      /** Rutina “por mes”: semanas del mes civil (4–6). */
+      if (sameTemplateAllWeeksProp) {
+        const weeksInMonth = weekCountInMonth(selectedYear, selectedMonth);
+        const currentWeekSlotInMonth =
+          cy === selectedYear && cm === selectedMonth ? weekOfMonthMondayBased(now) : weeksInMonth;
+
+        const monthData = parsedHistory.filter(
+          item => item.year === selectedYear && item.month === selectedMonth
+        );
+        const latestByWeek = new Map<number, typeof monthData[number]>();
+        monthData.forEach(item => {
+          const w = item.weekOfMonth;
+          const prev = latestByWeek.get(w);
+          if (!prev || item.order >= prev.order) latestByWeek.set(w, item);
+        });
+
+        const lastBefore = lastParsedBeforeMonth(parsedHistory, selectedYear, selectedMonth, routineStartMs);
+        let carryTotal: number | null = null;
+        const isCurrentMonth = selectedYear === cy && selectedMonth === cm;
+        if (lastBefore && trainingMaxes.length > 0) {
+          carryTotal = progressValueFromHistoryEntry(lastBefore.source, trainingMaxes);
+        } else if (trainingMaxes.length > 0) {
+          carryTotal = 0;
+        }
+
+        return Array.from({ length: weeksInMonth }, (_, i) => {
+          const week = i + 1;
+          const point = latestByWeek.get(week);
+          const isCurrentSlot = isCurrentMonth && week === currentWeekSlotInMonth;
+          if (point?.source) carryTotal = progressValueFromHistoryEntry(point.source, trainingMaxes);
+          if (isCurrentSlot) carryTotal = currentTotal;
+          const isFuture = isCurrentMonth && week > currentWeekSlotInMonth;
+          const preRoutine = weekSlotEndsBeforeRoutine(selectedYear, selectedMonth, week, rs);
+          let total: number | null = isFuture ? null : preRoutine ? 0 : carryTotal;
+          return {
+            key: `w${week}`,
+            label: String(week),
+            slotNum: week,
+            source: point?.source,
+            total
+          };
+        });
+      }
+
+      /** Rutina por bloque: N = cycleLength, posición en el mesociclo actual (año civil). */
+      const cycleEntries = parsedHistory.filter(item =>
+        item.year === cy && item.planWeek >= cycleStartWeek && item.planWeek < cycleStartWeek + cl
+      );
+      const latestBySlot = new Map<number, typeof cycleEntries[number]>();
+      cycleEntries.forEach(item => {
+        const slot = item.planWeek - cycleStartWeek + 1;
+        const prev = latestBySlot.get(slot);
+        if (!prev || item.order >= prev.order) latestBySlot.set(slot, item);
       });
-      const isCurrentMonth = selectedYear === currentYear && selectedMonth === currentMonth;
-      let carryTotal: number | null = null;
-      return [1, 2, 3, 4].map(week => {
-        const point = latestByWeek.get(week);
-        const isCurrentSlot = selectedYear === currentYear && selectedMonth === currentMonth && week === currentWeekOfMonth;
-        if (point?.source) carryTotal = progressValueFromHistoryEntry(point.source, trainingMaxes);
-        if (isCurrentSlot) carryTotal = currentTotal;
-        const isFuture = isCurrentMonth && week > currentWeekOfMonth;
+
+      const lastBeforeCycle = [...parsedHistory].reverse().find(item => {
+        if (item.date.getTime() < routineStartMs) return false;
+        return item.year < cy || (item.year === cy && item.planWeek < cycleStartWeek);
+      });
+      let carryTotalBlock: number | null = null;
+      if (lastBeforeCycle && trainingMaxes.length > 0) {
+        carryTotalBlock = progressValueFromHistoryEntry(lastBeforeCycle.source, trainingMaxes);
+      } else if (trainingMaxes.length > 0) {
+        carryTotalBlock = 0;
+      }
+
+      return Array.from({ length: cl }, (_, i) => {
+        const slot = i + 1;
+        const point = latestBySlot.get(slot);
+        const isCurrentSlot = slot === currentMesoSlot;
+        if (point?.source) carryTotalBlock = progressValueFromHistoryEntry(point.source, trainingMaxes);
+        if (isCurrentSlot) carryTotalBlock = currentTotal;
+        const isFuture = slot > currentMesoSlot;
+        const pw = cycleStartWeek + slot - 1;
+        const preRoutine = blockSlotEndsBeforeRoutine(pw, cy, rs);
+        let total: number | null = isFuture ? null : preRoutine ? 0 : carryTotalBlock;
         return {
-          key: `w${week}`,
-          label: String(week),
-          weekNum: week,
+          key: `b${slot}`,
+          label: String(slot),
+          slotNum: slot,
           source: point?.source,
-          total: isFuture ? null : (carryTotal ?? 0)
+          total
         };
       });
     }
@@ -431,60 +590,144 @@ export const DashboardView: React.FC<DashboardProps> = ({
       const prev = latestByMonth.get(item.month);
       if (!prev || item.order >= prev.order) latestByMonth.set(item.month, item);
     });
-    const isCurrentYear = selectedYear === currentYear;
+    const isCurrentYear = selectedYear === cy;
+    const lastBeforeYear = [...parsedHistory].reverse().find(item => {
+      if (item.date.getTime() < routineStartMs) return false;
+      return item.year < selectedYear;
+    });
     let carryTotal: number | null = null;
+    if (lastBeforeYear && trainingMaxes.length > 0) {
+      carryTotal = progressValueFromHistoryEntry(lastBeforeYear.source, trainingMaxes);
+    } else if (trainingMaxes.length > 0) {
+      carryTotal = 0;
+    }
     return Array.from({ length: 12 }, (_, month) => {
       const point = latestByMonth.get(month);
-      const isCurrentSlot = selectedYear === currentYear && month === currentMonth;
+      const isCurrentSlot = selectedYear === cy && month === cm;
       if (point?.source) carryTotal = progressValueFromHistoryEntry(point.source, trainingMaxes);
       if (isCurrentSlot) carryTotal = currentTotal;
-      const isFuture = isCurrentYear && month > currentMonth;
+      const isFuture = isCurrentYear && month > cm;
+      const preRoutine = monthEntirelyBeforeRoutine(selectedYear, month, rs);
+      let total: number | null = isFuture ? null : preRoutine ? 0 : carryTotal;
       return {
         key: `m${month}`,
         label: MONTH_LABELS_SHORT[month],
         monthNum: month,
         source: point?.source,
-        total: isFuture ? null : (carryTotal ?? 0)
+        total
       };
     });
-  }, [parsedHistory, progressMode, selectedMonth, selectedYear, trainingMaxes]);
+  }, [
+    parsedHistory,
+    progressMode,
+    selectedYear,
+    selectedMonth,
+    trainingMaxes,
+    sameTemplateAllWeeksProp,
+    cl,
+    cycleStartWeek,
+    currentMesoSlot,
+    routineStart,
+    routineStartMs,
+  ]);
 
   const mainChartData = useMemo(() => chartContext.map(p => ({ date: p.label, total: p.total })), [chartContext]);
 
   const tmChartDataById = useMemo(() => {
     const byId: Record<string, Array<{ date: string; value: number | null }>> = {};
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth();
-    const currentWeekOfMonth = Math.max(1, Math.min(4, Math.ceil(now.getDate() / 7)));
+    const cy = new Date().getFullYear();
+    const cm = new Date().getMonth();
+    const weeksInMonth = weekCountInMonth(selectedYear, selectedMonth);
+    const currentWeekSlotInMonth =
+      cy === selectedYear && cm === selectedMonth ? weekOfMonthMondayBased(new Date()) : weeksInMonth;
 
     trainingMaxes.forEach(tm => {
       let carryValue: number | null = null;
+
+      if (progressMode === 'week') {
+        if (sameTemplateAllWeeksProp) {
+          const lastBefore = lastParsedBeforeMonth(parsedHistory, selectedYear, selectedMonth, routineStartMs);
+          const vBefore = lastBefore?.source.trainingMaxes?.[tm.id];
+          const useCurrent = selectedYear === cy && selectedMonth === cm;
+          carryValue = vBefore != null ? vBefore : useCurrent ? tm.value : 0;
+        } else {
+          const lastBefore = [...parsedHistory].reverse().find(item => {
+            if (item.date.getTime() < routineStartMs) return false;
+            return item.year < cy || (item.year === cy && item.planWeek < cycleStartWeek);
+          });
+          const vBefore = lastBefore?.source.trainingMaxes?.[tm.id];
+          carryValue = vBefore != null ? vBefore : tm.value;
+        }
+      } else {
+        const lastBefore = [...parsedHistory].reverse().find(item => {
+          if (item.date.getTime() < routineStartMs) return false;
+          return item.year < selectedYear;
+        });
+        const vBefore = lastBefore?.source.trainingMaxes?.[tm.id];
+        carryValue = vBefore != null ? vBefore : (selectedYear === cy ? tm.value : 0);
+      }
+
       byId[tm.id] = chartContext.map(point => {
-        const weekNum = 'weekNum' in point ? point.weekNum : null;
-        const monthNum = 'monthNum' in point ? point.monthNum : null;
-        const isCurrentSlot = progressMode === 'month'
-          ? (selectedYear === currentYear && selectedMonth === currentMonth && weekNum === currentWeekOfMonth)
-          : (selectedYear === currentYear && monthNum === currentMonth);
+        const slotNum = 'slotNum' in point ? (point as { slotNum?: number }).slotNum : null;
+        const monthNum = 'monthNum' in point ? (point as { monthNum?: number }).monthNum : null;
+        let isCurrentSlot: boolean;
+        let isFuture: boolean;
+        if (progressMode === 'week') {
+          if (sameTemplateAllWeeksProp) {
+            isCurrentSlot = selectedYear === cy && selectedMonth === cm && slotNum === currentWeekSlotInMonth;
+            isFuture = (slotNum ?? 0) > currentWeekSlotInMonth;
+          } else {
+            isCurrentSlot = slotNum === currentMesoSlot;
+            isFuture = (slotNum ?? 0) > currentMesoSlot;
+          }
+        } else {
+          isCurrentSlot = selectedYear === cy && monthNum === cm;
+          isFuture = selectedYear === cy && (monthNum ?? 0) > cm;
+        }
+        if (progressMode === 'week' && sameTemplateAllWeeksProp && slotNum != null) {
+          if (weekSlotEndsBeforeRoutine(selectedYear, selectedMonth, slotNum, routineStart)) {
+            return { date: point.label, value: 0 };
+          }
+        }
+        if (progressMode === 'week' && !sameTemplateAllWeeksProp && slotNum != null) {
+          const pw = cycleStartWeek + slotNum - 1;
+          if (blockSlotEndsBeforeRoutine(pw, cy, routineStart)) {
+            return { date: point.label, value: 0 };
+          }
+        }
+        if (progressMode === 'year' && monthNum != null) {
+          if (monthEntirelyBeforeRoutine(selectedYear, monthNum, routineStart)) {
+            return { date: point.label, value: 0 };
+          }
+        }
         const rawValue = isCurrentSlot
           ? tm.value
           : (point.source?.trainingMaxes?.[tm.id] ?? null);
         if (rawValue != null) carryValue = rawValue;
-        const isFuture = progressMode === 'month'
-          ? (selectedYear === currentYear && selectedMonth === currentMonth && (weekNum ?? 0) > currentWeekOfMonth)
-          : (selectedYear === currentYear && (monthNum ?? 0) > currentMonth);
-        return { date: point.label, value: isFuture ? null : (carryValue ?? 0) };
+        return { date: point.label, value: isFuture ? null : carryValue };
       });
     });
     return byId;
-  }, [chartContext, trainingMaxes, progressMode, selectedYear, selectedMonth]);
+  }, [
+    chartContext,
+    trainingMaxes,
+    progressMode,
+    selectedYear,
+    selectedMonth,
+    parsedHistory,
+    sameTemplateAllWeeksProp,
+    currentMesoSlot,
+    cycleStartWeek,
+    routineStart,
+    routineStartMs,
+  ]);
 
   return (
     <motion.div 
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -20 }}
-      className="max-w-5xl mx-auto mt-2 max-[400px]:mt-2 sm:mt-4 md:mt-8 mb-6 sm:mb-10 md:mb-12 px-3 max-[360px]:px-2 sm:px-5 md:px-6 py-5 max-[360px]:py-4 sm:py-8 md:py-10 pb-32 max-[360px]:pb-28 sm:pb-40 md:pb-44 rounded-2xl max-[400px]:rounded-xl sm:rounded-[2rem] md:rounded-[2.5rem] backdrop-blur-2xl bg-white/55 dark:bg-slate-900/55 border border-white/30 dark:border-slate-700/40 shadow-xl shadow-slate-200/40 dark:shadow-slate-950/50"
+      className="max-w-5xl mx-auto mt-2 max-[400px]:mt-2 sm:mt-4 md:mt-8 mb-6 sm:mb-10 md:mb-12 px-3 max-[360px]:px-2 sm:px-5 md:px-6 py-5 max-[360px]:py-4 sm:py-8 md:py-10 pb-32 max-[360px]:pb-28 sm:pb-40 md:pb-44 rounded-2xl max-[400px]:rounded-xl sm:rounded-[2rem] md:rounded-[2.5rem] backdrop-blur-xl bg-white/55 dark:bg-slate-950/75 dark:border-slate-800/50 border border-white/30 dark:shadow-xl dark:shadow-black/40 shadow-xl shadow-slate-200/40"
     >
       <header className="mb-3 max-[400px]:mb-2 flex items-center justify-between gap-2 max-[360px]:gap-1">
         <div className="flex items-center gap-2 max-[360px]:gap-1.5 min-w-0">
@@ -498,30 +741,32 @@ export const DashboardView: React.FC<DashboardProps> = ({
         <ProgressModeSwitch mode={progressMode} onChange={handleProgressModeChange} />
       </header>
 
-      <div className="mb-4 max-[400px]:mb-3 flex justify-end gap-1.5 max-[360px]:gap-1">
-        <select
-          value={selectedYear}
-          onChange={(e) => setSelectedYear(Number(e.target.value))}
-          className="h-7 max-[360px]:h-6 sm:h-8 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 max-[360px]:px-1.5 text-[11px] max-[360px]:text-[10px] sm:text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500"
-          style={{ WebkitTapHighlightColor: 'transparent' }}
-        >
-          {availableYears.map(year => (
-            <option key={year} value={year}>{year}</option>
-          ))}
-        </select>
-        {progressMode === 'month' && (
+      {(progressMode === 'year' || (progressMode === 'week' && sameTemplateAllWeeksProp)) && (
+        <div className="mb-4 max-[400px]:mb-3 flex justify-end gap-1.5 max-[360px]:gap-1 flex-wrap">
           <select
-            value={selectedMonth}
-            onChange={(e) => setSelectedMonth(Number(e.target.value))}
+            value={selectedYear}
+            onChange={(e) => setSelectedYear(Number(e.target.value))}
             className="h-7 max-[360px]:h-6 sm:h-8 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 max-[360px]:px-1.5 text-[11px] max-[360px]:text-[10px] sm:text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500"
             style={{ WebkitTapHighlightColor: 'transparent' }}
           >
-            {MONTH_LABELS_SHORT.map((month, idx) => (
-              <option key={month} value={idx}>{month}</option>
+            {availableYears.map(year => (
+              <option key={year} value={year}>{year}</option>
             ))}
           </select>
-        )}
-      </div>
+          {progressMode === 'week' && sameTemplateAllWeeksProp && (
+            <select
+              value={selectedMonth}
+              onChange={(e) => setSelectedMonth(Number(e.target.value))}
+              className="h-7 max-[360px]:h-6 sm:h-8 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 max-[360px]:px-1.5 text-[11px] max-[360px]:text-[10px] sm:text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500"
+              style={{ WebkitTapHighlightColor: 'transparent' }}
+            >
+              {MONTH_LABELS_SHORT.map((month, idx) => (
+                <option key={month} value={idx}>{month}</option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3 max-[360px]:gap-2 sm:gap-4 md:gap-6 mb-6 max-[400px]:mb-5 sm:mb-8 md:mb-10">
         {/* Main Stat Card - Progreso total */}
@@ -571,7 +816,7 @@ export const DashboardView: React.FC<DashboardProps> = ({
           </p>
           <AnimatePresence mode="wait">
             <motion.div
-              key={`${activeRoutineName}-${progressMode}-${selectedYear}-${selectedMonth}`}
+              key={`${activeRoutineName}-${progressMode}-${sameTemplateAllWeeksProp}-${cl}-${selectedYear}-${selectedMonth}-${cwoyProp}`}
               initial={{ opacity: 0, y: 6 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -6 }}
@@ -687,7 +932,7 @@ export const DashboardView: React.FC<DashboardProps> = ({
                 <h3 className="font-bold text-slate-800 dark:text-slate-200 mb-4">{tm.name}</h3>
                 <AnimatePresence mode="wait">
                   <motion.div
-                    key={`${tm.id}-${activeRoutineName}-${progressMode}-${selectedYear}-${selectedMonth}`}
+                    key={`${tm.id}-${activeRoutineName}-${progressMode}-${sameTemplateAllWeeksProp}-${cl}-${selectedYear}-${selectedMonth}-${cwoyProp}`}
                     initial={{ opacity: 0, y: 6 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -6 }}
@@ -772,7 +1017,7 @@ export const DashboardView: React.FC<DashboardProps> = ({
               <button
                 type="button"
                 onClick={() => onOpenSocial('challenges')}
-                className="w-full text-left flex items-center justify-between gap-2 py-2 px-3 rounded-xl bg-white/80 dark:bg-slate-900/80 border border-amber-100 dark:border-amber-900/40 hover:border-indigo-300 dark:hover:border-indigo-600 transition-colors"
+                className="w-full text-left flex items-center justify-between gap-2 py-2 px-3 rounded-xl bg-white/80 dark:bg-slate-950/80 border border-amber-100 dark:border-amber-900/40 hover:border-indigo-300 dark:hover:border-indigo-600 transition-colors"
               >
                 <div className="min-w-0">
                   <p className="font-bold text-slate-900 dark:text-slate-100 truncate text-sm">{featuredFriendTournament.title}</p>

@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { flushSync } from 'react-dom';
 import { AnimatePresence, motion, useMotionValue } from 'motion/react';
 import * as XLSX from 'xlsx';
 import { LayoutDashboard, Dumbbell, Users, Settings } from 'lucide-react';
@@ -51,6 +52,7 @@ import {
   entryDateISO,
 } from '@/src/lib/calendarWeekDate';
 import { buildBaselineHistoryEntry, TM_BASELINE_DATE_ISO } from '@/src/lib/historyTm';
+import { mergeRoutineHistoryFromServer } from '@/src/lib/routineHistoryMerge';
 import { serializeLogEntryForMongo } from '@/src/lib/routineLogs';
 import {
   getLogEntryForExercise,
@@ -242,6 +244,12 @@ interface RoutinePlan {
   hiddenFromSocial?: boolean;
   cycleLength?: number;
   skippedWeeks?: number[];
+  /** ISO del servidor: inicio de la rutina (gráficos en 0 antes de esta fecha). */
+  createdAt?: string;
+  /** ISO: referencia para % en gráficos (sin cambiar TM). */
+  progressCheckpointAt?: string;
+  /** Snapshot de TM al checkpoint ({ tmId: valor }). */
+  progressCheckpointTms?: Record<string, number>;
   weeks: TrainingWeek[];
   versions?: RoutineVersion[];
   baseTemplate?: TrainingWeek[];
@@ -493,6 +501,7 @@ const createRoutinePlan = (id: string, name: string, options?: boolean | CreateR
     hiddenFromSocial: false,
     cycleLength,
     skippedWeeks: [] as number[],
+    createdAt: new Date().toISOString(),
     weeks,
     versions: [{ effectiveFromWeek: 1, weeks: tpl }],
     baseTemplate: tpl,
@@ -615,6 +624,7 @@ export default function App() {
     const resolved = weekYear ?? getYearWeekDay();
     const dow = typeof resolved.dayOfWeek === 'number' ? resolved.dayOfWeek : 0;
     const dateISO = dateISOFromYearWeekDay(resolved.year, resolved.week, dow);
+    const nowIso = new Date().toISOString();
     return {
       date,
       week: resolved.week,
@@ -625,7 +635,9 @@ export default function App() {
       rms: { ...currentRms },
       total: progress.value,
       progressKind: progress.kind,
-      trainingMaxes: tmValues
+      trainingMaxes: tmValues,
+      createdAt: nowIso,
+      updatedAt: nowIso,
     };
   };
 
@@ -660,7 +672,13 @@ export default function App() {
       try {
         const body = buildPlanPatchPayload(r);
         const res = await apiPatch<Record<string, unknown>>(`/api/routines/${r.id}/plan`, body);
-        const plan = expandRoutineFromApi(res);
+        const plan = expandRoutineFromApi({
+          ...res,
+          progressCheckpointAt:
+            (res as any).progressCheckpointAt ?? r.progressCheckpointAt,
+          progressCheckpointTms:
+            (res as any).progressCheckpointTms ?? r.progressCheckpointTms,
+        });
         setRoutines((prev) => prev.map((x) => (x.id === plan.id ? plan : x)));
         bumpRoutineDataRefresh();
       } catch (e) {
@@ -719,6 +737,10 @@ export default function App() {
   const tmHighlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Tarjetas TM que acaban de subir desde el registro de series (feedback visual). */
   const [tmAutoHighlightIds, setTmAutoHighlightIds] = useState<string[]>([]);
+  /** PUT /api/routines/:id progressCheckpointAt (botón Checkpoint en Rutina). */
+  const [routineCheckpointSaving, setRoutineCheckpointSaving] = useState(false);
+  /** POST /api/routines (modal Crear rutina). */
+  const [routineCreateLoading, setRoutineCreateLoading] = useState(false);
   /** Incrementa para forzar que el efecto de sync de logs vuelva a ejecutarse con el estado ya committed. */
   const [planSyncTick, setPlanSyncTick] = useState(0);
   /** Recalcula cada render para no quedar congelado en la semana del primer mount. */
@@ -936,6 +958,8 @@ export default function App() {
               baseTemplate: created.baseTemplate,
               weekTypeOverrides: created.weekTypeOverrides,
               logs: {},
+              progressCheckpointAt: created.progressCheckpointAt,
+              progressCheckpointTms: created.progressCheckpointTms,
             });
             setRoutines([plan]);
             setActiveRoutineId(plan.id);
@@ -960,6 +984,8 @@ export default function App() {
               baseTemplate: r.baseTemplate,
               weekTypeOverrides: r.weekTypeOverrides,
               logs: r.logs,
+              progressCheckpointAt: r.progressCheckpointAt,
+              progressCheckpointTms: r.progressCheckpointTms,
             })
           );
           setRoutines(plans);
@@ -1137,22 +1163,22 @@ export default function App() {
         const historyRes = await apiGet<any[]>(`/api/training-maxes/history?routineId=${encodeURIComponent(hid)}`).catch(() => []);
         if (cancelled || activeRoutineIdRef.current !== hid) return;
         if (!historyRes?.length) return;
-        setHistory(
-          historyRes.map((h: any) => ({
-            date: h.date,
-            week: h.week,
-            year: h.year,
-            dayOfWeek: h.dayOfWeek != null ? Number(h.dayOfWeek) : undefined,
-            dateISO: h.dateISO ? String(h.dateISO) : undefined,
-            month: h.month != null ? Number(h.month) : undefined,
-            rms: h.rms || {},
-            total: Number(h.total),
-            trainingMaxes: h.trainingMaxes || {},
-            progressKind: h.progressKind,
-            routineId: h.routineId ? String(h.routineId) : hid,
-            createdAt: h.createdAt ? String(h.createdAt) : undefined,
-          }))
-        );
+        const mapped: HistoryEntry[] = historyRes.map((h: any) => ({
+          date: h.date ?? h.dateLabel ?? '',
+          week: h.week,
+          year: h.year,
+          dayOfWeek: h.dayOfWeek != null ? Number(h.dayOfWeek) : undefined,
+          dateISO: h.dateISO ? String(h.dateISO) : undefined,
+          month: h.month != null ? Number(h.month) : undefined,
+          rms: h.rms || {},
+          total: Number(h.total),
+          trainingMaxes: h.trainingMaxes || {},
+          progressKind: h.progressKind,
+          routineId: h.routineId ? String(h.routineId) : hid,
+          createdAt: h.createdAt ? String(h.createdAt) : undefined,
+          updatedAt: h.updatedAt ? String(h.updatedAt) : undefined,
+        }));
+        setHistory((prev) => mergeRoutineHistoryFromServer(prev, mapped));
       } catch (e) {
         console.error('[App] Error cargando historial de la rutina:', e);
       }
@@ -1773,6 +1799,7 @@ export default function App() {
   ) => {
     const name = routineName?.trim();
     if (!name) return;
+    setRoutineCreateLoading(true);
     const sameTemplateAllWeeks = opts?.sameTemplateAllWeeks !== false;
     const cycleLength = opts?.cycleLength ?? 4;
     const newRoutine = createRoutinePlan(`routine-${Math.random().toString(36).slice(2, 8)}`, name, {
@@ -1806,6 +1833,8 @@ export default function App() {
         baseTemplate: created.baseTemplate,
         weekTypeOverrides: created.weekTypeOverrides,
         logs: created.logs,
+        progressCheckpointAt: created.progressCheckpointAt,
+        progressCheckpointTms: created.progressCheckpointTms,
       });
       setRoutines(prev => [...prev, plan]);
       setActiveRoutineId(plan.id);
@@ -1818,6 +1847,10 @@ export default function App() {
       bumpRoutineDataRefresh();
     } catch (e) {
       console.error('[Routine] Error creando:', e);
+      toast.error('No se pudo crear la rutina. Inténtalo de nuevo.');
+      throw e;
+    } finally {
+      setRoutineCreateLoading(false);
     }
   };
 
@@ -1832,9 +1865,20 @@ export default function App() {
     }
   };
 
-  const handleCopyFriendRoutine = async (routine: { name: string; weeks: TrainingWeek[] }) => {
-    /** Copia completa del plan (series, %, kg, modo, linkedTo tipo tm-*); IDs nuevos y sin _dbId del amigo. */
+  const handleCopyFriendRoutine = async (routine: {
+    name: string;
+    weeks: TrainingWeek[];
+    friendTrainingMaxes?: { name: string; mode: string; linkedExercise?: string }[];
+  }) => {
+    /** Plan: series, %, kg, modo, linkedTo tm-*; sin historial ni series del amigo. TMs nuevos a 0. */
     const newWeeks = cloneFriendRoutineWeeks(routine.weeks);
+    const normMode = (m: string): 'weight' | 'reps' | 'seconds' => {
+      if (m === 'reps' || m === 'seconds' || m === 'weight') return m;
+      return 'weight';
+    };
+    const linkOk = (s?: string): s is 'bench' | 'squat' | 'deadlift' =>
+      s === 'bench' || s === 'squat' || s === 'deadlift';
+
     try {
       const copiedBaseTemplate = deriveBaseTemplateFromWeeks(newWeeks);
       const created = await apiPost<any>('/api/routines', {
@@ -1845,21 +1889,42 @@ export default function App() {
         isActive: true,
       });
       const planId = String(created._id || created.id);
-      let tmsList = await apiGet<any[]>(`/api/training-maxes?routineId=${encodeURIComponent(planId)}`).catch(() => []);
-      if (!tmsList?.length) {
-        await Promise.all(
-          DEFAULT_TM_SEED_ZERO.map((row) =>
-            apiPost('/api/training-maxes', {
-              name: row.name,
-              value: row.value,
-              mode: row.mode,
-              ...(row.linkedExercise ? { linkedExercise: row.linkedExercise } : {}),
-              routineId: planId,
-            }).catch(() => {})
-          )
-        );
-        tmsList = await apiGet<any[]>(`/api/training-maxes?routineId=${encodeURIComponent(planId)}`).catch(() => []);
-      }
+
+      const seen = new Set<string>();
+      const fromFriend =
+        routine.friendTrainingMaxes?.filter((r) => {
+          const name = String(r.name || '').trim();
+          if (!name) return false;
+          const m = normMode(String(r.mode || 'weight'));
+          const k = `${name}::${m}`;
+          if (seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        }).map((r) => ({
+          name: String(r.name).trim(),
+          value: 0,
+          mode: normMode(String(r.mode || 'weight')),
+          ...(r.linkedExercise && linkOk(r.linkedExercise) ? { linkedExercise: r.linkedExercise } : {}),
+        })) ?? [];
+
+      const seedRows =
+        fromFriend.length > 0
+          ? fromFriend
+          : DEFAULT_TM_SEED_ZERO.map((row) => ({ ...row }));
+
+      await Promise.all(
+        seedRows.map((row) =>
+          apiPost('/api/training-maxes', {
+            name: row.name,
+            value: 0,
+            mode: row.mode,
+            routineId: planId,
+            ...('linkedExercise' in row && row.linkedExercise ? { linkedExercise: row.linkedExercise } : {}),
+          }).catch(() => {})
+        )
+      );
+
+      const tmsList = await apiGet<any[]>(`/api/training-maxes?routineId=${encodeURIComponent(planId)}`).catch(() => []);
       await Promise.all(
         (tmsList || []).map((t: any) =>
           apiPut(`/api/training-maxes/${t._id || t.id}`, {
@@ -1868,6 +1933,7 @@ export default function App() {
           }).catch(() => {})
         )
       );
+
       const plan: RoutinePlan = expandRoutineFromApi({
         _id: created._id,
         id: created.id,
@@ -1881,14 +1947,18 @@ export default function App() {
         baseTemplate: created.baseTemplate,
         weekTypeOverrides: created.weekTypeOverrides,
         logs: created.logs,
+        progressCheckpointAt: created.progressCheckpointAt,
+        progressCheckpointTms: created.progressCheckpointTms,
       });
       setRoutines(prev => [...prev, plan]);
       setActiveRoutineId(plan.id);
       setProgramScreen('plan');
       setView('program');
       bumpRoutineDataRefresh();
+      toast.success('Rutina copiada: mismos ejercicios y TMs a 0 en tu cuenta.');
     } catch (e) {
       console.error('[Routine] Error copiando:', e);
+      toast.error('No se pudo copiar la rutina. Inténtalo de nuevo.');
     }
   };
 
@@ -2946,7 +3016,10 @@ export default function App() {
   };
 
   // Función para guardar el período actual en el historial (local + DB)
-  const saveCurrentPeriod = async (silent = false) => {
+  const saveCurrentPeriod = async (
+    silent = false,
+    opts?: { syncCommit?: boolean }
+  ) => {
     if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) return;
     if (tmsLoadedForRoutineRef.current !== activeRoutineId) return;
     if (!tms.length) return;
@@ -2955,16 +3028,22 @@ export default function App() {
     const { week, year, dayOfWeek: d } = getYearWeekDay(now);
     const entry = createHistoryEntry(currentDate, tms, rms, { week, year, dayOfWeek: d });
     const entryWithRoutine: HistoryEntry = { ...entry, routineId: activeRoutineId };
-    setHistory(prev => {
-      const samePeriod = (e: HistoryEntry) =>
-        e.year === year && e.week === week && (e.dayOfWeek ?? 0) === d;
-      const filtered = prev.filter(e => !samePeriod(e));
-      return [...filtered, entryWithRoutine].sort((a, b) => {
-        const c = entryDateISO(a).localeCompare(entryDateISO(b));
-        if (c !== 0) return c;
-        return (a.createdAt || '').localeCompare(b.createdAt || '');
+    const commitHistory = () =>
+      setHistory((prev) => {
+        const samePeriod = (e: HistoryEntry) =>
+          e.year === year && e.week === week && (e.dayOfWeek ?? 0) === d;
+        const filtered = prev.filter((e) => !samePeriod(e));
+        return [...filtered, entryWithRoutine].sort((a, b) => {
+          const c = entryDateISO(a).localeCompare(entryDateISO(b));
+          if (c !== 0) return c;
+          return (a.createdAt || '').localeCompare(b.createdAt || '');
+        });
       });
-    });
+    if (opts?.syncCommit) {
+      flushSync(commitHistory);
+    } else {
+      commitHistory();
+    }
     try {
       await apiPost('/api/training-maxes/save-period', {
         routineId: activeRoutineId,
@@ -2982,6 +3061,26 @@ export default function App() {
       if (!silent) alert(`✅ Período guardado: ${currentDate}`);
     } catch (e) {
       console.error('[History] Error guardando período:', e);
+    }
+  };
+
+  const handleRoutineProgressCheckpoint = async () => {
+    if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) return;
+    if (tmsLoadedForRoutineRef.current !== activeRoutineId) return;
+    if (!tms.length) return;
+    setRoutineCheckpointSaving(true);
+    try {
+      await saveCurrentPeriod(true, { syncCommit: true });
+      const iso = new Date().toISOString();
+      const tmSnap: Record<string, number> = {};
+      tms.forEach((t) => { tmSnap[t.id] = t.value; });
+      await apiPut(`/api/routines/${activeRoutineId}`,
+        { progressCheckpointAt: iso, progressCheckpointTms: tmSnap });
+      updateActiveRoutine((r) => ({ ...r, progressCheckpointAt: iso, progressCheckpointTms: tmSnap }));
+    } catch (e) {
+      console.error('[Routine] Error checkpoint progreso:', e);
+    } finally {
+      setRoutineCheckpointSaving(false);
     }
   };
 
@@ -3052,16 +3151,26 @@ export default function App() {
     }
   };
 
+  /** Lista única 1–53; no altera la semana visible del plan al marcar/desmarcar. */
+  const normalizeSkippedWeeks = (arr: number[]) =>
+    [...new Set(arr.map((w) => Math.round(Number(w))).filter((w) => Number.isFinite(w) && w >= 1 && w <= 53))].sort(
+      (a, b) => a - b
+    );
+
   const handleSkipWeek = async (weekNumber: number, mode: 'shift' | 'skip_only') => {
     const routine = routines.find((r) => r.id === activeRoutineId);
     if (!routine || routine.id.startsWith('routine-')) return;
     const current = routine.skippedWeeks || [];
     let next: number[];
     if (mode === 'skip_only') {
-      next = current.includes(weekNumber) ? current.filter(w => w !== weekNumber) : [...current, weekNumber];
+      next = current.includes(weekNumber) ? current.filter((w) => w !== weekNumber) : [...current, weekNumber];
     } else {
-      next = [...current, weekNumber].filter((v, i, a) => a.indexOf(v) === i);
+      // Misma lista que skip_only: si ya estaba saltada (p. ej. "Saltar la semana"), se puede deshacer
+      next = current.includes(weekNumber)
+        ? current.filter((w) => w !== weekNumber)
+        : [...current, weekNumber].filter((v, i, a) => a.indexOf(v) === i);
     }
+    next = normalizeSkippedWeeks(next);
     updateActiveRoutine((r) => ({ ...r, skippedWeeks: next }));
     try {
       await apiPut(`/api/routines/${routine.id}`, { skippedWeeks: next });
@@ -3113,7 +3222,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 font-sans selection:bg-indigo-100 selection:text-indigo-900 overflow-hidden px-2 max-[400px]:px-2 sm:px-4 md:px-6 py-2 sm:py-4 relative">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 font-sans selection:bg-indigo-100 selection:text-indigo-900 dark:selection:bg-indigo-950/80 dark:selection:text-indigo-200 overflow-hidden px-2 max-[400px]:px-2 sm:px-4 md:px-6 py-2 sm:py-4 relative">
       {isSwitchingAccount && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/50 backdrop-blur-sm">
           <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
@@ -3125,7 +3234,7 @@ export default function App() {
         dragElastic={0.15}
         dragDirectionLock
         onDragEnd={handleDragEnd}
-        className="min-h-screen touch-pan-y backdrop-blur-2xl bg-white/50 dark:bg-slate-900/50"
+        className="min-h-screen touch-pan-y backdrop-blur-xl bg-white/50 dark:bg-slate-950/95 dark:backdrop-blur-md"
       >
         <AnimatePresence mode="wait">
           {view === 'dashboard' && (
@@ -3137,6 +3246,12 @@ export default function App() {
               trainingMaxes={tms}
               activeRoutineName={activeRoutine?.name || 'Rutina activa'}
               activeRoutineId={activeRoutineId}
+              progressCheckpointAt={activeRoutine?.progressCheckpointAt}
+              progressCheckpointTms={activeRoutine?.progressCheckpointTms}
+              routineCreatedAt={activeRoutine?.createdAt}
+              sameTemplateAllWeeks={activeRoutine?.sameTemplateAllWeeks !== false}
+              cycleLength={activeRoutine?.cycleLength ?? 4}
+              currentWeekOfYear={currentWeekOfYear}
               challenges={challenges}
               checkIns={checkIns}
               onUpdateUser={handleUpdateUser}
@@ -3163,6 +3278,7 @@ export default function App() {
                 onBack={() => setProgramScreen('plan')}
                 onActivateRoutine={handleSelectRoutine}
                 onCreateRoutine={handleCreateRoutine}
+                createRoutineLoading={routineCreateLoading}
                 onRenameRoutine={handleRenameRoutine}
                 onDeleteRoutine={handleDeleteRoutine}
                 onToggleHiddenRoutine={handleToggleHiddenRoutine}
@@ -3213,6 +3329,14 @@ export default function App() {
                 onExport={exportToExcel}
                 skippedWeeks={activeRoutine?.skippedWeeks ?? []}
                 onSkipWeek={handleSkipWeek}
+                onRoutineProgressCheckpoint={
+                  activeRoutine &&
+                  !(activeRoutine.id.startsWith('routine-') && activeRoutine.id.length < 20) &&
+                  tms.length > 0
+                    ? handleRoutineProgressCheckpoint
+                    : undefined
+                }
+                routineProgressCheckpointLoading={routineCheckpointSaving}
               />
             )
           )}
@@ -3255,7 +3379,7 @@ export default function App() {
       </motion.div>
       
       {/* Floating Bottom Navigation */}
-      <nav className="fixed bottom-1 max-[360px]:bottom-1 sm:bottom-6 left-1 right-1 max-[360px]:left-1 max-[360px]:right-1 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 max-w-md sm:max-w-none mx-auto bg-white/25 dark:bg-slate-900/25 backdrop-blur-[32px] sm:backdrop-blur-[48px] border border-white/15 dark:border-slate-500/15 shadow-2xl shadow-black/5 dark:shadow-black/20 rounded-xl max-[360px]:rounded-lg sm:rounded-2xl md:rounded-[2rem] px-1.5 max-[360px]:px-1 sm:px-6 py-1.5 max-[360px]:py-1 sm:py-3 flex items-center justify-between sm:gap-6 gap-0.5 max-[360px]:gap-0 z-50">
+      <nav className="fixed bottom-1 max-[360px]:bottom-1 sm:bottom-6 left-1 right-1 max-[360px]:left-1 max-[360px]:right-1 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 max-w-md sm:max-w-none mx-auto bg-white/25 dark:bg-slate-950/70 backdrop-blur-[32px] sm:backdrop-blur-[48px] border border-white/15 dark:border-slate-800/50 shadow-2xl shadow-black/5 dark:shadow-black/50 rounded-xl max-[360px]:rounded-lg sm:rounded-2xl md:rounded-[2rem] px-1.5 max-[360px]:px-1 sm:px-6 py-1.5 max-[360px]:py-1 sm:py-3 flex items-center justify-between sm:gap-6 gap-0.5 max-[360px]:gap-0 z-50">
         <button 
           onClick={() => setView('dashboard')} 
           className={cn(

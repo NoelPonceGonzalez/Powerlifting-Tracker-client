@@ -16,6 +16,7 @@ import {
   Calendar,
   Copy,
   Dumbbell,
+  Loader2,
   X,
   Send,
   Pencil,
@@ -56,7 +57,11 @@ interface SocialViewProps {
   onCheckInUpdate?: (checkInId: string, gymName: string, time: string) => void;
   onCheckInDelete?: (checkInId: string) => void;
   onRefreshChallenges?: () => void;
-  onCopyFriendRoutine?: (routine: { name: string; weeks: TrainingWeek[] }) => void;
+  onCopyFriendRoutine?: (payload: {
+    name: string;
+    weeks: TrainingWeek[];
+    friendTrainingMaxes?: { name: string; mode: string; linkedExercise?: string }[];
+  }) => void | Promise<void>;
   onUnfriend?: (friendId: string) => Promise<void>;
 }
 
@@ -143,7 +148,13 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [unfriendConfirmFriend, setUnfriendConfirmFriend] = useState<Friend | null>(null);
   const [friendRoutine, setFriendRoutine] = useState<{ name: string; weeks: TrainingWeek[] } | null>(null);
   const [friendRoutineLoading, setFriendRoutineLoading] = useState(false);
-  const [friendProfile, setFriendProfile] = useState<{ name: string; avatar: string; trainingMaxes: { name: string; value: number; mode: string }[] } | null>(null);
+  const [friendProfile, setFriendProfile] = useState<{
+    name: string;
+    avatar: string;
+    trainingMaxes: { name: string; value: number; mode: string }[];
+    trainingMaxesAll?: { name: string; mode: string; linkedExercise?: string }[];
+  } | null>(null);
+  const [copyingFriendRoutine, setCopyingFriendRoutine] = useState(false);
   const [sendingRequestTo, setSendingRequestTo] = useState<string | null>(null);
   const [gymName, setGymName] = useState('');
   const [gymTime, setGymTime] = useState('');
@@ -280,7 +291,16 @@ export const SocialView: React.FC<SocialViewProps> = ({
           versions?: { effectiveFromWeek: number; weeks: TrainingWeek[] }[];
           logs?: unknown;
         } | null>(`/api/social/friends/${friend.id}/routine`),
-        apiGet<{ name: string; avatar: string; trainingMaxes: { name: string; value: number; mode: string }[] }>(`/api/social/friends/${friend.id}/profile`).catch(() => ({ name: friend.name, avatar: friend.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(friend.name)}`, trainingMaxes: [] })),
+        apiGet<{
+          name: string;
+          avatar: string;
+          trainingMaxes: { name: string; value: number; mode: string }[];
+          trainingMaxesAll?: { name: string; mode: string; linkedExercise?: string }[];
+        }>(`/api/social/friends/${friend.id}/profile?includeAllTms=1`).catch(() => ({
+          name: friend.name,
+          avatar: friend.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(friend.name)}`,
+          trainingMaxes: [],
+        })),
       ]);
       if (routineRaw) {
         const { expandRoutineFromApi } = await import('@/src/lib/planMaterialize');
@@ -305,12 +325,23 @@ export const SocialView: React.FC<SocialViewProps> = ({
     }
   }, []);
 
-  const handleCopyAndActivate = useCallback(() => {
+  const handleCopyAndActivate = useCallback(async () => {
     if (!friendRoutine || !onCopyFriendRoutine) return;
-    onCopyFriendRoutine(friendRoutine);
-    setShowFriendModal(null);
-    setFriendRoutine(null);
-  }, [friendRoutine, onCopyFriendRoutine]);
+    setCopyingFriendRoutine(true);
+    try {
+      await onCopyFriendRoutine({
+        name: friendRoutine.name,
+        weeks: friendRoutine.weeks,
+        friendTrainingMaxes: friendProfile?.trainingMaxesAll?.length
+          ? friendProfile.trainingMaxesAll
+          : undefined,
+      });
+      setShowFriendModal(null);
+      setFriendRoutine(null);
+    } finally {
+      setCopyingFriendRoutine(false);
+    }
+  }, [friendRoutine, onCopyFriendRoutine, friendProfile?.trainingMaxesAll]);
 
   const handleSendRequestClick = useCallback(async (u: UserSearchResult) => {
     if (!onSendFriendRequest || u.friendshipStatus === 'accepted' || u.friendshipStatus === 'pending') return;
@@ -383,7 +414,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
             variant="primary" 
             size="sm" 
             onClick={() => setShowCheckInModal(true)}
-            className="w-11 h-11 p-0 rounded-xl shadow-lg shadow-indigo-200"
+            className="w-11 h-11 p-0 rounded-xl shadow-lg shadow-indigo-200 dark:shadow-indigo-950/50"
             title="Voy al Gym"
             aria-label="Voy al Gym"
           >
@@ -496,19 +527,15 @@ export const SocialView: React.FC<SocialViewProps> = ({
               </section>
             )}
 
-            <section>
-              <div className="flex items-center gap-2 mb-4">
-                <h2 className="text-xl font-black text-slate-800 uppercase tracking-tight dark:text-slate-100">Solicitudes Pendientes</h2>
-                <span className="bg-indigo-100 text-indigo-600 px-2 py-0.5 rounded-full text-xs font-bold">
-                  {pendingRequests.length}
-                </span>
-              </div>
+            {pendingRequests.length > 0 && (
+              <section>
+                <div className="flex items-center gap-2 mb-4">
+                  <h2 className="text-xl font-black text-slate-800 uppercase tracking-tight dark:text-slate-100">Solicitudes pendientes</h2>
+                  <span className="bg-indigo-100 text-indigo-600 dark:bg-indigo-950/60 dark:text-indigo-300 px-2 py-0.5 rounded-full text-xs font-bold">
+                    {pendingRequests.length}
+                  </span>
+                </div>
 
-              {pendingRequests.length === 0 ? (
-                <Card padding="lg" className="text-center border-dashed border-2 border-slate-200 bg-transparent">
-                  <p className="text-slate-400 font-medium">No tienes solicitudes pendientes</p>
-                </Card>
-              ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {pendingRequests.map(req => (
                     <Card key={req.id} padding="md" rounded="xl" className="flex items-center justify-between">
@@ -540,11 +567,16 @@ export const SocialView: React.FC<SocialViewProps> = ({
                     </Card>
                   ))}
                 </div>
-              )}
-            </section>
+              </section>
+            )}
 
             <section>
-              <h2 className="text-xl font-black text-slate-800 uppercase tracking-tight mb-4 dark:text-slate-100">Mis Amigos</h2>
+              <div className="flex items-center gap-2 mb-4">
+                <h2 className="text-xl font-black text-slate-800 uppercase tracking-tight dark:text-slate-100">Mis amigos</h2>
+                <span className="bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 px-2 py-0.5 rounded-full text-xs font-bold tabular-nums">
+                  {friendsToDisplay.length}
+                </span>
+              </div>
               {friendsToDisplay.length === 0 ? (
                 <Card padding="lg" className="text-center border-dashed border-2 border-slate-200 bg-transparent">
                   <p className="text-slate-400 font-medium">Aún no tienes amigos. Busca atletas arriba.</p>
@@ -900,31 +932,44 @@ export const SocialView: React.FC<SocialViewProps> = ({
                       </Button>
                     </Card>
                   ) : (
-                    othersCheckIns.map(checkIn => (
-                      <Card key={checkIn.id} padding="md" rounded="2xl" className="flex items-center justify-between border-l-4 border-l-indigo-600">
-                        <div className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
-                          <Avatar src={checkIn.avatar} name={checkIn.userName} className="w-10 h-10 sm:w-12 sm:h-12 rounded-full border-2 border-slate-100 dark:border-slate-700 flex-shrink-0" />
-                          <div className="min-w-0">
-                            <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
-                              <span className="text-indigo-600 dark:text-indigo-400">{checkIn.userName}</span> va a entrenar
-                            </p>
-                            <div className="flex items-center gap-2 sm:gap-3 mt-0.5 flex-wrap">
-                              <div className="flex items-center gap-1 text-[10px] font-black uppercase text-slate-400 tracking-widest">
-                                <MapPin size={10} className="flex-shrink-0" />
-                                <span className="truncate">{checkIn.gymName}</span>
-                              </div>
-                              <div className="flex items-center gap-1 text-[10px] font-black uppercase text-slate-400 tracking-widest">
-                                <Clock size={10} className="flex-shrink-0" />
-                                <span>{checkIn.time}</span>
+                    othersCheckIns.map(checkIn => {
+                      const alreadyJoined = myCheckInToday && myCheckInToday.gymName === checkIn.gymName && myCheckInToday.time === checkIn.time;
+                      return (
+                        <Card key={checkIn.id} padding="md" rounded="2xl" className="flex items-center justify-between border-l-4 border-l-indigo-600">
+                          <div className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
+                            <Avatar src={checkIn.avatar} name={checkIn.userName} className="w-10 h-10 sm:w-12 sm:h-12 rounded-full border-2 border-slate-100 dark:border-slate-700 flex-shrink-0" />
+                            <div className="min-w-0">
+                              <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
+                                <span className="text-indigo-600 dark:text-indigo-400">{checkIn.userName}</span> va a entrenar
+                              </p>
+                              <div className="flex items-center gap-2 sm:gap-3 mt-0.5 flex-wrap">
+                                <div className="flex items-center gap-1 text-[10px] font-black uppercase text-slate-400 tracking-widest">
+                                  <MapPin size={10} className="flex-shrink-0" />
+                                  <span className="truncate">{checkIn.gymName}</span>
+                                </div>
+                                <div className="flex items-center gap-1 text-[10px] font-black uppercase text-slate-400 tracking-widest">
+                                  <Clock size={10} className="flex-shrink-0" />
+                                  <span>{checkIn.time}</span>
+                                </div>
                               </div>
                             </div>
                           </div>
-                        </div>
-                        <Button variant="ghost" size="sm" className="text-indigo-600 flex-shrink-0">
-                          <ArrowRight size={18} />
-                        </Button>
-                      </Card>
-                    ))
+                          {alreadyJoined ? (
+                            <span className="text-xs font-black uppercase tracking-wider text-slate-400 flex-shrink-0">Tú</span>
+                          ) : (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="rounded-xl border-indigo-200 text-indigo-600 flex-shrink-0"
+                              onClick={() => onCheckIn(checkIn.gymName, checkIn.time)}
+                            >
+                              <MapPin size={14} className="mr-1" />
+                              Me uno
+                            </Button>
+                          )}
+                        </Card>
+                      );
+                    })
                   )}
                 </div>
               );
@@ -1102,7 +1147,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                               'rounded-xl border-2 px-3 py-2.5 text-left transition-colors',
                               createBodyWeightScoring === opt.value
                                 ? 'border-indigo-500 bg-white dark:bg-slate-900 ring-1 ring-indigo-500/30'
-                                : 'border-slate-200 dark:border-slate-600 bg-white/80 dark:bg-slate-800/80'
+                                : 'border-slate-200 dark:border-slate-600 bg-white/80 dark:bg-slate-950/85'
                             )}
                           >
                             <span className="text-sm font-bold text-slate-900 dark:text-slate-100 block">{opt.short}</span>
@@ -1116,7 +1161,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                     </div>
                   )}
                   {createUsePointsSystem && createType === 'weight' && (
-                    <p className="text-xs text-slate-600 dark:text-slate-300 rounded-xl border border-indigo-200/80 dark:border-indigo-800/50 px-3 py-2 bg-white/70 dark:bg-slate-900/50">
+                    <p className="text-xs text-slate-600 dark:text-slate-300 rounded-xl border border-indigo-200/80 dark:border-indigo-800/50 px-3 py-2 bg-white/70 dark:bg-slate-950/70">
                       En pruebas de fuerza los puntos son siempre IPF GL (el peso corporal ya entra en esa fórmula). El ajuste de arriba no aplica a kg.
                     </p>
                   )}
@@ -1453,10 +1498,20 @@ export const SocialView: React.FC<SocialViewProps> = ({
                       <Button 
                         variant="primary" 
                         className="w-full rounded-xl"
-                        onClick={handleCopyAndActivate}
+                        onClick={() => void handleCopyAndActivate()}
+                        disabled={copyingFriendRoutine}
                       >
-                        <Copy size={18} className="mr-2" />
-                        Copiar y activar en Rutinas
+                        {copyingFriendRoutine ? (
+                          <>
+                            <Loader2 size={18} className="mr-2 animate-spin shrink-0" />
+                            Copiando rutina…
+                          </>
+                        ) : (
+                          <>
+                            <Copy size={18} className="mr-2 shrink-0" />
+                            Copiar y activar en Rutinas
+                          </>
+                        )}
                       </Button>
                     )}
                   </div>

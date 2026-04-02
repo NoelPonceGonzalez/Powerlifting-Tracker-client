@@ -586,7 +586,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.4, ease: 'easeOut' }}
-        className="w-full max-w-md backdrop-blur-2xl bg-white/70 dark:bg-slate-900/70 rounded-3xl p-8 border border-white/40 dark:border-slate-700/40 shadow-2xl"
+        className="w-full max-w-md backdrop-blur-2xl bg-white/70 dark:bg-slate-950/85 rounded-3xl p-8 border border-white/40 dark:border-slate-800/50 shadow-2xl dark:shadow-black/40"
       >
         {isAddAccount && onCancel && (
           <div className="mb-4">
@@ -630,7 +630,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
         </div>
 
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
-          <Card padding="xl" rounded="2xl" className="shadow-xl shadow-slate-200/50 dark:shadow-xl dark:shadow-black/30 bg-white/90 dark:bg-slate-900/90 backdrop-blur-xl border border-white/60 dark:border-slate-700/60">
+          <Card padding="xl" rounded="2xl" className="shadow-xl shadow-slate-200/50 dark:shadow-xl dark:shadow-black/50 bg-white/90 dark:bg-slate-950/90 backdrop-blur-xl border border-white/60 dark:border-slate-800/60">
             {mode !== 'complete' && (
               <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl mb-6">
                 <button

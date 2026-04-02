@@ -121,6 +121,10 @@ export function expandRoutineFromApi(raw: {
   baseTemplate?: TrainingWeek[];
   weekTypeOverrides?: Array<{ weekType: number; week: TrainingWeek }>;
   logs?: unknown;
+  createdAt?: string | Date;
+  updatedAt?: string | Date;
+  progressCheckpointAt?: string | Date;
+  progressCheckpointTms?: Record<string, number>;
 }): {
   id: string;
   name: string;
@@ -133,6 +137,9 @@ export function expandRoutineFromApi(raw: {
   baseTemplate: TrainingWeek[];
   weekTypeOverrides: Array<{ weekType: number; week: TrainingWeek }>;
   logs: Record<string, LogEntry>;
+  createdAt?: string;
+  progressCheckpointAt?: string;
+  progressCheckpointTms?: Record<string, number>;
 } {
   const cycleLength = Number.isFinite(raw.cycleLength) && raw.cycleLength! >= 1 ? raw.cycleLength! : 4;
   const logs = parseRoutineLogsFromMongo(raw.logs);
@@ -196,6 +203,22 @@ export function expandRoutineFromApi(raw: {
     outVersions = [{ effectiveFromWeek: 1, weeks: deriveBaseTemplateFromWeeks(outWeeks, cycleLength) }];
   }
 
+  const createdRaw = raw.createdAt;
+  const createdAt =
+    createdRaw != null
+      ? typeof createdRaw === 'string'
+        ? createdRaw
+        : (createdRaw as Date).toISOString?.() ?? undefined
+      : undefined;
+
+  const pca = raw.progressCheckpointAt;
+  const progressCheckpointAt =
+    pca == null
+      ? undefined
+      : typeof pca === 'string'
+        ? pca
+        : (pca as Date).toISOString?.() ?? undefined;
+
   return {
     id: String(raw._id ?? raw.id ?? ''),
     name: raw.name || 'Rutina',
@@ -208,5 +231,10 @@ export function expandRoutineFromApi(raw: {
     baseTemplate: baseTemplateOut.length > 0 ? baseTemplateOut : deriveBaseTemplateFromWeeks(outWeeks, cycleLength),
     weekTypeOverrides: raw.weekTypeOverrides || [],
     logs,
+    ...(createdAt ? { createdAt } : {}),
+    ...(progressCheckpointAt ? { progressCheckpointAt } : {}),
+    ...(raw.progressCheckpointTms && typeof raw.progressCheckpointTms === 'object' && Object.keys(raw.progressCheckpointTms).length > 0
+      ? { progressCheckpointTms: raw.progressCheckpointTms as Record<string, number> }
+      : {}),
   };
 }

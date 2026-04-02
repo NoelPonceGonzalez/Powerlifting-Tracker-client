@@ -76,3 +76,21 @@ export function getTMsForView(
     value: snap.trainingMaxes![tm.id] ?? tm.value,
   }));
 }
+
+/** Instante del snapshot (checkpoint de % vs orden del historial). */
+export function historyEntryTimeMs(h: HistoryEntry): number {
+  if (h.updatedAt) {
+    const tu = Date.parse(h.updatedAt);
+    if (!Number.isNaN(tu)) return tu;
+  }
+  if (h.createdAt) {
+    const t = Date.parse(h.createdAt);
+    if (!Number.isNaN(t)) return t;
+  }
+  if (h.dateISO && /^\d{4}-\d{2}-\d{2}$/.test(h.dateISO)) {
+    return Date.parse(`${h.dateISO}T12:00:00`);
+  }
+  const y = h.year ?? new Date().getFullYear();
+  const m = h.month != null ? Math.max(0, h.month - 1) : 0;
+  return new Date(y, m, 1).getTime();
+}

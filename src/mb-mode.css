@@ -1,400 +1,203 @@
 /**
- * Modo MB: acentos índigo/violeta (y sombras anidadas) → rosa.
- * Las utilidades compuestas (dark:, hover:, etc.) son clases distintas en Tailwind;
- * hay que mapearlas explícitamente para que el modo MB cubra toda la UI.
+ * Modo MB: acentos índigo/violeta/azul → rosa.
+ *
+ * IMPORTANTE: estas reglas NO usan @layer.
+ * En CSS cascade layers, las reglas fuera de toda @layer SIEMPRE ganan
+ * sobre las que están dentro de una @layer (como las utilidades de Tailwind).
+ * Así `html[data-mb="true"] .text-indigo-600` siempre sobreescribe `.text-indigo-600`.
  */
 
-/* Transición suave al activar/desactivar modo MB */
+/* ── Transición suave al activar/desactivar modo MB ── */
 html .text-indigo-600,
 html .text-indigo-400,
 html .text-indigo-300,
 html .text-indigo-500,
+html .text-blue-600,
+html .text-blue-500,
+html .text-violet-600,
 html .bg-indigo-50,
 html .bg-indigo-100,
 html .bg-indigo-500,
 html .bg-indigo-600,
+html .bg-blue-50,
+html .bg-blue-100,
 html .border-indigo-200,
 html .border-indigo-500,
-html .border-indigo-600 {
-  transition: color 0.3s ease, background-color 0.3s ease, border-color 0.3s ease;
+html .border-indigo-600,
+html .border-blue-500,
+html .ring-indigo-400,
+html .ring-indigo-500 {
+  transition:
+    color 0.3s ease,
+    background-color 0.3s ease,
+    border-color 0.3s ease,
+    box-shadow 0.3s ease;
 }
 
-@layer components {
-  /* ——— Índigo: utilidades “simples” ——— */
-  html[data-mb="true"] .bg-indigo-50 {
-    @apply bg-pink-50;
-  }
-  html[data-mb="true"] .bg-indigo-100 {
-    @apply bg-pink-100;
-  }
-  html[data-mb="true"] .bg-indigo-500 {
-    @apply bg-pink-500;
-  }
-  html[data-mb="true"] .bg-indigo-600 {
-    @apply bg-pink-600;
-  }
-  html[data-mb="true"] .bg-indigo-700 {
-    @apply bg-pink-700;
-  }
-  html[data-mb="true"] .bg-indigo-900 {
-    @apply bg-pink-900;
-  }
-  html[data-mb="true"] .bg-indigo-950 {
-    @apply bg-pink-950;
-  }
+/* ═══════════ Backgrounds ═══════════ */
+html[data-mb="true"] .bg-indigo-50   { background-color: oklch(0.971 0.014 343.198) !important; }
+html[data-mb="true"] .bg-indigo-100  { background-color: oklch(0.948 0.028 342.258) !important; }
+html[data-mb="true"] .bg-indigo-500  { background-color: oklch(0.656 0.241 354.308) !important; }
+html[data-mb="true"] .bg-indigo-600  { background-color: oklch(0.592 0.249 0.584) !important; }
+html[data-mb="true"] .bg-indigo-700  { background-color: oklch(0.525 0.223 3.958) !important; }
+html[data-mb="true"] .bg-indigo-900  { background-color: oklch(0.368 0.146 13.071) !important; }
+html[data-mb="true"] .bg-indigo-950  { background-color: oklch(0.277 0.109 12.348) !important; }
 
-  html[data-mb="true"] .text-indigo-100 {
-    @apply text-pink-100;
-  }
-  html[data-mb="true"] .text-indigo-300 {
-    @apply text-pink-300;
-  }
-  html[data-mb="true"] .text-indigo-400 {
-    @apply text-pink-400;
-  }
-  html[data-mb="true"] .text-indigo-500 {
-    @apply text-pink-500;
-  }
-  html[data-mb="true"] .text-indigo-600 {
-    @apply text-pink-600;
-  }
-  html[data-mb="true"] .text-indigo-700 {
-    @apply text-pink-700;
-  }
-  html[data-mb="true"] .text-indigo-900 {
-    @apply text-pink-900;
-  }
-  html[data-mb="true"] .text-indigo-50 {
-    @apply text-pink-50;
-  }
+/* ═══════════ Text ═══════════ */
+html[data-mb="true"] .text-indigo-50  { color: oklch(0.971 0.014 343.198) !important; }
+html[data-mb="true"] .text-indigo-100 { color: oklch(0.948 0.028 342.258) !important; }
+html[data-mb="true"] .text-indigo-300 { color: oklch(0.823 0.12 346.018) !important; }
+html[data-mb="true"] .text-indigo-400 { color: oklch(0.738 0.188 350.114) !important; }
+html[data-mb="true"] .text-indigo-500 { color: oklch(0.656 0.241 354.308) !important; }
+html[data-mb="true"] .text-indigo-600 { color: oklch(0.592 0.249 0.584) !important; }
+html[data-mb="true"] .text-indigo-700 { color: oklch(0.525 0.223 3.958) !important; }
+html[data-mb="true"] .text-indigo-800 { color: oklch(0.459 0.187 3.815) !important; }
+html[data-mb="true"] .text-indigo-900 { color: oklch(0.368 0.146 13.071) !important; }
 
-  html[data-mb="true"] .border-indigo-200 {
-    @apply border-pink-200;
-  }
-  html[data-mb="true"] .border-indigo-300 {
-    @apply border-pink-300;
-  }
-  html[data-mb="true"] .border-indigo-400 {
-    @apply border-pink-400;
-  }
-  html[data-mb="true"] .border-indigo-500 {
-    @apply border-pink-500;
-  }
-  html[data-mb="true"] .border-indigo-600 {
-    @apply border-pink-600;
-  }
-  html[data-mb="true"] .border-indigo-700 {
-    @apply border-pink-700;
-  }
-  html[data-mb="true"] .border-indigo-800 {
-    @apply border-pink-800;
-  }
+/* ═══════════ Border ═══════════ */
+html[data-mb="true"] .border-indigo-200  { border-color: oklch(0.899 0.061 343.231) !important; }
+html[data-mb="true"] .border-indigo-300  { border-color: oklch(0.823 0.12 346.018) !important; }
+html[data-mb="true"] .border-indigo-400  { border-color: oklch(0.738 0.188 350.114) !important; }
+html[data-mb="true"] .border-indigo-500  { border-color: oklch(0.656 0.241 354.308) !important; }
+html[data-mb="true"] .border-indigo-600  { border-color: oklch(0.592 0.249 0.584) !important; }
+html[data-mb="true"] .border-indigo-700  { border-color: oklch(0.525 0.223 3.958) !important; }
+html[data-mb="true"] .border-indigo-800  { border-color: oklch(0.459 0.187 3.815) !important; }
+html[data-mb="true"] .border-l-indigo-600 { border-left-color: oklch(0.592 0.249 0.584) !important; }
 
-  html[data-mb="true"] .border-l-indigo-600 {
-    @apply border-l-pink-600;
-  }
+/* ═══════════ Ring ═══════════ */
+html[data-mb="true"] .ring-indigo-200 { --tw-ring-color: oklch(0.899 0.061 343.231) !important; }
+html[data-mb="true"] .ring-indigo-400 { --tw-ring-color: oklch(0.738 0.188 350.114) !important; }
+html[data-mb="true"] .ring-indigo-500 { --tw-ring-color: oklch(0.656 0.241 354.308) !important; }
 
-  html[data-mb="true"] .ring-indigo-200 {
-    @apply ring-pink-200;
-  }
-  html[data-mb="true"] .ring-indigo-400 {
-    @apply ring-pink-400;
-  }
-  html[data-mb="true"] .ring-indigo-500 {
-    @apply ring-pink-500;
-  }
-  html[data-mb="true"] .shadow-indigo-100 {
-    @apply shadow-pink-100;
-  }
-  html[data-mb="true"] .shadow-indigo-200 {
-    @apply shadow-pink-200;
-  }
-  html[data-mb="true"] .shadow-indigo-300 {
-    @apply shadow-pink-300;
-  }
-  html[data-mb="true"] .from-indigo-500 {
-    @apply from-pink-500;
-  }
-  html[data-mb="true"] .from-indigo-600 {
-    @apply from-pink-600;
-  }
-  html[data-mb="true"] .from-indigo-50 {
-    @apply from-pink-50;
-  }
-  html[data-mb="true"] .to-indigo-600 {
-    @apply to-pink-600;
-  }
-  html[data-mb="true"] .to-indigo-700 {
-    @apply to-pink-700;
-  }
-  html[data-mb="true"] .to-indigo-50 {
-    @apply to-pink-50;
-  }
-  html[data-mb="true"] .via-indigo-500 {
-    @apply via-pink-500;
-  }
-  html[data-mb="true"] .accent-indigo-600 {
-    @apply accent-pink-600;
-  }
-  html[data-mb="true"] .fill-indigo-500 {
-    @apply fill-pink-500;
-  }
-  html[data-mb="true"] .stroke-indigo-500 {
-    @apply stroke-pink-500;
-  }
+/* ═══════════ Shadow ═══════════ */
+html[data-mb="true"] .shadow-indigo-100 { --tw-shadow-color: oklch(0.948 0.028 342.258) !important; }
+html[data-mb="true"] .shadow-indigo-200 { --tw-shadow-color: oklch(0.899 0.061 343.231) !important; }
+html[data-mb="true"] .shadow-indigo-300 { --tw-shadow-color: oklch(0.823 0.12 346.018) !important; }
 
-  /* Opacidades / fondos */
-  html[data-mb="true"] .bg-indigo-50\/80 {
-    @apply bg-pink-50/80;
-  }
-  html[data-mb="true"] .bg-indigo-50\/40 {
-    @apply bg-pink-50/40;
-  }
-  html[data-mb="true"] .bg-indigo-950\/40 {
-    @apply bg-pink-950/40;
-  }
-  html[data-mb="true"] .bg-indigo-950\/50 {
-    @apply bg-pink-950/50;
-  }
-  html[data-mb="true"] .bg-indigo-950\/30 {
-    @apply bg-pink-950/30;
-  }
-  html[data-mb="true"] .bg-indigo-950\/25 {
-    @apply bg-pink-950/25;
-  }
-  html[data-mb="true"] .bg-indigo-900\/50 {
-    @apply bg-pink-900/50;
-  }
-  html[data-mb="true"] .bg-indigo-900\/40 {
-    @apply bg-pink-900/40;
-  }
-  html[data-mb="true"] .bg-indigo-900\/30 {
-    @apply bg-pink-900/30;
-  }
-  html[data-mb="true"] .to-indigo-50\/30 {
-    @apply to-pink-50/30;
-  }
+/* ═══════════ Gradient ═══════════ */
+html[data-mb="true"] .from-indigo-500 { --tw-gradient-from: oklch(0.656 0.241 354.308) !important; }
+html[data-mb="true"] .from-indigo-600 { --tw-gradient-from: oklch(0.592 0.249 0.584) !important; }
+html[data-mb="true"] .from-indigo-50  { --tw-gradient-from: oklch(0.971 0.014 343.198) !important; }
+html[data-mb="true"] .to-indigo-600   { --tw-gradient-to: oklch(0.592 0.249 0.584) !important; }
+html[data-mb="true"] .to-indigo-700   { --tw-gradient-to: oklch(0.525 0.223 3.958) !important; }
+html[data-mb="true"] .to-indigo-50    { --tw-gradient-to: oklch(0.971 0.014 343.198) !important; }
+html[data-mb="true"] .via-indigo-500  { --tw-gradient-via: oklch(0.656 0.241 354.308) !important; }
 
-  html[data-mb="true"] .border-indigo-200\/80 {
-    @apply border-pink-200/80;
-  }
+/* ═══════════ Misc ═══════════ */
+html[data-mb="true"] .accent-indigo-600 { accent-color: oklch(0.592 0.249 0.584) !important; }
+html[data-mb="true"] .fill-indigo-500   { fill: oklch(0.656 0.241 354.308) !important; }
+html[data-mb="true"] .stroke-indigo-500 { stroke: oklch(0.656 0.241 354.308) !important; }
 
-  html[data-mb="true"] .shadow-indigo-200\/50 {
-    @apply shadow-pink-200/50;
-  }
-  html[data-mb="true"] .shadow-indigo-300\/40 {
-    @apply shadow-pink-300/40;
-  }
+/* ═══════════ Opacidades / fondos compuestos ═══════════ */
+html[data-mb="true"] .bg-indigo-50\/80  { background-color: color-mix(in oklch, oklch(0.971 0.014 343.198) 80%, transparent) !important; }
+html[data-mb="true"] .bg-indigo-50\/40  { background-color: color-mix(in oklch, oklch(0.971 0.014 343.198) 40%, transparent) !important; }
+html[data-mb="true"] .bg-indigo-950\/40 { background-color: color-mix(in oklch, oklch(0.277 0.109 12.348) 40%, transparent) !important; }
+html[data-mb="true"] .bg-indigo-950\/50 { background-color: color-mix(in oklch, oklch(0.277 0.109 12.348) 50%, transparent) !important; }
+html[data-mb="true"] .bg-indigo-950\/30 { background-color: color-mix(in oklch, oklch(0.277 0.109 12.348) 30%, transparent) !important; }
+html[data-mb="true"] .bg-indigo-950\/25 { background-color: color-mix(in oklch, oklch(0.277 0.109 12.348) 25%, transparent) !important; }
+html[data-mb="true"] .bg-indigo-900\/50 { background-color: color-mix(in oklch, oklch(0.368 0.146 13.071) 50%, transparent) !important; }
+html[data-mb="true"] .bg-indigo-900\/40 { background-color: color-mix(in oklch, oklch(0.368 0.146 13.071) 40%, transparent) !important; }
+html[data-mb="true"] .bg-indigo-900\/30 { background-color: color-mix(in oklch, oklch(0.368 0.146 13.071) 30%, transparent) !important; }
+html[data-mb="true"] .to-indigo-50\/30  { --tw-gradient-to: color-mix(in oklch, oklch(0.971 0.014 343.198) 30%, transparent) !important; }
+html[data-mb="true"] .border-indigo-200\/80 { border-color: color-mix(in oklch, oklch(0.899 0.061 343.231) 80%, transparent) !important; }
+html[data-mb="true"] .shadow-indigo-200\/50 { --tw-shadow-color: color-mix(in oklch, oklch(0.899 0.061 343.231) 50%, transparent) !important; }
+html[data-mb="true"] .shadow-indigo-300\/40 { --tw-shadow-color: color-mix(in oklch, oklch(0.823 0.12 346.018) 40%, transparent) !important; }
+html[data-mb="true"] .ring-indigo-500\/30   { --tw-ring-color: color-mix(in oklch, oklch(0.656 0.241 354.308) 30%, transparent) !important; }
 
-  html[data-mb="true"] .ring-indigo-500\/30 {
-    @apply ring-pink-500/30;
-  }
+/* ═══════════ Focus ═══════════ */
+html[data-mb="true"] .focus\:ring-indigo-500\/30:focus { --tw-ring-color: color-mix(in oklch, oklch(0.656 0.241 354.308) 30%, transparent) !important; }
+html[data-mb="true"] .focus\:border-indigo-500:focus   { border-color: oklch(0.656 0.241 354.308) !important; }
+html[data-mb="true"] .focus\:ring-indigo-200:focus     { --tw-ring-color: oklch(0.899 0.061 343.231) !important; }
+html[data-mb="true"] .focus\:ring-indigo-100:focus     { --tw-ring-color: oklch(0.948 0.028 342.258) !important; }
+html[data-mb="true"] .focus\:ring-indigo-500:focus     { --tw-ring-color: oklch(0.656 0.241 354.308) !important; }
+html[data-mb="true"] .focus-visible\:ring-indigo-500:focus-visible { --tw-ring-color: oklch(0.656 0.241 354.308) !important; }
 
-  html[data-mb="true"] .focus\:ring-indigo-500\/30:focus {
-    @apply ring-pink-500/30;
-  }
-  html[data-mb="true"] .focus\:border-indigo-500:focus {
-    @apply border-pink-500;
-  }
-  html[data-mb="true"] .focus\:ring-indigo-200:focus {
-    @apply ring-pink-200;
-  }
-  html[data-mb="true"] .focus\:ring-indigo-100:focus {
-    @apply ring-pink-100;
-  }
-  html[data-mb="true"] .focus\:ring-indigo-500:focus {
-    @apply ring-pink-500;
-  }
+/* ═══════════ Hover ═══════════ */
+html[data-mb="true"] .hover\:bg-indigo-50:hover   { background-color: oklch(0.971 0.014 343.198) !important; }
+html[data-mb="true"] .hover\:bg-indigo-100:hover  { background-color: oklch(0.948 0.028 342.258) !important; }
+html[data-mb="true"] .hover\:bg-indigo-700:hover  { background-color: oklch(0.525 0.223 3.958) !important; }
+html[data-mb="true"] .hover\:text-indigo-600:hover { color: oklch(0.592 0.249 0.584) !important; }
+html[data-mb="true"] .hover\:border-indigo-200:hover { border-color: oklch(0.899 0.061 343.231) !important; }
+html[data-mb="true"] .hover\:border-indigo-300:hover { border-color: oklch(0.823 0.12 346.018) !important; }
+html[data-mb="true"] .hover\:border-indigo-400:hover { border-color: oklch(0.738 0.188 350.114) !important; }
+html[data-mb="true"] .hover\:border-indigo-700:hover { border-color: oklch(0.525 0.223 3.958) !important; }
 
-  html[data-mb="true"] .hover\:bg-indigo-50:hover {
-    @apply bg-pink-50;
-  }
-  html[data-mb="true"] .hover\:bg-indigo-100:hover {
-    @apply bg-pink-100;
-  }
-  html[data-mb="true"] .hover\:bg-indigo-700:hover {
-    @apply bg-pink-700;
-  }
-  html[data-mb="true"] .hover\:text-indigo-600:hover {
-    @apply text-pink-600;
-  }
-  html[data-mb="true"] .hover\:border-indigo-200:hover {
-    @apply border-pink-200;
-  }
-  html[data-mb="true"] .hover\:border-indigo-300:hover {
-    @apply border-pink-300;
-  }
-  html[data-mb="true"] .hover\:border-indigo-400:hover {
-    @apply border-pink-400;
-  }
-  html[data-mb="true"] .hover\:border-indigo-700:hover {
-    @apply border-pink-700;
-  }
+/* Group hover */
+html[data-mb="true"] .group:hover .group-hover\:text-indigo-600 { color: oklch(0.592 0.249 0.584) !important; }
 
-  html[data-mb="true"] .group:hover .group-hover\:text-indigo-600 {
-    @apply text-pink-600;
-  }
-  html[data-mb="true"].dark .group:hover .dark\:group-hover\:text-indigo-400 {
-    @apply text-pink-400;
-  }
+/* ═══════════ Dark mode ═══════════ */
+html[data-mb="true"] :is(.dark, .dark *).text-indigo-50  { color: oklch(0.971 0.014 343.198) !important; }
+html[data-mb="true"] :is(.dark, .dark *).text-indigo-100 { color: oklch(0.948 0.028 342.258) !important; }
+html[data-mb="true"] :is(.dark, .dark *).text-indigo-300 { color: oklch(0.823 0.12 346.018) !important; }
+html[data-mb="true"] :is(.dark, .dark *).text-indigo-400 { color: oklch(0.738 0.188 350.114) !important; }
 
-  /* Oscuro: texto / fondo índigo */
-  html[data-mb="true"] .dark\:text-indigo-50 {
-    @apply text-pink-50;
-  }
-  html[data-mb="true"] .dark\:text-indigo-100 {
-    @apply text-pink-100;
-  }
-  html[data-mb="true"] .dark\:text-indigo-300 {
-    @apply text-pink-300;
-  }
-  html[data-mb="true"] .dark\:text-indigo-400 {
-    @apply text-pink-400;
-  }
+html[data-mb="true"] :is(.dark, .dark *).bg-indigo-50     { background-color: color-mix(in oklch, oklch(0.277 0.109 12.348) 40%, transparent) !important; }
+html[data-mb="true"] :is(.dark, .dark *).bg-indigo-100    { background-color: oklch(0.948 0.028 342.258) !important; }
+html[data-mb="true"] :is(.dark, .dark *).bg-indigo-500    { background-color: oklch(0.656 0.241 354.308) !important; }
+html[data-mb="true"] :is(.dark, .dark *).bg-indigo-600    { background-color: oklch(0.592 0.249 0.584) !important; }
+html[data-mb="true"] :is(.dark, .dark *).bg-indigo-700    { background-color: oklch(0.525 0.223 3.958) !important; }
+html[data-mb="true"] :is(.dark, .dark *).bg-indigo-950    { background-color: oklch(0.277 0.109 12.348) !important; }
+html[data-mb="true"] :is(.dark, .dark *).bg-indigo-950\/40 { background-color: color-mix(in oklch, oklch(0.277 0.109 12.348) 40%, transparent) !important; }
+html[data-mb="true"] :is(.dark, .dark *).bg-indigo-950\/50 { background-color: color-mix(in oklch, oklch(0.277 0.109 12.348) 50%, transparent) !important; }
+html[data-mb="true"] :is(.dark, .dark *).bg-indigo-950\/30 { background-color: color-mix(in oklch, oklch(0.277 0.109 12.348) 30%, transparent) !important; }
+html[data-mb="true"] :is(.dark, .dark *).bg-indigo-950\/25 { background-color: color-mix(in oklch, oklch(0.277 0.109 12.348) 25%, transparent) !important; }
+html[data-mb="true"] :is(.dark, .dark *).bg-indigo-900\/50 { background-color: color-mix(in oklch, oklch(0.368 0.146 13.071) 50%, transparent) !important; }
+html[data-mb="true"] :is(.dark, .dark *).bg-indigo-900\/40 { background-color: color-mix(in oklch, oklch(0.368 0.146 13.071) 40%, transparent) !important; }
+html[data-mb="true"] :is(.dark, .dark *).bg-indigo-900\/30 { background-color: color-mix(in oklch, oklch(0.368 0.146 13.071) 30%, transparent) !important; }
 
-  html[data-mb="true"] .dark\:bg-indigo-50 {
-    @apply bg-pink-50;
-  }
-  html[data-mb="true"] .dark\:bg-indigo-100 {
-    @apply bg-pink-100;
-  }
-  html[data-mb="true"] .dark\:bg-indigo-500 {
-    @apply bg-pink-500;
-  }
-  html[data-mb="true"] .dark\:bg-indigo-950 {
-    @apply bg-pink-950;
-  }
-  html[data-mb="true"] .dark\:bg-indigo-950\/40 {
-    @apply bg-pink-950/40;
-  }
-  html[data-mb="true"] .dark\:bg-indigo-950\/50 {
-    @apply bg-pink-950/50;
-  }
-  html[data-mb="true"] .dark\:bg-indigo-950\/30 {
-    @apply bg-pink-950/30;
-  }
-  html[data-mb="true"] .dark\:bg-indigo-950\/25 {
-    @apply bg-pink-950/25;
-  }
-  html[data-mb="true"] .dark\:bg-indigo-900\/50 {
-    @apply bg-pink-900/50;
-  }
-  html[data-mb="true"] .dark\:bg-indigo-900\/40 {
-    @apply bg-pink-900/40;
-  }
-  html[data-mb="true"] .dark\:bg-indigo-900\/30 {
-    @apply bg-pink-900/30;
-  }
+html[data-mb="true"] :is(.dark, .dark *).border-indigo-500    { border-color: oklch(0.656 0.241 354.308) !important; }
+html[data-mb="true"] :is(.dark, .dark *).border-indigo-600    { border-color: oklch(0.592 0.249 0.584) !important; }
+html[data-mb="true"] :is(.dark, .dark *).border-indigo-700    { border-color: oklch(0.525 0.223 3.958) !important; }
+html[data-mb="true"] :is(.dark, .dark *).border-indigo-800    { border-color: oklch(0.459 0.187 3.815) !important; }
+html[data-mb="true"] :is(.dark, .dark *).border-indigo-800\/60 { border-color: color-mix(in oklch, oklch(0.459 0.187 3.815) 60%, transparent) !important; }
+html[data-mb="true"] :is(.dark, .dark *).border-indigo-800\/50 { border-color: color-mix(in oklch, oklch(0.459 0.187 3.815) 50%, transparent) !important; }
+html[data-mb="true"] :is(.dark, .dark *).border-indigo-900\/50 { border-color: color-mix(in oklch, oklch(0.368 0.146 13.071) 50%, transparent) !important; }
 
-  html[data-mb="true"] .dark\:border-indigo-500 {
-    @apply border-pink-500;
-  }
-  html[data-mb="true"] .dark\:border-indigo-600 {
-    @apply border-pink-600;
-  }
-  html[data-mb="true"] .dark\:border-indigo-700 {
-    @apply border-pink-700;
-  }
-  html[data-mb="true"] .dark\:border-indigo-800 {
-    @apply border-pink-800;
-  }
-  html[data-mb="true"] .dark\:border-indigo-800\/60 {
-    @apply border-pink-800/60;
-  }
-  html[data-mb="true"] .dark\:border-indigo-800\/50 {
-    @apply border-pink-800/50;
-  }
-  html[data-mb="true"] .dark\:border-indigo-900\/50 {
-    @apply border-pink-900/50;
-  }
+html[data-mb="true"] :is(.dark, .dark *).shadow-indigo-500\/25 { --tw-shadow-color: rgb(236 72 153 / 0.25) !important; }
+html[data-mb="true"] :is(.dark, .dark *).shadow-indigo-500\/20 { --tw-shadow-color: rgb(236 72 153 / 0.2) !important; }
+html[data-mb="true"] :is(.dark, .dark *).shadow-indigo-900\/50 { --tw-shadow-color: rgb(131 24 67 / 0.5) !important; }
+html[data-mb="true"] :is(.dark, .dark *).shadow-indigo-950\/50 { --tw-shadow-color: rgb(80 7 36 / 0.5) !important; }
 
-  html[data-mb="true"] .dark\:shadow-indigo-500\/25 {
-    --tw-shadow-color: rgb(236 72 153 / 0.25);
-  }
-  html[data-mb="true"] .dark\:shadow-indigo-500\/20 {
-    --tw-shadow-color: rgb(236 72 153 / 0.2);
-  }
-  html[data-mb="true"] .dark\:shadow-indigo-900\/50 {
-    --tw-shadow-color: rgb(131 24 67 / 0.5);
-  }
-  html[data-mb="true"] .dark\:shadow-indigo-950\/50 {
-    --tw-shadow-color: rgb(80 7 36 / 0.5);
-  }
+html[data-mb="true"] :is(.dark, .dark *).ring-indigo-500       { --tw-ring-color: oklch(0.656 0.241 354.308) !important; }
+html[data-mb="true"] :is(.dark, .dark *).ring-indigo-500\/40   { --tw-ring-color: rgb(236 72 153 / 0.4) !important; }
+html[data-mb="true"] :is(.dark, .dark *).from-indigo-950\/30   { --tw-gradient-from: color-mix(in oklch, oklch(0.277 0.109 12.348) 30%, transparent) !important; }
+html[data-mb="true"] :is(.dark, .dark *).to-indigo-950\/30     { --tw-gradient-to: color-mix(in oklch, oklch(0.277 0.109 12.348) 30%, transparent) !important; }
 
-  html[data-mb="true"] .dark\:hover\:border-indigo-500:hover {
-    @apply border-pink-500;
-  }
-  html[data-mb="true"] .dark\:hover\:border-indigo-600:hover {
-    @apply border-pink-600;
-  }
-  html[data-mb="true"] .dark\:hover\:border-indigo-700:hover {
-    @apply border-pink-700;
-  }
-  html[data-mb="true"] .dark\:hover\:border-indigo-700\/50:hover {
-    @apply border-pink-700/50;
-  }
-  html[data-mb="true"] .dark\:hover\:bg-indigo-950\/40:hover {
-    @apply bg-pink-950/40;
-  }
-  html[data-mb="true"] .dark\:hover\:bg-indigo-900\/30:hover {
-    @apply bg-pink-900/30;
-  }
-  html[data-mb="true"] .dark\:hover\:text-indigo-400:hover {
-    @apply text-pink-400;
-  }
+/* Dark hover */
+html[data-mb="true"] :is(.dark, .dark *).hover\:border-indigo-500:hover     { border-color: oklch(0.656 0.241 354.308) !important; }
+html[data-mb="true"] :is(.dark, .dark *).hover\:border-indigo-600:hover     { border-color: oklch(0.592 0.249 0.584) !important; }
+html[data-mb="true"] :is(.dark, .dark *).hover\:border-indigo-700:hover     { border-color: oklch(0.525 0.223 3.958) !important; }
+html[data-mb="true"] :is(.dark, .dark *).hover\:border-indigo-700\/50:hover { border-color: color-mix(in oklch, oklch(0.525 0.223 3.958) 50%, transparent) !important; }
+html[data-mb="true"] :is(.dark, .dark *).hover\:bg-indigo-950\/40:hover     { background-color: color-mix(in oklch, oklch(0.277 0.109 12.348) 40%, transparent) !important; }
+html[data-mb="true"] :is(.dark, .dark *).hover\:bg-indigo-900\/30:hover     { background-color: color-mix(in oklch, oklch(0.368 0.146 13.071) 30%, transparent) !important; }
+html[data-mb="true"] :is(.dark, .dark *).hover\:bg-indigo-900\/40:hover     { background-color: color-mix(in oklch, oklch(0.368 0.146 13.071) 40%, transparent) !important; }
+html[data-mb="true"] :is(.dark, .dark *).hover\:text-indigo-400:hover       { color: oklch(0.738 0.188 350.114) !important; }
+html[data-mb="true"] :is(.dark, .dark *).hover\:bg-indigo-600:hover         { background-color: oklch(0.592 0.249 0.584) !important; }
 
-  html[data-mb="true"] .dark\:hover\:bg-indigo-600:hover {
-    @apply bg-pink-600;
-  }
-  html[data-mb="true"] .dark\:hover\:bg-indigo-900\/40:hover {
-    @apply bg-pink-900/40;
-  }
+/* Dark focus */
+html[data-mb="true"] :is(.dark, .dark *).focus\:border-indigo-400:focus     { border-color: oklch(0.738 0.188 350.114) !important; }
+html[data-mb="true"] :is(.dark, .dark *).focus\:ring-indigo-900\/40:focus   { --tw-ring-color: color-mix(in oklch, oklch(0.368 0.146 13.071) 40%, transparent) !important; }
 
-  html[data-mb="true"] .dark\:focus\:border-indigo-400:focus {
-    @apply border-pink-400;
-  }
-  html[data-mb="true"] .dark\:focus\:ring-indigo-900\/40:focus {
-    @apply ring-pink-900/40;
-  }
+/* Dark group hover */
+html[data-mb="true"] :is(.dark, .dark *).group:hover .group-hover\:text-indigo-400 { color: oklch(0.738 0.188 350.114) !important; }
 
-  html[data-mb="true"] .dark\:ring-indigo-500 {
-    @apply ring-pink-500;
-  }
-  html[data-mb="true"] .dark\:from-indigo-950\/30 {
-    @apply from-pink-950/30;
-  }
-  html[data-mb="true"] .dark\:to-indigo-950\/30 {
-    @apply to-pink-950/30;
-  }
+/* ═══════════ Violeta (Ajustes) ═══════════ */
+html[data-mb="true"] .text-violet-600          { color: oklch(0.592 0.249 0.584) !important; }
+html[data-mb="true"] .text-violet-500          { color: oklch(0.656 0.241 354.308) !important; }
+html[data-mb="true"] .text-violet-400          { color: oklch(0.738 0.188 350.114) !important; }
+html[data-mb="true"] .bg-violet-100            { background-color: oklch(0.948 0.028 342.258) !important; }
+html[data-mb="true"] :is(.dark, .dark *).text-violet-400 { color: oklch(0.738 0.188 350.114) !important; }
 
-  /* Violeta (ajustes cuenta) */
-  html[data-mb="true"] .text-violet-600 {
-    @apply text-pink-600;
-  }
-  html[data-mb="true"] .dark\:text-violet-400 {
-    @apply text-pink-400;
-  }
+/* ═══════════ Azul (Press banca, plan) → rosa ═══════════ */
+html[data-mb="true"] .text-blue-600     { color: oklch(0.592 0.249 0.584) !important; }
+html[data-mb="true"] .text-blue-500     { color: oklch(0.656 0.241 354.308) !important; }
+html[data-mb="true"] .bg-blue-50        { background-color: oklch(0.971 0.014 343.198) !important; }
+html[data-mb="true"] .bg-blue-100       { background-color: oklch(0.948 0.028 342.258) !important; }
+html[data-mb="true"] .border-blue-500   { border-color: oklch(0.656 0.241 354.308) !important; }
+html[data-mb="true"] .border-blue-400   { border-color: oklch(0.738 0.188 350.114) !important; }
+html[data-mb="true"] :is(.dark, .dark *).bg-blue-950\/40  { background-color: color-mix(in oklch, oklch(0.277 0.109 12.348) 40%, transparent) !important; }
+html[data-mb="true"] :is(.dark, .dark *).text-blue-400    { color: oklch(0.738 0.188 350.114) !important; }
 
-  /* Selección de texto */
-  html[data-mb="true"] .selection\:bg-indigo-100::selection {
-    @apply bg-pink-100;
-  }
-  html[data-mb="true"] .selection\:text-indigo-900::selection {
-    @apply text-pink-900;
-  }
-
-  /* Toast / info */
-  html[data-mb="true"] .dark\:bg-indigo-950 {
-    @apply bg-pink-950;
-  }
-  html[data-mb="true"] .dark\:text-indigo-50 {
-    @apply text-pink-50;
-  }
-  html[data-mb="true"] .dark\:ring-indigo-500\/40 {
-    --tw-ring-color: rgb(236 72 153 / 0.4);
-  }
-
-  html[data-mb="true"].dark .bg-indigo-50 {
-    @apply bg-pink-950/40;
-  }
-}
+/* ═══════════ Selección de texto ═══════════ */
+html[data-mb="true"] .selection\:bg-indigo-100::selection   { background-color: oklch(0.948 0.028 342.258) !important; }
+html[data-mb="true"] .selection\:text-indigo-900::selection { color: oklch(0.368 0.146 13.071) !important; }

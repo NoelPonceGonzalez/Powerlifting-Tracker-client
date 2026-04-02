@@ -1,7 +1,18 @@
 import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowLeft, Calendar, CalendarDays, Settings2, Eye, EyeOff, Pencil, Plus, Trash2 } from 'lucide-react';
+import {
+  ArrowLeft,
+  Calendar,
+  CalendarDays,
+  Settings2,
+  Eye,
+  EyeOff,
+  Loader2,
+  Pencil,
+  Plus,
+  Trash2,
+} from 'lucide-react';
 import { Card } from '@/src/components/ui/Card';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
@@ -20,7 +31,11 @@ interface RoutineManagerViewProps {
   routines: RoutineSummary[];
   onBack: () => void;
   onActivateRoutine: (routineId: string) => void;
-  onCreateRoutine: (name: string, options?: { sameTemplateAllWeeks: boolean; cycleLength?: number }) => void;
+  onCreateRoutine: (
+    name: string,
+    options?: { sameTemplateAllWeeks: boolean; cycleLength?: number }
+  ) => void | Promise<void>;
+  createRoutineLoading?: boolean;
   onRenameRoutine: (routineId: string, name: string) => void;
   onDeleteRoutine: (routineId: string) => void;
   onToggleHiddenRoutine?: (routineId: string) => void;
@@ -31,6 +46,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
   onBack,
   onActivateRoutine,
   onCreateRoutine,
+  createRoutineLoading = false,
   onRenameRoutine,
   onDeleteRoutine,
   onToggleHiddenRoutine,
@@ -42,20 +58,26 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
 
-  const handleCreate = () => {
+  const handleCreate = async () => {
+    if (createRoutineLoading) return;
     const trimmed = newRoutineName.trim();
     if (!trimmed) return;
     const sameTemplateAllWeeks = cycleMode === 'month';
     const resolvedCycleLength = cycleMode === 'custom' ? (typeof customCycleLength === 'number' && customCycleLength >= 1 ? customCycleLength : 0) : 4;
     if (cycleMode === 'custom' && resolvedCycleLength < 1) return;
-    onCreateRoutine(trimmed, { sameTemplateAllWeeks, cycleLength: resolvedCycleLength });
-    setNewRoutineName('');
-    setCycleMode('month');
-    setCustomCycleLength(4);
-    setShowCreateModal(false);
+    try {
+      await Promise.resolve(onCreateRoutine(trimmed, { sameTemplateAllWeeks, cycleLength: resolvedCycleLength }));
+      setNewRoutineName('');
+      setCycleMode('month');
+      setCustomCycleLength(4);
+      setShowCreateModal(false);
+    } catch {
+      /* Error: toast en App; modal abierto */
+    }
   };
 
   const closeCreateModal = () => {
+    if (createRoutineLoading) return;
     setShowCreateModal(false);
     setNewRoutineName('');
     setCycleMode('month');
@@ -71,7 +93,13 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
     >
       <header className="mb-6 sm:mb-8 flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <Button variant="outline" size="sm" onClick={onBack} className="rounded-xl border-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onBack}
+            disabled={createRoutineLoading}
+            className="rounded-xl border-2"
+          >
             <ArrowLeft size={14} />
           </Button>
           <div>
@@ -88,10 +116,15 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
             setCycleMode('month');
             setShowCreateModal(true);
           }}
+          disabled={createRoutineLoading}
           className="w-full sm:w-auto rounded-xl"
         >
-          <Plus size={14} className="mr-1" />
-          Crear rutina
+          {createRoutineLoading ? (
+            <Loader2 size={14} className="animate-spin shrink-0" />
+          ) : (
+            <Plus size={14} className="mr-1" />
+          )}
+          {createRoutineLoading ? 'Creando…' : 'Crear rutina'}
         </Button>
       </section>
 
@@ -103,8 +136,11 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={closeCreateModal}
-              className="absolute inset-0 min-h-[100dvh] bg-black/75 backdrop-blur-sm"
+              onClick={createRoutineLoading ? undefined : closeCreateModal}
+              className={cn(
+                'absolute inset-0 min-h-[100dvh] bg-black/75 backdrop-blur-sm',
+                createRoutineLoading && 'cursor-wait'
+              )}
             />
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 10 }}
@@ -119,15 +155,22 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                 onChange={(e) => setNewRoutineName(e.target.value)}
                 placeholder="Nombre (ej. Fuerza, Hipertrofia)"
                 className="mb-4"
-                onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+                disabled={createRoutineLoading}
+                onKeyDown={(e) => e.key === 'Enter' && !createRoutineLoading && void handleCreate()}
               />
               <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 mb-2">
                 Modo del ciclo
               </p>
-              <div className="grid grid-cols-3 gap-2 mb-4">
+              <div
+                className={cn(
+                  'grid grid-cols-3 gap-2 mb-4',
+                  createRoutineLoading && 'pointer-events-none opacity-60'
+                )}
+              >
                 <button
                   type="button"
                   onClick={() => setCycleMode('month')}
+                  disabled={createRoutineLoading}
                   className={cn(
                     'flex flex-col items-center gap-1.5 rounded-xl border-2 px-2 py-3 text-left transition-all',
                     cycleMode === 'month'
@@ -144,6 +187,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setCycleMode('week')}
+                  disabled={createRoutineLoading}
                   className={cn(
                     'flex flex-col items-center gap-1.5 rounded-xl border-2 px-2 py-3 text-left transition-all',
                     cycleMode === 'week'
@@ -160,6 +204,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setCycleMode('custom')}
+                  disabled={createRoutineLoading}
                   className={cn(
                     'flex flex-col items-center gap-1.5 rounded-xl border-2 px-2 py-3 text-left transition-all',
                     cycleMode === 'custom'
@@ -183,6 +228,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                     type="text"
                     inputMode="numeric"
                     value={customCycleLength}
+                    disabled={createRoutineLoading}
                     onChange={(e) => {
                       const raw = e.target.value.replace(/\D/g, '');
                       if (raw === '') { setCustomCycleLength(''); return; }
@@ -199,11 +245,32 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                 </div>
               )}
               <div className="flex gap-2">
-                <Button variant="outline" className="flex-1" onClick={closeCreateModal}>
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  onClick={closeCreateModal}
+                  disabled={createRoutineLoading}
+                >
                   Cancelar
                 </Button>
-                <Button variant="primary" className="flex-1" onClick={handleCreate} disabled={!newRoutineName.trim() || (cycleMode === 'custom' && (customCycleLength === '' || customCycleLength < 1))}>
-                  Crear
+                <Button
+                  variant="primary"
+                  className="flex-1"
+                  onClick={() => void handleCreate()}
+                  disabled={
+                    createRoutineLoading ||
+                    !newRoutineName.trim() ||
+                    (cycleMode === 'custom' && (customCycleLength === '' || customCycleLength < 1))
+                  }
+                >
+                  {createRoutineLoading ? (
+                    <>
+                      <Loader2 size={14} className="animate-spin shrink-0" />
+                      Creando…
+                    </>
+                  ) : (
+                    'Crear'
+                  )}
                 </Button>
               </div>
             </motion.div>
