@@ -11,7 +11,8 @@ export interface User {
   theme: 'light' | 'dark';
   /** Acento rosa (MB); independiente de claro/oscuro. */
   mbMode?: boolean;
-  progressMode?: 'month' | 'week' | 'year';
+  /** `month` = vista por semanas en Progreso; `year` = por meses. La forma exacta del gráfico depende de la rutina (bloque vs mes civil). */
+  progressMode?: 'month' | 'year';
 }
 
 export type ChallengeType = 'max_reps' | 'weight' | 'seconds';

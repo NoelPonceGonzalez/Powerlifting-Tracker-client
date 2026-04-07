@@ -1,7 +1,7 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { motion } from 'motion/react';
-import { User as UserIcon, Camera, Image as ImageIcon, Weight, Moon, Sun, LogOut, Users, Plus, Check, X, ZoomIn, ZoomOut, Crop } from 'lucide-react';
+import { User as UserIcon, Camera, Image as ImageIcon, Weight, Moon, Sun, LogOut, Users, Plus, Check, X, ZoomIn, ZoomOut, Crop, Sparkles } from 'lucide-react';
 import { Card } from '@/src/components/ui/Card';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { Button } from '@/src/components/ui/Button';
@@ -9,6 +9,54 @@ import { Input } from '@/src/components/ui/Input';
 import { User } from '@/src/types';
 import type { AccountSummary } from '@/src/lib/savedAccounts';
 import { cn } from '@/src/lib/utils';
+
+function touchDistance(a: Touch, b: Touch) {
+  const dx = a.clientX - b.clientX;
+  const dy = a.clientY - b.clientY;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+/** Tamaño del recuadro circular (debe coincidir con estilo del modal y con el canvas de exportación). */
+const CROP_CONTAINER = 280;
+
+/** Vista previa y canvas: misma geometría (altura base = contenedor, escala = zoom). */
+function cropLayout(
+  naturalW: number,
+  naturalH: number,
+  scale: number,
+  pos: { x: number; y: number }
+) {
+  const baseScale = CROP_CONTAINER / naturalH;
+  const effectiveW = naturalW * baseScale * scale;
+  const effectiveH = CROP_CONTAINER * scale;
+  const cx = CROP_CONTAINER / 2 + pos.x;
+  const cy = CROP_CONTAINER / 2 + pos.y;
+  const drawX = cx - effectiveW / 2;
+  const drawY = cy - effectiveH / 2;
+  return { effectiveW, effectiveH, drawX, drawY };
+}
+
+/** Evita huecos o “recortes raros” al bajar el zoom: el círculo debe quedar cubierto por la imagen. */
+function clampCropPos(
+  naturalW: number,
+  naturalH: number,
+  scale: number,
+  pos: { x: number; y: number }
+): { x: number; y: number } {
+  if (naturalW < 1 || naturalH < 1) return pos;
+  const baseScale = CROP_CONTAINER / naturalH;
+  const effectiveW = naturalW * baseScale * scale;
+  const effectiveH = CROP_CONTAINER * scale;
+  const hw = effectiveW / 2;
+  const hh = effectiveH / 2;
+  const half = CROP_CONTAINER / 2;
+  const maxX = Math.max(0, hw - half);
+  const maxY = Math.max(0, hh - half);
+  return {
+    x: Math.max(-maxX, Math.min(maxX, pos.x)),
+    y: Math.max(-maxY, Math.min(maxY, pos.y)),
+  };
+}
 
 interface SettingsViewProps {
   user: User;
@@ -50,9 +98,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [cropImage, setCropImage] = useState<string | null>(null);
   const [cropPos, setCropPos] = useState({ x: 0, y: 0 });
   const [cropScale, setCropScale] = useState(1);
+  /** Dimensiones naturales de la imagen del modal (para geometría idéntica al canvas). */
+  const [cropNatural, setCropNatural] = useState({ w: 0, h: 0 });
+  /** Imagen original completa (antes de recortar) para poder re-editar sin perder píxeles. */
+  const originalImageRef = useRef<string | null>(null);
   const cropDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
   const cropImgRef = useRef<HTMLImageElement | null>(null);
   const cropAreaRef = useRef<HTMLDivElement | null>(null);
+  const cropPosRef = useRef(cropPos);
+  const cropScaleRef = useRef(cropScale);
+  cropPosRef.current = cropPos;
+  cropScaleRef.current = cropScale;
+  const touchPanRef = useRef<{
+    touchId: number;
+    startX: number;
+    startY: number;
+    origX: number;
+    origY: number;
+  } | null>(null);
+  const pinchRef = useRef<{ startDist: number; startScale: number } | null>(null);
 
   React.useEffect(() => {
     if (!cropImage) return;
@@ -60,6 +124,115 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     document.body.style.overflow = 'hidden';
     return () => {
       document.body.style.overflow = prev;
+    };
+  }, [cropImage]);
+
+  React.useEffect(() => {
+    if (!cropImage) setCropNatural({ w: 0, h: 0 });
+  }, [cropImage]);
+
+  /** Al cambiar zoom o cargar la imagen: limitar desplazamiento para que el círculo siga cubierto (evita “recortes” al bajar zoom). */
+  useLayoutEffect(() => {
+    if (!cropImage || cropNatural.w < 1 || cropNatural.h < 1) return;
+    setCropPos((prev) => clampCropPos(cropNatural.w, cropNatural.h, cropScale, prev));
+  }, [cropImage, cropScale, cropNatural.w, cropNatural.h]);
+
+  React.useEffect(() => {
+    if (!cropImage) return;
+    const el = cropAreaRef.current;
+    if (!el) return;
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        const a = e.touches[0];
+        const b = e.touches[1];
+        pinchRef.current = {
+          startDist: touchDistance(a, b),
+          startScale: cropScaleRef.current,
+        };
+        touchPanRef.current = null;
+      } else if (e.touches.length === 1) {
+        const t = e.touches[0];
+        touchPanRef.current = {
+          touchId: t.identifier,
+          startX: t.clientX,
+          startY: t.clientY,
+          origX: cropPosRef.current.x,
+          origY: cropPosRef.current.y,
+        };
+      }
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        const a = e.touches[0];
+        const b = e.touches[1];
+        if (!pinchRef.current) {
+          pinchRef.current = {
+            startDist: touchDistance(a, b),
+            startScale: cropScaleRef.current,
+          };
+        }
+        e.preventDefault();
+        const d = touchDistance(a, b);
+        const ratio = d / pinchRef.current.startDist;
+        const next = Math.min(3, Math.max(0.3, pinchRef.current.startScale * ratio));
+        setCropScale(next);
+      } else if (e.touches.length === 1 && touchPanRef.current) {
+        e.preventDefault();
+        const t = e.touches[0];
+        if (t.identifier !== touchPanRef.current.touchId) return;
+        const dx = t.clientX - touchPanRef.current.startX;
+        const dy = t.clientY - touchPanRef.current.startY;
+        const img = cropImgRef.current;
+        const nw = img?.naturalWidth ?? 0;
+        const nh = img?.naturalHeight ?? 0;
+        const next = {
+          x: touchPanRef.current.origX + dx,
+          y: touchPanRef.current.origY + dy,
+        };
+        if (!nw || !nh) {
+          setCropPos(next);
+        } else {
+          setCropPos(clampCropPos(nw, nh, cropScaleRef.current, next));
+        }
+      }
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) pinchRef.current = null;
+      if (e.touches.length === 0) {
+        touchPanRef.current = null;
+      } else if (e.touches.length === 1) {
+        const t = e.touches[0];
+        touchPanRef.current = {
+          touchId: t.identifier,
+          startX: t.clientX,
+          startY: t.clientY,
+          origX: cropPosRef.current.x,
+          origY: cropPosRef.current.y,
+        };
+      } else if (e.touches.length === 2) {
+        const a = e.touches[0];
+        const b = e.touches[1];
+        pinchRef.current = {
+          startDist: touchDistance(a, b),
+          startScale: cropScaleRef.current,
+        };
+        touchPanRef.current = null;
+      }
+    };
+
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+    el.addEventListener('touchmove', onTouchMove, { passive: false });
+    el.addEventListener('touchend', onTouchEnd);
+    el.addEventListener('touchcancel', onTouchEnd);
+
+    return () => {
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchmove', onTouchMove);
+      el.removeEventListener('touchend', onTouchEnd);
+      el.removeEventListener('touchcancel', onTouchEnd);
     };
   }, [cropImage]);
 
@@ -71,9 +244,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     reader.onload = () => {
       const dataUrl = typeof reader.result === 'string' ? reader.result : '';
       if (!dataUrl) return;
+      originalImageRef.current = dataUrl;
       setCropImage(dataUrl);
       setCropPos({ x: 0, y: 0 });
       setCropScale(1);
+      setCropNatural({ w: 0, h: 0 });
     };
     reader.readAsDataURL(file);
   };
@@ -83,26 +258,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     const img = cropImgRef.current;
     if (!img || img.naturalWidth < 1 || img.naturalHeight < 1) return;
 
-    const containerSize = 280;
-    const baseScale = containerSize / img.naturalHeight;
-    const effectiveW = img.naturalWidth * baseScale * cropScale;
-    const effectiveH = containerSize * cropScale;
-    const drawX = containerSize / 2 + cropPos.x - effectiveW / 2;
-    const drawY = containerSize / 2 + cropPos.y - effectiveH / 2;
+    const { drawX, drawY, effectiveW, effectiveH } = cropLayout(
+      img.naturalWidth,
+      img.naturalHeight,
+      cropScale,
+      cropPos
+    );
 
     const work = document.createElement('canvas');
-    work.width = containerSize;
-    work.height = containerSize;
+    work.width = CROP_CONTAINER;
+    work.height = CROP_CONTAINER;
     const wctx = work.getContext('2d');
     if (!wctx) {
       onUpdateUser({ avatar: cropImage });
       setCropImage(null);
       return;
     }
-    wctx.clearRect(0, 0, containerSize, containerSize);
+    wctx.clearRect(0, 0, CROP_CONTAINER, CROP_CONTAINER);
     wctx.save();
     wctx.beginPath();
-    wctx.arc(containerSize / 2, containerSize / 2, containerSize / 2, 0, Math.PI * 2);
+    wctx.arc(CROP_CONTAINER / 2, CROP_CONTAINER / 2, CROP_CONTAINER / 2, 0, Math.PI * 2);
     wctx.clip();
     wctx.drawImage(
       img,
@@ -128,30 +303,47 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       return;
     }
     ctx.clearRect(0, 0, OUTPUT_SIZE, OUTPUT_SIZE);
-    ctx.drawImage(work, 0, 0, containerSize, containerSize, 0, 0, OUTPUT_SIZE, OUTPUT_SIZE);
+    /** Fondo opaco: el recorte circular deja transparencia en las esquinas; sin esto el avatar no coincide con la vista previa (object-cover en recuadro redondeado). */
+    ctx.fillStyle = user.theme === 'dark' ? '#0f172a' : '#ffffff';
+    ctx.fillRect(0, 0, OUTPUT_SIZE, OUTPUT_SIZE);
+    ctx.drawImage(work, 0, 0, CROP_CONTAINER, CROP_CONTAINER, 0, 0, OUTPUT_SIZE, OUTPUT_SIZE);
     const result = canvas.toDataURL('image/png');
     onUpdateUser({ avatar: result });
     setCropImage(null);
-  }, [cropImage, cropPos, cropScale, onUpdateUser]);
+  }, [cropImage, cropPos, cropScale, onUpdateUser, user.theme]);
 
   const handleCropPointerDown = (e: React.PointerEvent) => {
+    if (e.pointerType === 'touch') return;
     e.preventDefault();
     cropDragRef.current = { startX: e.clientX, startY: e.clientY, origX: cropPos.x, origY: cropPos.y };
     cropAreaRef.current?.setPointerCapture(e.pointerId);
   };
   const handleCropPointerMove = (e: React.PointerEvent) => {
+    if (e.pointerType === 'touch') return;
     if (!cropDragRef.current) return;
     e.preventDefault();
     const dx = e.clientX - cropDragRef.current.startX;
     const dy = e.clientY - cropDragRef.current.startY;
-    setCropPos({ x: cropDragRef.current.origX + dx, y: cropDragRef.current.origY + dy });
+    const img = cropImgRef.current;
+    const nw = img?.naturalWidth ?? 0;
+    const nh = img?.naturalHeight ?? 0;
+    const next = { x: cropDragRef.current.origX + dx, y: cropDragRef.current.origY + dy };
+    if (!nw || !nh) setCropPos(next);
+    else setCropPos(clampCropPos(nw, nh, cropScaleRef.current, next));
   };
   const handleCropPointerUp = (e: React.PointerEvent) => {
+    if (e.pointerType === 'touch') return;
     cropDragRef.current = null;
     if (cropAreaRef.current?.hasPointerCapture?.(e.pointerId)) {
       cropAreaRef.current.releasePointerCapture(e.pointerId);
     }
   };
+
+  /** Misma geometría que `handleCropConfirm` / canvas (sin transform CSS que desincronizaba el zoom). */
+  const cropPreviewLayout =
+    cropImage && cropNatural.w > 0 && cropNatural.h > 0
+      ? cropLayout(cropNatural.w, cropNatural.h, cropScale, cropPos)
+      : null;
 
   return (
     <motion.div 
@@ -267,7 +459,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   type="button"
                   onClick={() => setPhotoMenuOpen((o) => !o)}
                   className={cn(
-                    'group relative rounded-3xl focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900',
+                    'group relative rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-slate-900',
                     photoMenuOpen && 'ring-2 ring-indigo-500 ring-offset-2 dark:ring-offset-slate-900'
                   )}
                   aria-expanded={photoMenuOpen}
@@ -277,10 +469,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   <Avatar
                     src={user.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'User')}`}
                     name={user.name}
-                    className="w-24 h-24 rounded-3xl border-4 border-white dark:border-slate-700 shadow-xl pointer-events-none"
+                    className="w-24 h-24 rounded-full border-2 border-slate-100 dark:border-slate-700 shadow-xl pointer-events-none"
                   />
                   <span
-                    className="absolute inset-0 rounded-3xl bg-black/0 group-hover:bg-black/25 group-active:bg-black/35 transition-colors flex items-center justify-center"
+                    className="absolute inset-0 rounded-full bg-black/0 group-hover:bg-black/25 group-active:bg-black/35 transition-colors flex items-center justify-center"
                     aria-hidden
                   >
                     <span className="opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center gap-0.5 text-white text-[10px] font-black uppercase tracking-tight drop-shadow">
@@ -324,9 +516,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         role="menuitem"
                         className="w-full flex items-center gap-2 px-4 py-3 text-left text-sm font-bold text-slate-800 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-700/80"
                         onClick={() => {
-                          setCropImage(user.avatar!);
+                          setCropImage(originalImageRef.current || user.avatar!);
                           setCropPos({ x: 0, y: 0 });
                           setCropScale(1);
+                          setCropNatural({ w: 0, h: 0 });
                           setPhotoMenuOpen(false);
                         }}
                       >
@@ -452,20 +645,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 />
               </button>
             </div>
-            <label className="mt-5 flex cursor-pointer items-center justify-between gap-4 rounded-xl border border-slate-100 bg-slate-50/80 px-4 py-3 dark:border-slate-700 dark:bg-slate-800/50">
-              <div>
-                <p className="font-bold text-slate-900 dark:text-slate-100">Modo MB</p>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Acentos rosa en botones y gráficos (independiente de claro/oscuro).
-                </p>
+            <div className="mt-5 flex items-center justify-between gap-4 rounded-2xl border px-4 py-3.5 shadow-sm transition-colors border-slate-200/90 bg-white dark:border-slate-600/80 dark:bg-slate-900/70 dark:shadow-none">
+              <div className="flex min-w-0 flex-1 items-center gap-3">
+                <div
+                  className={cn(
+                    'flex size-11 shrink-0 items-center justify-center rounded-xl transition-colors',
+                    user.mbMode
+                      ? 'bg-pink-500 text-white shadow-md shadow-pink-200/60 dark:bg-pink-600 dark:shadow-pink-950/40'
+                      : 'bg-pink-50 text-pink-400 dark:bg-pink-950/45 dark:text-pink-300/90'
+                  )}
+                >
+                  <Sparkles size={20} strokeWidth={2} />
+                </div>
+                <div className="min-w-0">
+                  <p className="font-bold text-slate-900 dark:text-slate-100">Modo MB</p>
+                  <p className="text-xs leading-snug text-slate-500 dark:text-slate-400">
+                    Acentos rosa en botones y gráficos (independiente de claro/oscuro).
+                  </p>
+                </div>
               </div>
-              <input
-                type="checkbox"
-                checked={!!user.mbMode}
-                onChange={(e) => onUpdateUser({ mbMode: e.target.checked })}
-                className="h-5 w-5 shrink-0 rounded border-slate-300 text-pink-600 accent-pink-600 focus:ring-2 focus:ring-pink-500/30 dark:border-slate-600 dark:bg-slate-900"
-              />
-            </label>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={!!user.mbMode}
+                onClick={() => onUpdateUser({ mbMode: !user.mbMode })}
+                className={cn(
+                  'relative h-8 w-14 shrink-0 rounded-full p-1 transition-colors',
+                  user.mbMode ? 'bg-pink-500 dark:bg-pink-600' : 'bg-slate-200 dark:bg-slate-600'
+                )}
+              >
+                <motion.div
+                  animate={{ x: user.mbMode ? 24 : 0 }}
+                  transition={{ type: 'spring', stiffness: 500, damping: 35 }}
+                  className="h-6 w-6 rounded-full bg-white shadow-md ring-1 ring-black/5 dark:bg-slate-100 dark:shadow-slate-950/60 dark:ring-white/15"
+                />
+              </button>
+            </div>
           </Card>
         </section>
 
@@ -489,12 +704,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             onClick={() => setCropImage(null)}
             aria-hidden
           />
-          <div className="relative z-10 max-h-[min(100dvh,100vh)] overflow-y-auto overscroll-contain bg-white dark:bg-slate-900 w-full max-w-sm rounded-2xl p-5 shadow-2xl dark:border dark:border-slate-700 touch-auto">
+          <div className="relative z-10 max-h-[min(100dvh,100vh)] overflow-y-auto overscroll-contain bg-white dark:bg-slate-900 w-full max-w-sm rounded-2xl p-5 shadow-2xl dark:border dark:border-slate-700 touch-manipulation">
             <h3 className="text-lg font-black text-slate-900 dark:text-slate-100 mb-4 text-center">Ajustar foto</h3>
             <div
               ref={cropAreaRef}
               className="relative mx-auto overflow-hidden rounded-full border-4 border-indigo-500 touch-none bg-slate-900/20 dark:bg-slate-950/40"
-              style={{ width: 280, height: 280 }}
+              style={{ width: CROP_CONTAINER, height: CROP_CONTAINER, touchAction: 'none' }}
               onPointerDown={handleCropPointerDown}
               onPointerMove={handleCropPointerMove}
               onPointerUp={handleCropPointerUp}
@@ -509,15 +724,20 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 alt="Crop preview"
                 draggable={false}
                 className="absolute select-none"
-                style={{
-                  left: '50%',
-                  top: '50%',
-                  transform: `translate(calc(-50% + ${cropPos.x}px), calc(-50% + ${cropPos.y}px)) scale(${cropScale})`,
-                  maxWidth: 'none',
-                  maxHeight: 'none',
-                  width: 'auto',
-                  height: 280,
+                onLoad={(e) => {
+                  const t = e.currentTarget;
+                  setCropNatural({ w: t.naturalWidth, h: t.naturalHeight });
                 }}
+                style={
+                  cropPreviewLayout
+                    ? {
+                        left: cropPreviewLayout.drawX,
+                        top: cropPreviewLayout.drawY,
+                        width: cropPreviewLayout.effectiveW,
+                        height: cropPreviewLayout.effectiveH,
+                      }
+                    : { left: 0, top: 0, width: 0, height: 0, visibility: 'hidden' as const }
+                }
               />
             </div>
             <div className="flex items-center justify-center gap-3 mt-4">

@@ -34,7 +34,8 @@
       }
     },
     "notification": {
-      "color": "#4f46e5",
+      "icon": "./assets/notification-icon.png",
+      "color": "#334155",
       "androidMode": "default",
       "androidCollapsedTitle": "#{unread_notifications} notificaciones"
     },
@@ -42,7 +43,9 @@
       [
         "expo-notifications",
         {
-          "enableBackgroundRemoteNotifications": true
+          "enableBackgroundRemoteNotifications": true,
+          "icon": "./assets/notification-icon.png",
+          "color": "#334155"
         }
       ],
       "./plugins/withFirebaseAndroidSdk.cjs",

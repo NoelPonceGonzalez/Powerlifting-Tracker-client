@@ -5,7 +5,6 @@ import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { Card } from '@/src/components/ui/Card';
 import { User as AppUser } from '@/src/types';
-import { useToast } from '@/src/hooks/useToast';
 import { getApiBaseUrl, isLocalDevApiBase } from '@/src/lib/api';
 
 /** Mensaje de conexión: en local menciona puerto 3000; en AWS/producción no. */
@@ -17,13 +16,12 @@ function serverUnreachableHint(): string {
 
 interface LoginProps {
   onLogin: (user: AppUser) => void;
-  toast: ReturnType<typeof useToast>;
   /** Añadir otra cuenta sin cerrar la sesión actual. */
   variant?: 'default' | 'addAccount';
   onCancel?: () => void;
 }
 
-export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'default', onCancel }) => {
+export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', onCancel }) => {
   const [mode, setMode] = useState<'login' | 'register' | 'complete'>('login');
   const [registerStep, setRegisterStep] = useState<'email' | 'code'>('email');
   const [username, setUsername] = useState('');
@@ -93,7 +91,6 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
     try {
       if (!username.trim() || !password) {
         const errorMsg = 'Por favor ingresa tu usuario y contraseña';
-        toast.error(errorMsg);
         setError(errorMsg);
         setIsLoading(false);
         return;
@@ -147,7 +144,6 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
           errorMsg += healthError.message || serverUnreachableHint();
         }
         
-        toast.error(errorMsg);
         setError(errorMsg);
         setIsLoading(false);
         return;
@@ -209,20 +205,15 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
         
         // Mensajes específicos según el tipo de error
         if (res.status === 400) {
-          toast.error(errorMsg || 'Datos inválidos. Verifica tus credenciales.');
           setError(errorMsg || 'Datos inválidos');
         } else if (res.status === 401) {
           if (errorMsg.includes('Email no verificado')) {
-            toast.error('Email no verificado. Revisa tu bandeja o usa "Register" para reenviar enlace.');
             setError('Email no verificado');
           } else if (errorMsg.includes('Credenciales inválidas')) {
-            toast.error('Credenciales inválidas. Prueba con usuario, correo o nombre.');
             setError('Credenciales inválidas');
           } else if (errorMsg.includes('Cuenta incompleta')) {
-            toast.error('Cuenta incompleta. Termina el registro desde el enlace de correo.');
             setError('Cuenta incompleta');
           } else {
-            toast.error(errorMsg);
             setError(errorMsg);
           }
         } else if (res.status >= 500) {
@@ -243,10 +234,8 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
             type: errorType
           });
           
-          toast.error(displayMessage);
           setError(displayMessage);
         } else {
-          toast.error(errorMsg);
           setError(errorMsg);
         }
         
@@ -256,7 +245,6 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
 
       // Éxito
       localStorage.setItem('auth_token', data.token);
-      toast.success('¡Login exitoso!');
       onLogin({
         id: String(data.user.id),
         name: data.user.name || 'Atleta',
@@ -264,7 +252,12 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
         avatar: data.user.avatar || 'https://picsum.photos/seed/user/200/200',
         bodyWeight: data.user.bodyWeight ?? 80,
         theme: (data.user.theme ?? (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) as 'light' | 'dark',
-        progressMode: data.user.progressMode === 'year' ? 'year' : data.user.progressMode === 'month' ? 'month' : undefined,
+        progressMode:
+          data.user.progressMode === 'year'
+            ? 'year'
+            : data.user.progressMode === 'month' || data.user.progressMode === 'week'
+              ? 'month'
+              : undefined,
         mbMode: !!data.user.mbMode,
       });
     } catch (err: any) {
@@ -287,7 +280,6 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
         errorMsg = 'Error de red. Verifica tu conexión y que el servidor esté corriendo.';
       }
       
-      toast.error(errorMsg);
       setError(errorMsg);
     } finally {
       setIsLoading(false);
@@ -303,7 +295,6 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
       const normalizedEmail = normalizeEmail(email);
       if (!normalizedEmail || !normalizedEmail.includes('@')) {
         const errorMsg = 'Por favor ingresa un email válido';
-        toast.error(errorMsg);
         setError(errorMsg);
         setIsLoading(false);
         return;
@@ -359,7 +350,6 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
           errorMsg += healthError.message || serverUnreachableHint();
         }
         
-        toast.error(errorMsg);
         setError(errorMsg);
         setIsLoading(false);
         return;
@@ -421,19 +411,15 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
         // Mensajes específicos según el tipo de error
         if (res.status === 400) {
           if (errorMsg.includes('ya está registrado')) {
-            toast.error('Este email ya está registrado. Si no recuerdas tu contraseña, intenta hacer login.');
             setError('Este email ya está registrado');
           } else if (errorMsg.includes('Email inválido') || errorMsg.includes('email inválido')) {
-            toast.error('Por favor ingresa un email válido.');
             setError('Email inválido');
           } else {
-            toast.error(errorMsg);
             setError(errorMsg);
           }
         } else if (res.status === 401 || res.status === 403) {
           // Esto no debería pasar en registro, pero si pasa, mostrar el mensaje real
           console.error('[CLIENT-REGISTER] Error 401/403 inesperado:', errorMsg);
-          toast.error(errorMsg || 'Error de autenticación inesperado. Por favor intenta de nuevo.');
           setError(errorMsg || 'Error de autenticación');
         } else if (res.status >= 500) {
           // Mostrar el mensaje específico del servidor
@@ -444,18 +430,14 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
           });
           
           if (errorMsg.includes('servidor de correo') || errorMsg.includes('email') || errorMsg.includes('correo')) {
-            toast.error('Error al enviar el email de verificación. El usuario fue creado pero no se pudo enviar el email. Contacta al administrador.');
             setError('Error al enviar email');
           } else if (errorMsg.includes('duplicate') || errorMsg.includes('ya está registrado')) {
-            toast.error('Este email ya está registrado. Intenta hacer login.');
             setError('Email ya registrado');
           } else {
             // Mostrar el mensaje completo del servidor
-            toast.error(errorMsg || 'Error del servidor. Revisa la consola para más detalles.');
             setError(errorMsg || 'Error del servidor');
           }
         } else {
-          toast.error(errorMsg);
           setError(errorMsg);
         }
         
@@ -464,7 +446,6 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
       }
 
       // Éxito
-      toast.success('Te enviamos un código de 6 dígitos por correo. Revisa bandeja y spam.');
       setPendingVerificationEmail(normalizedEmail);
       setVerificationCode('');
       setRegisterStep('code');
@@ -486,7 +467,6 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
         errorMsg = 'Error de red. Verifica tu conexión y que el servidor esté corriendo.';
       }
       
-      toast.error(errorMsg);
       setError(errorMsg);
     } finally {
       setIsLoading(false);
@@ -515,11 +495,9 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
       }
 
       activateCompleteMode(data?.token || cleanCode);
-      toast.success('Código verificado. Completa tu registro.');
     } catch (err: any) {
       const msg = err?.message || 'No se pudo verificar el código';
       setError(msg);
-      toast.error(msg);
     } finally {
       setIsLoading(false);
     }
@@ -558,7 +536,6 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
       }
 
       localStorage.setItem('auth_token', data.token);
-      toast.success('Cuenta creada. Bienvenido.');
       onLogin({
         id: String(data.user.id),
         name: data.user.name || 'Atleta',
@@ -566,13 +543,17 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, toast, variant = 'def
         avatar: data.user.avatar || 'https://picsum.photos/seed/user/200/200',
         bodyWeight: data.user.bodyWeight ?? bw,
         theme: (data.user.theme ?? (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) as 'light' | 'dark',
-        progressMode: data.user.progressMode === 'year' ? 'year' : data.user.progressMode === 'month' ? 'month' : undefined,
+        progressMode:
+          data.user.progressMode === 'year'
+            ? 'year'
+            : data.user.progressMode === 'month' || data.user.progressMode === 'week'
+              ? 'month'
+              : undefined,
         mbMode: !!data.user.mbMode,
       });
     } catch (err: any) {
       const msg = err?.message || 'Error al completar el registro';
       setError(msg);
-      toast.error(msg);
     } finally {
       setIsLoading(false);
     }

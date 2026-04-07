@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   Calendar,
   CalendarDays,
+  Dumbbell,
   Settings2,
   Eye,
   EyeOff,
@@ -36,8 +37,10 @@ interface RoutineManagerViewProps {
     options?: { sameTemplateAllWeeks: boolean; cycleLength?: number }
   ) => void | Promise<void>;
   createRoutineLoading?: boolean;
+  /** Rutina que se está eliminando en servidor (overlay en la tarjeta). */
+  deleteRoutineLoadingId?: string | null;
   onRenameRoutine: (routineId: string, name: string) => void;
-  onDeleteRoutine: (routineId: string) => void;
+  onDeleteRoutine: (routineId: string) => void | Promise<void>;
   onToggleHiddenRoutine?: (routineId: string) => void;
 }
 
@@ -47,10 +50,12 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
   onActivateRoutine,
   onCreateRoutine,
   createRoutineLoading = false,
+  deleteRoutineLoadingId = null,
   onRenameRoutine,
   onDeleteRoutine,
   onToggleHiddenRoutine,
 }) => {
+  const deleteInFlight = deleteRoutineLoadingId != null;
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newRoutineName, setNewRoutineName] = useState('');
   const [cycleMode, setCycleMode] = useState<CycleMode>('month');
@@ -72,7 +77,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
       setCustomCycleLength(4);
       setShowCreateModal(false);
     } catch {
-      /* Error: toast en App; modal abierto */
+      /* Error: feedback en App; modal abierto */
     }
   };
 
@@ -97,7 +102,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
             variant="outline"
             size="sm"
             onClick={onBack}
-            disabled={createRoutineLoading}
+            disabled={createRoutineLoading || deleteInFlight}
             className="rounded-xl border-2"
           >
             <ArrowLeft size={14} />
@@ -116,7 +121,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
             setCycleMode('month');
             setShowCreateModal(true);
           }}
-          disabled={createRoutineLoading}
+          disabled={createRoutineLoading || deleteInFlight}
           className="w-full sm:w-auto rounded-xl"
         >
           {createRoutineLoading ? (
@@ -147,8 +152,40 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 10 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl p-6 shadow-2xl dark:border dark:border-slate-700"
+              className="relative overflow-hidden bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl p-6 shadow-2xl dark:border dark:border-slate-700"
             >
+              {createRoutineLoading && (
+                <div
+                  className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 rounded-2xl bg-white/90 dark:bg-slate-900/92 backdrop-blur-md"
+                  role="status"
+                  aria-live="polite"
+                  aria-busy="true"
+                >
+                  <div className="relative flex size-16 items-center justify-center">
+                    <div
+                      className="absolute inset-0 rounded-full border-2 border-indigo-200/70 dark:border-indigo-500/25"
+                      aria-hidden
+                    />
+                    <div
+                      className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-indigo-600 border-r-indigo-400/80 dark:border-t-indigo-400 dark:border-r-indigo-500/50"
+                      aria-hidden
+                    />
+                    <Dumbbell
+                      className="relative size-7 text-indigo-600 dark:text-indigo-400"
+                      strokeWidth={2}
+                      aria-hidden
+                    />
+                  </div>
+                  <div className="text-center px-4">
+                    <p className="text-sm font-black tracking-tight text-slate-800 dark:text-slate-100">
+                      Creando rutina
+                    </p>
+                    <p className="mt-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                      Sincronizando con el servidor…
+                    </p>
+                  </div>
+                </div>
+              )}
               <h3 className="text-lg font-black text-slate-900 dark:text-slate-100 mb-4">Nueva rutina</h3>
               <Input
                 value={newRoutineName}
@@ -286,18 +323,42 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
             padding="md"
             rounded="xl"
             className={cn(
-              'border-2 transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98]',
+              'relative overflow-hidden border-2 transition-all',
+              deleteRoutineLoadingId === routine.id
+                ? 'cursor-wait'
+                : 'cursor-pointer hover:scale-[1.02] active:scale-[0.98]',
               routine.isActive
                 ? 'border-indigo-500 bg-indigo-600 text-white shadow-lg shadow-indigo-200 dark:shadow-lg dark:shadow-indigo-900/50'
                 : 'border-slate-100 bg-white dark:border-slate-700 dark:bg-slate-800 hover:border-indigo-300 dark:hover:border-indigo-500 dark:shadow-lg dark:shadow-black/30'
             )}
             onClick={(e) => {
+              if (deleteInFlight) return;
               // Si no está editando y no es un clic en un botón, entrar a la rutina
               if (editingId !== routine.id && !(e.target as HTMLElement).closest('button')) {
                 onActivateRoutine(routine.id);
               }
             }}
           >
+            {deleteRoutineLoadingId === routine.id && (
+              <div
+                className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 rounded-xl bg-slate-900/55 dark:bg-slate-950/70 backdrop-blur-sm"
+                role="status"
+                aria-live="polite"
+                aria-busy="true"
+              >
+                <div className="relative flex size-12 items-center justify-center">
+                  <div className="absolute inset-0 rounded-full border-2 border-white/25" aria-hidden />
+                  <div
+                    className="absolute inset-0 animate-spin rounded-full border-2 border-transparent border-t-white border-r-white/40"
+                    aria-hidden
+                  />
+                  <Trash2 className="relative size-5 text-white" strokeWidth={2} aria-hidden />
+                </div>
+                <p className="text-[11px] font-black uppercase tracking-[0.2em] text-white/95">
+                  Eliminando…
+                </p>
+              </div>
+            )}
             <div className="flex items-start justify-between gap-3 mb-3">
               <div className="flex-1">
                 <span className={cn('text-[10px] font-black uppercase tracking-widest', routine.isActive ? 'text-indigo-100' : 'text-slate-400 dark:text-slate-500')}>
@@ -320,6 +381,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
               {onToggleHiddenRoutine && (
                 <button
                   onClick={() => onToggleHiddenRoutine(routine.id)}
+                  disabled={deleteInFlight}
                   className={cn(
                     "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold border-2 transition-colors",
                     routine.isActive
@@ -337,7 +399,13 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                 </button>
               )}
               {!routine.isActive && (
-                <Button variant="outline" size="sm" onClick={() => onActivateRoutine(routine.id)} className="rounded-lg border-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => onActivateRoutine(routine.id)}
+                  disabled={deleteInFlight}
+                  className="rounded-lg border-2"
+                >
                   Activar
                 </Button>
               )}
@@ -353,6 +421,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                     setEditingId(null);
                     setEditingName('');
                   }}
+                  disabled={deleteInFlight}
                   className={cn(
                     'rounded-lg border-2',
                     routine.isActive && '!bg-white/20 !border-white/50 text-white hover:!bg-white/30 dark:!bg-white/20 dark:!border-white/50 dark:hover:!bg-white/30'
@@ -368,6 +437,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                     setEditingId(routine.id);
                     setEditingName(routine.name);
                   }}
+                  disabled={deleteInFlight}
                   className={cn(
                     'rounded-lg border-2',
                     routine.isActive && '!bg-white/20 !border-white/50 text-white hover:!bg-white/30 dark:!bg-white/20 dark:!border-white/50 dark:hover:!bg-white/30'
@@ -381,7 +451,8 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => onDeleteRoutine(routine.id)}
+                onClick={() => void onDeleteRoutine(routine.id)}
+                disabled={deleteInFlight}
                 className={cn(
                   'rounded-lg',
                   routine.isActive
@@ -389,7 +460,11 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                     : 'text-rose-500 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-900/30'
                 )}
               >
-                <Trash2 size={12} className="mr-1" />
+                {deleteRoutineLoadingId === routine.id ? (
+                  <Loader2 size={12} className="mr-1 animate-spin shrink-0" />
+                ) : (
+                  <Trash2 size={12} className="mr-1" />
+                )}
                 Borrar
               </Button>
             </div>

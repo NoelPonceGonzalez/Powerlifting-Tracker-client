@@ -59,9 +59,20 @@ interface SocialViewProps {
   onRefreshChallenges?: () => void;
   onCopyFriendRoutine?: (payload: {
     name: string;
+    /** Nombre del amigo para el sufijo: "Rutina X (Nombre)" */
+    friendName: string;
     weeks: TrainingWeek[];
+    cycleLength?: number;
+    sameTemplateAllWeeks?: boolean;
+    weekTypeOverrides?: Array<{ weekType: number; week: TrainingWeek }>;
+    skippedWeeks?: number[];
     friendTrainingMaxes?: { name: string; mode: string; linkedExercise?: string }[];
   }) => void | Promise<void>;
+  /** Rutinas del usuario local (para detectar si ya copió la del amigo por nombre). */
+  myRoutines?: { id: string; name: string }[];
+  activeRoutineId?: string;
+  /** Activar la rutina ya copiada del amigo y abrir Programa (no volver a copiar). */
+  onGoToCopiedRoutine?: (routineId: string) => void;
   onUnfriend?: (friendId: string) => Promise<void>;
 }
 
@@ -131,6 +142,9 @@ export const SocialView: React.FC<SocialViewProps> = ({
   onCheckInDelete,
   onRefreshChallenges,
   onCopyFriendRoutine,
+  myRoutines,
+  activeRoutineId,
+  onGoToCopiedRoutine,
   onUnfriend,
   openCheckInModalSignal = 0,
 }) => {
@@ -146,7 +160,14 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [selectedChallengeDetail, setSelectedChallengeDetail] = useState<Challenge | null>(null);
   const [showFriendModal, setShowFriendModal] = useState<Friend | null>(null);
   const [unfriendConfirmFriend, setUnfriendConfirmFriend] = useState<Friend | null>(null);
-  const [friendRoutine, setFriendRoutine] = useState<{ name: string; weeks: TrainingWeek[] } | null>(null);
+  const [friendRoutine, setFriendRoutine] = useState<{
+    name: string;
+    weeks: TrainingWeek[];
+    cycleLength?: number;
+    sameTemplateAllWeeks?: boolean;
+    weekTypeOverrides?: Array<{ weekType: number; week: TrainingWeek }>;
+    skippedWeeks?: number[];
+  } | null>(null);
   const [friendRoutineLoading, setFriendRoutineLoading] = useState(false);
   const [friendProfile, setFriendProfile] = useState<{
     name: string;
@@ -290,6 +311,10 @@ export const SocialView: React.FC<SocialViewProps> = ({
           baseTemplate?: TrainingWeek[];
           versions?: { effectiveFromWeek: number; weeks: TrainingWeek[] }[];
           logs?: unknown;
+          sameTemplateAllWeeks?: boolean;
+          weekTypeOverrides?: Array<{ weekType: number; week: TrainingWeek }>;
+          cycleLength?: number;
+          skippedWeeks?: number[];
         } | null>(`/api/social/friends/${friend.id}/routine`),
         apiGet<{
           name: string;
@@ -311,8 +336,19 @@ export const SocialView: React.FC<SocialViewProps> = ({
           versions: routineRaw.versions,
           baseTemplate: routineRaw.baseTemplate,
           logs: routineRaw.logs,
+          sameTemplateAllWeeks: routineRaw.sameTemplateAllWeeks,
+          cycleLength: routineRaw.cycleLength,
+          skippedWeeks: routineRaw.skippedWeeks,
+          weekTypeOverrides: routineRaw.weekTypeOverrides,
         });
-        setFriendRoutine({ name: expanded.name, weeks: expanded.weeks });
+        setFriendRoutine({
+          name: expanded.name,
+          weeks: expanded.weeks,
+          cycleLength: expanded.cycleLength,
+          sameTemplateAllWeeks: expanded.sameTemplateAllWeeks,
+          weekTypeOverrides: expanded.weekTypeOverrides,
+          skippedWeeks: expanded.skippedWeeks,
+        });
       } else {
         setFriendRoutine(null);
       }
@@ -331,7 +367,12 @@ export const SocialView: React.FC<SocialViewProps> = ({
     try {
       await onCopyFriendRoutine({
         name: friendRoutine.name,
+        friendName: (friendProfile?.name || showFriendModal?.name || 'Amigo').trim(),
         weeks: friendRoutine.weeks,
+        cycleLength: friendRoutine.cycleLength,
+        sameTemplateAllWeeks: friendRoutine.sameTemplateAllWeeks,
+        weekTypeOverrides: friendRoutine.weekTypeOverrides,
+        skippedWeeks: [],
         friendTrainingMaxes: friendProfile?.trainingMaxesAll?.length
           ? friendProfile.trainingMaxesAll
           : undefined,
@@ -341,7 +382,15 @@ export const SocialView: React.FC<SocialViewProps> = ({
     } finally {
       setCopyingFriendRoutine(false);
     }
-  }, [friendRoutine, onCopyFriendRoutine, friendProfile?.trainingMaxesAll]);
+  }, [friendRoutine, onCopyFriendRoutine, friendProfile?.trainingMaxesAll, friendProfile?.name, showFriendModal?.name]);
+
+  /** Misma regla que al copiar: `${nombreRutina} (${nombreAmigo})`. */
+  const copiedRoutineFromFriend = useMemo(() => {
+    if (!friendRoutine || !myRoutines?.length) return null;
+    const friendSuffix = (friendProfile?.name || showFriendModal?.name || 'Amigo').trim() || 'Amigo';
+    const expectedName = `${friendRoutine.name} (${friendSuffix})`;
+    return myRoutines.find((r) => r.name === expectedName) ?? null;
+  }, [friendRoutine, friendProfile?.name, showFriendModal?.name, myRoutines]);
 
   const handleSendRequestClick = useCallback(async (u: UserSearchResult) => {
     if (!onSendFriendRequest || u.friendshipStatus === 'accepted' || u.friendshipStatus === 'pending') return;
@@ -406,9 +455,9 @@ export const SocialView: React.FC<SocialViewProps> = ({
       <header className="mb-10">
         <div className="mb-6 flex items-center justify-between">
           <Avatar 
-            src={user.avatar} 
+            src={user.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'User')}`}
             name={user.name} 
-            className="w-12 h-12 rounded-2xl border-2 border-white dark:border-slate-700 shadow-lg"
+            className="w-12 h-12 rounded-full border-2 border-slate-100 dark:border-slate-700 shadow-lg"
           />
           <Button 
             variant="primary" 
@@ -1012,9 +1061,14 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Hora de llegada</label>
                   <Input 
                     type="time" 
+                    placeholder="Ej: 18:30"
+                    title="Ejemplo: 18:30 — hora aproximada de llegada"
                     value={gymTime}
                     onChange={(e) => setGymTime(e.target.value)}
                   />
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 pl-1 pt-0.5">
+                    Hora aproximada de llegada al gym
+                  </p>
                 </div>
               </div>
               <div className="flex gap-3">
@@ -1494,7 +1548,34 @@ export const SocialView: React.FC<SocialViewProps> = ({
                         </div>
                       )}
                     </div>
-                    {onCopyFriendRoutine && (
+                    {copiedRoutineFromFriend && onGoToCopiedRoutine ? (
+                      <div className="space-y-3">
+                        {activeRoutineId === copiedRoutineFromFriend.id ? (
+                          <>
+                            <p className="text-xs text-center text-slate-500 dark:text-slate-400 leading-relaxed px-1">
+                              Ya tienes esta rutina copiada y es la que tienes <span className="font-semibold text-slate-700 dark:text-slate-300">activa</span> ahora.
+                            </p>
+                            <Button
+                              variant="primary"
+                              className="w-full rounded-xl"
+                              onClick={() => onGoToCopiedRoutine(copiedRoutineFromFriend.id)}
+                            >
+                              <ArrowRight size={18} className="mr-2 shrink-0" />
+                              Ir a Programa (Rutinas)
+                            </Button>
+                          </>
+                        ) : (
+                          <Button
+                            variant="primary"
+                            className="w-full rounded-xl"
+                            onClick={() => onGoToCopiedRoutine(copiedRoutineFromFriend.id)}
+                          >
+                            <ArrowRight size={18} className="mr-2 shrink-0" />
+                            Activar esta rutina
+                          </Button>
+                        )}
+                      </div>
+                    ) : onCopyFriendRoutine ? (
                       <Button 
                         variant="primary" 
                         className="w-full rounded-xl"
@@ -1513,7 +1594,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                           </>
                         )}
                       </Button>
-                    )}
+                    ) : null}
                   </div>
                 ) : (
                   <p className="text-slate-500 dark:text-slate-400 py-6 text-center text-sm">

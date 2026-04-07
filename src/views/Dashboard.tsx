@@ -103,7 +103,7 @@ function pickFeaturedChallenge(list: Challenge[]): Challenge | undefined {
   })[0];
 }
 
-interface DashboardProps {
+export interface DashboardProps {
   user: User;
   /** Historial de `save-period` solo de la rutina activa (progresión por rutina, no global). */
   history: HistoryEntry[];
@@ -132,6 +132,8 @@ interface DashboardProps {
   onOpenProgram: () => void;
   onOpenSocial: (tab?: 'friends' | 'challenges' | 'checkins', options?: { openCheckInModal?: boolean }) => void;
   onJoinFriendCheckIn: (checkIn: GymCheckIn) => void;
+  /** Se incrementa al volver a Progreso desde otra pestaña; fuerza remount de gráficos y replay de animación. */
+  chartEnterKey?: number;
 }
 
 type ProgressMode = 'week' | 'year';
@@ -205,6 +207,7 @@ export const DashboardView: React.FC<DashboardProps> = ({
   onJoinFriendCheckIn,
   progressCheckpointAt,
   progressCheckpointTms,
+  chartEnterKey = 0,
 }) => {
   const now = new Date();
   const currentYear = now.getFullYear();
@@ -222,7 +225,7 @@ export const DashboardView: React.FC<DashboardProps> = ({
 
   useEffect(() => {
     if (user.progressMode === 'year') setProgressMode('year');
-    else if (user.progressMode === 'month' || user.progressMode === 'week') setProgressMode('week');
+    else if (user.progressMode === 'month') setProgressMode('week');
   }, [user.progressMode]);
 
   useEffect(() => {
@@ -232,10 +235,10 @@ export const DashboardView: React.FC<DashboardProps> = ({
     setSelectedMonth(n.getMonth());
   }, [activeRoutineId]);
 
-  // Guardar progressMode en DB al cambiar
+  /** Persistencia: solo `month` | `year` en servidor. "Semana" → `month`; el aspecto (bloque vs semanas del mes) lo marca la rutina. */
   const handleProgressModeChange = (mode: ProgressMode) => {
     setProgressMode(mode);
-    onUpdateUser?.({ progressMode: mode });
+    onUpdateUser?.({ progressMode: mode === 'week' ? 'month' : 'year' });
   };
   /** Snapshot de referencia para % de mejora (checkpoint) o el primero del historial. */
   const baselineEntryForGains = useMemo(() => {
@@ -419,8 +422,17 @@ export const DashboardView: React.FC<DashboardProps> = ({
   const routineMainGradTop = routineMainStroke;
 
   const cl = Math.max(1, cycleLengthProp);
-  const currentMesoSlot = getMesocycleWeekIndex(cwoyProp, cl);
-  const cycleStartWeek = cwoyProp - (currentMesoSlot - 1);
+
+  /** Modo rutina por bloque (N semanas): ventana de mesociclo según año — mismo número de semana civil que hoy en otros años (comparable); en el año actual, el ciclo que contiene la semana actual. */
+  const blockCycleParams = useMemo(() => {
+    const now = new Date();
+    const cy = now.getFullYear();
+    const refYear = selectedYear;
+    const refWeek = refYear === cy ? cwoyProp : Math.min(52, Math.max(1, cwoyProp));
+    const mesoAtRef = getMesocycleWeekIndex(refWeek, cl);
+    const cycleStartWeek = refWeek - (mesoAtRef - 1);
+    return { cy, refYear, refWeek, cycleStartWeek, cwoyProp };
+  }, [selectedYear, cwoyProp, cl]);
 
   const parsedHistory = useMemo(() => {
     const yearNow = new Date().getFullYear();
@@ -542,9 +554,13 @@ export const DashboardView: React.FC<DashboardProps> = ({
         });
       }
 
-      /** Rutina por bloque: N = cycleLength, posición en el mesociclo actual (año civil). */
-      const cycleEntries = parsedHistory.filter(item =>
-        item.year === cy && item.planWeek >= cycleStartWeek && item.planWeek < cycleStartWeek + cl
+      /** Rutina por bloque: N = cycleLength (p. ej. 8 semanas). */
+      const { cy: cyNow, refYear, cycleStartWeek, cwoyProp: cwToday } = blockCycleParams;
+      const cycleEntries = parsedHistory.filter(
+        item =>
+          item.year === refYear &&
+          item.planWeek >= cycleStartWeek &&
+          item.planWeek < cycleStartWeek + cl
       );
       const latestBySlot = new Map<number, typeof cycleEntries[number]>();
       cycleEntries.forEach(item => {
@@ -555,7 +571,7 @@ export const DashboardView: React.FC<DashboardProps> = ({
 
       const lastBeforeCycle = [...parsedHistory].reverse().find(item => {
         if (item.date.getTime() < routineStartMs) return false;
-        return item.year < cy || (item.year === cy && item.planWeek < cycleStartWeek);
+        return item.year < refYear || (item.year === refYear && item.planWeek < cycleStartWeek);
       });
       let carryTotalBlock: number | null = null;
       if (lastBeforeCycle && trainingMaxes.length > 0) {
@@ -567,12 +583,12 @@ export const DashboardView: React.FC<DashboardProps> = ({
       return Array.from({ length: cl }, (_, i) => {
         const slot = i + 1;
         const point = latestBySlot.get(slot);
-        const isCurrentSlot = slot === currentMesoSlot;
+        const pw = cycleStartWeek + slot - 1;
+        const isCurrentSlot = refYear === cyNow && pw === cwToday;
         if (point?.source) carryTotalBlock = progressValueFromHistoryEntry(point.source, trainingMaxes);
         if (isCurrentSlot) carryTotalBlock = currentTotal;
-        const isFuture = slot > currentMesoSlot;
-        const pw = cycleStartWeek + slot - 1;
-        const preRoutine = blockSlotEndsBeforeRoutine(pw, cy, rs);
+        const isFuture = refYear > cyNow || (refYear === cyNow && pw > cwToday);
+        const preRoutine = blockSlotEndsBeforeRoutine(pw, refYear, rs);
         let total: number | null = isFuture ? null : preRoutine ? 0 : carryTotalBlock;
         return {
           key: `b${slot}`,
@@ -625,8 +641,7 @@ export const DashboardView: React.FC<DashboardProps> = ({
     trainingMaxes,
     sameTemplateAllWeeksProp,
     cl,
-    cycleStartWeek,
-    currentMesoSlot,
+    blockCycleParams,
     routineStart,
     routineStartMs,
   ]);
@@ -651,9 +666,10 @@ export const DashboardView: React.FC<DashboardProps> = ({
           const useCurrent = selectedYear === cy && selectedMonth === cm;
           carryValue = vBefore != null ? vBefore : useCurrent ? tm.value : 0;
         } else {
+          const { refYear: refY, cycleStartWeek: csw } = blockCycleParams;
           const lastBefore = [...parsedHistory].reverse().find(item => {
             if (item.date.getTime() < routineStartMs) return false;
-            return item.year < cy || (item.year === cy && item.planWeek < cycleStartWeek);
+            return item.year < refY || (item.year === refY && item.planWeek < csw);
           });
           const vBefore = lastBefore?.source.trainingMaxes?.[tm.id];
           carryValue = vBefore != null ? vBefore : tm.value;
@@ -677,8 +693,10 @@ export const DashboardView: React.FC<DashboardProps> = ({
             isCurrentSlot = selectedYear === cy && selectedMonth === cm && slotNum === currentWeekSlotInMonth;
             isFuture = (slotNum ?? 0) > currentWeekSlotInMonth;
           } else {
-            isCurrentSlot = slotNum === currentMesoSlot;
-            isFuture = (slotNum ?? 0) > currentMesoSlot;
+            const { refYear: refY, cycleStartWeek: csw, cy: cyNow, cwoyProp: cwToday } = blockCycleParams;
+            const planWeek = csw + (slotNum ?? 0) - 1;
+            isCurrentSlot = refY === cyNow && planWeek === cwToday;
+            isFuture = refY > cyNow || (refY === cyNow && planWeek > cwToday);
           }
         } else {
           isCurrentSlot = selectedYear === cy && monthNum === cm;
@@ -690,8 +708,9 @@ export const DashboardView: React.FC<DashboardProps> = ({
           }
         }
         if (progressMode === 'week' && !sameTemplateAllWeeksProp && slotNum != null) {
-          const pw = cycleStartWeek + slotNum - 1;
-          if (blockSlotEndsBeforeRoutine(pw, cy, routineStart)) {
+          const { refYear: refY, cycleStartWeek: csw } = blockCycleParams;
+          const pw = csw + slotNum - 1;
+          if (blockSlotEndsBeforeRoutine(pw, refY, routineStart)) {
             return { date: point.label, value: 0 };
           }
         }
@@ -716,8 +735,7 @@ export const DashboardView: React.FC<DashboardProps> = ({
     selectedMonth,
     parsedHistory,
     sameTemplateAllWeeksProp,
-    currentMesoSlot,
-    cycleStartWeek,
+    blockCycleParams,
     routineStart,
     routineStartMs,
   ]);
@@ -734,14 +752,14 @@ export const DashboardView: React.FC<DashboardProps> = ({
           <Avatar 
             src={user.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'User')}`}
             name={user.name}
-            className="w-10 max-[360px]:w-9 h-10 max-[360px]:h-9 sm:w-12 sm:h-12 rounded-xl max-[360px]:rounded-lg sm:rounded-2xl border-2 border-white dark:border-slate-700 shadow-lg flex-shrink-0"
+            className="w-10 max-[360px]:w-9 h-10 max-[360px]:h-9 sm:w-12 sm:h-12 rounded-full border-2 border-slate-100 dark:border-slate-700 shadow-lg flex-shrink-0"
           />
           <p className="text-sm max-[360px]:text-xs sm:text-base md:text-lg font-medium text-slate-500 dark:text-slate-400 truncate">Hola, {user.name || 'Atleta'}</p>
         </div>
         <ProgressModeSwitch mode={progressMode} onChange={handleProgressModeChange} />
       </header>
 
-      {(progressMode === 'year' || (progressMode === 'week' && sameTemplateAllWeeksProp)) && (
+      {(progressMode === 'year' || progressMode === 'week') && (
         <div className="mb-4 max-[400px]:mb-3 flex justify-end gap-1.5 max-[360px]:gap-1 flex-wrap">
           <select
             value={selectedYear}
@@ -816,11 +834,11 @@ export const DashboardView: React.FC<DashboardProps> = ({
           </p>
           <AnimatePresence mode="wait">
             <motion.div
-              key={`${activeRoutineName}-${progressMode}-${sameTemplateAllWeeksProp}-${cl}-${selectedYear}-${selectedMonth}-${cwoyProp}`}
-              initial={{ opacity: 0, y: 6 }}
+              key={`${activeRoutineName}-${progressMode}-${sameTemplateAllWeeksProp}-${cl}-${selectedYear}-${selectedMonth}-${cwoyProp}-${chartEnterKey}`}
+              initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -6 }}
-              transition={{ duration: 0.18 }}
+              transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
               className="h-[90px] max-[360px]:h-[80px] sm:h-[100px] md:h-[120px] w-full -mx-1 sm:-mx-2 outline-none"
                 onPointerDownCapture={(e) => e.stopPropagation()}
                 onPointerMoveCapture={(e) => e.stopPropagation()}
@@ -828,7 +846,7 @@ export const DashboardView: React.FC<DashboardProps> = ({
                 onTouchMove={(e) => e.stopPropagation()}
                 style={{ touchAction: 'pan-x pan-y', WebkitTapHighlightColor: 'transparent', outline: 'none' }}
               >
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer key={`routine-chart-${chartEnterKey}`} width="100%" height="100%">
                 <ComposedChart data={mainChartData} margin={{ top: 4, right: 4, left: 4, bottom: 4 }}>
                   <defs>
                     <linearGradient id="colorTotalLight" x1="0" y1="0" x2="0" y2="1">
@@ -868,7 +886,14 @@ export const DashboardView: React.FC<DashboardProps> = ({
                     dataKey="total"
                     stroke={routineMainStroke}
                     strokeWidth={3}
-                    dot={{ r: 3, fill: routineMainStroke, strokeWidth: 0 }}
+                    dot={(dotProps: { cx?: number; cy?: number; payload?: { total?: number | null } }) => {
+                      const v = dotProps.payload?.total;
+                      if (v == null || Number.isNaN(v)) return null;
+                      const cx = dotProps.cx;
+                      const cy = dotProps.cy;
+                      if (cx == null || cy == null) return null;
+                      return <circle cx={cx} cy={cy} r={3} fill={routineMainStroke} stroke="none" />;
+                    }}
                     activeDot={{ r: 5, fill: routineMainStroke, stroke: user.theme === 'dark' ? '#1e293b' : '#fff', strokeWidth: 2 }}
                     fill="none"
                     isAnimationActive={false}
@@ -889,10 +914,10 @@ export const DashboardView: React.FC<DashboardProps> = ({
 
           return (
             <motion.div 
-              key={tm.id}
+              key={`${tm.id}-${chartEnterKey}`}
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: idx * 0.1 }}
+              transition={{ delay: idx * 0.08, duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
             >
               <Card padding="md" rounded="xl" className="group hover:shadow-xl hover:shadow-slate-200/50 dark:hover:shadow-slate-900/50 dark:border-slate-700/60 border border-slate-100 overflow-hidden">
                 <div className="flex justify-between items-center mb-2">
@@ -932,11 +957,11 @@ export const DashboardView: React.FC<DashboardProps> = ({
                 <h3 className="font-bold text-slate-800 dark:text-slate-200 mb-4">{tm.name}</h3>
                 <AnimatePresence mode="wait">
                   <motion.div
-                    key={`${tm.id}-${activeRoutineName}-${progressMode}-${sameTemplateAllWeeksProp}-${cl}-${selectedYear}-${selectedMonth}-${cwoyProp}`}
-                    initial={{ opacity: 0, y: 6 }}
+                    key={`${tm.id}-${activeRoutineName}-${progressMode}-${sameTemplateAllWeeksProp}-${cl}-${selectedYear}-${selectedMonth}-${cwoyProp}-${chartEnterKey}`}
+                    initial={{ opacity: 0, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -6 }}
-                    transition={{ duration: 0.18 }}
+                    transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
                     className="h-[90px] max-[360px]:h-[80px] sm:h-[100px] md:h-[120px] w-full -mx-1 sm:-mx-2 outline-none"
                     onPointerDownCapture={(e) => e.stopPropagation()}
                     onPointerMoveCapture={(e) => e.stopPropagation()}
@@ -944,7 +969,7 @@ export const DashboardView: React.FC<DashboardProps> = ({
                     onTouchMove={(e) => e.stopPropagation()}
                     style={{ touchAction: 'pan-x pan-y', WebkitTapHighlightColor: 'transparent', outline: 'none' }}
                   >
-                    <ResponsiveContainer width="100%" height="100%">
+                    <ResponsiveContainer key={`tm-chart-${tm.id}-${chartEnterKey}`} width="100%" height="100%">
                     <ComposedChart data={chartData} margin={{ top: 4, right: 4, left: 4, bottom: 4 }}>
                       <defs>
                         <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
@@ -977,7 +1002,14 @@ export const DashboardView: React.FC<DashboardProps> = ({
                         dataKey="value"
                         stroke={config.color}
                         strokeWidth={3}
-                        dot={{ r: 3, fill: config.color, strokeWidth: 0 }}
+                        dot={(dotProps: { cx?: number; cy?: number; payload?: { value?: number | null } }) => {
+                          const v = dotProps.payload?.value;
+                          if (v == null || Number.isNaN(v)) return null;
+                          const cx = dotProps.cx;
+                          const cy = dotProps.cy;
+                          if (cx == null || cy == null) return null;
+                          return <circle cx={cx} cy={cy} r={3} fill={config.color} stroke="none" />;
+                        }}
                         activeDot={{ r: 5, fill: config.color, stroke: user.theme === 'dark' ? '#1e293b' : '#fff', strokeWidth: 2 }}
                         fill="none"
                         isAnimationActive={false}
@@ -1084,7 +1116,7 @@ export const DashboardView: React.FC<DashboardProps> = ({
         <section>
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-base max-[360px]:text-sm sm:text-xl font-black text-slate-800 dark:text-slate-100 uppercase tracking-tight flex items-center gap-1.5 max-[360px]:gap-1">
-              <Bell size={18} className="max-[360px]:size-4 sm:size-5 text-indigo-600 dark:text-indigo-400 flex-shrink-0" />
+              <Bell size={18} className="max-[360px]:size-4 sm:size-5 text-slate-600 dark:text-slate-300 flex-shrink-0" />
               ¿Quién entrena hoy?
             </h2>
             <Button variant="ghost" size="sm" onClick={() => onOpenSocial('checkins')} className="text-indigo-600 text-xs font-bold">

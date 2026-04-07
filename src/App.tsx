@@ -13,8 +13,6 @@ import { SocialView } from '@/src/views/Social';
 import { SettingsView } from '@/src/views/Settings';
 
 // Components
-import { ToastContainer } from '@/src/components/ui/Toast';
-import { useToast } from '@/src/hooks/useToast';
 import { useRealtimeUpdates } from '@/src/hooks/useRealtimeUpdates';
 
 // Types
@@ -71,7 +69,13 @@ import {
   materialize52WeeksFromFourTemplateWeeks,
   normalizeTemplateWeek,
 } from '@/src/lib/planMaterialize';
-import { cloneFriendRoutineWeeks, DEFAULT_TM_SEED_ZERO } from '@/src/lib/cloneFriendRoutine';
+import {
+  cloneFriendRoutineWeeks,
+  parseSameTemplateAllWeeks,
+  DEFAULT_TM_SEED_ZERO,
+  mergeFriendProfileAndPlanTmSeeds,
+  hasAnyLinkedExerciseInWeeks,
+} from '@/src/lib/cloneFriendRoutine';
 import { buildPlanPatchPayload } from '@/src/lib/planSyncPayload';
 import { usePushNotifications } from '@/src/hooks/usePushNotifications';
 import {
@@ -521,8 +525,10 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isCheckingSession, setIsCheckingSession] = useState(true);
   const [view, setView] = useState<ViewType>('dashboard');
-  const toast = useToast();
-  
+  /** Incrementa al volver a Progreso desde otra pestaña → remonta gráficos y replay de animación. */
+  const [dashboardEnterKey, setDashboardEnterKey] = useState(0);
+  const prevViewForDashboardRef = useRef<ViewType | null>(null);
+
   // State
   const [rms, setRms] = useState<RMData>(INITIAL_RMS);
   const [tms, setTms] = useState<TrainingMax[]>(INITIAL_TMS);
@@ -565,7 +571,12 @@ export default function App() {
         (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
           ? 'dark'
           : 'light')) as 'light' | 'dark',
-      progressMode: u.progressMode === 'year' ? 'year' : u.progressMode === 'month' ? 'month' : undefined,
+      progressMode:
+        u.progressMode === 'year'
+          ? 'year'
+          : u.progressMode === 'month' || u.progressMode === 'week'
+            ? 'month'
+            : undefined,
       mbMode: !!u.mbMode,
     };
   };
@@ -741,6 +752,8 @@ export default function App() {
   const [routineCheckpointSaving, setRoutineCheckpointSaving] = useState(false);
   /** POST /api/routines (modal Crear rutina). */
   const [routineCreateLoading, setRoutineCreateLoading] = useState(false);
+  /** DELETE /api/routines/:id — tarjeta en gestión de rutinas. */
+  const [routineDeleteLoadingId, setRoutineDeleteLoadingId] = useState<string | null>(null);
   /** Incrementa para forzar que el efecto de sync de logs vuelva a ejecutarse con el estado ya committed. */
   const [planSyncTick, setPlanSyncTick] = useState(0);
   /** Recalcula cada render para no quedar congelado en la semana del primer mount. */
@@ -890,19 +903,27 @@ export default function App() {
     }
   }, [user?.id]);
 
-  // Al pulsar una notificación push: ir a Social (pestaña según `data.tab` del servidor)
+  // Al pulsar una notificación push: pantalla según `data.screen` / `data.tab` (servidor → push.ts)
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const validTabs = ['friends', 'challenges', 'checkins'] as const;
     const handle = (d: { screen?: string; tab?: string }) => {
-      if (d?.screen === 'social') {
+      const screen = d?.screen ?? 'dashboard';
+      if (screen === 'social') {
         const raw = String(d.tab ?? 'checkins');
         const tab = (validTabs as readonly string[]).includes(raw)
           ? (raw as 'friends' | 'challenges' | 'checkins')
           : 'checkins';
         setSocialTab(tab);
         setView('social');
+        return;
       }
+      if (screen === 'program') {
+        setProgramScreen('plan');
+        setView('program');
+        return;
+      }
+      setView('dashboard');
     };
     const onNotificationOpened = (e: CustomEvent<{ screen?: string; tab?: string }>) => handle(e.detail || {});
     window.addEventListener('notificationOpened', onNotificationOpened as EventListener);
@@ -1275,6 +1296,14 @@ export default function App() {
     }
   }, [view, user?.id, bumpSocialRefresh, bumpRoutineDataRefresh]);
 
+  useEffect(() => {
+    const prev = prevViewForDashboardRef.current;
+    prevViewForDashboardRef.current = view;
+    if (view === 'dashboard' && prev !== null && prev !== 'dashboard') {
+      setDashboardEnterKey((k) => k + 1);
+    }
+  }, [view]);
+
   // Sin polling periódico: solo al volver a primer plano (sincronía con el servidor sin intervalos 12/30 s).
   // Al volver a la app: siempre pantalla Progreso (dashboard).
   useEffect(() => {
@@ -1395,7 +1424,10 @@ export default function App() {
       try {
         const payload: Record<string, unknown> = {};
         toSync.forEach(k => { if (k in updates) payload[k] = updates[k]; });
-        await apiPut<{ user: User }>('/api/auth/me', payload);
+        const data = await apiPut<{ user: User }>('/api/auth/me', payload);
+        if (data?.user) {
+          setUser(prev => (prev ? { ...prev, ...data.user } : prev));
+        }
         bumpRoutineDataRefresh();
         bumpSocialRefresh();
       } catch (e) {
@@ -1847,7 +1879,6 @@ export default function App() {
       bumpRoutineDataRefresh();
     } catch (e) {
       console.error('[Routine] Error creando:', e);
-      toast.error('No se pudo crear la rutina. Inténtalo de nuevo.');
       throw e;
     } finally {
       setRoutineCreateLoading(false);
@@ -1867,50 +1898,44 @@ export default function App() {
 
   const handleCopyFriendRoutine = async (routine: {
     name: string;
+    friendName: string;
     weeks: TrainingWeek[];
+    cycleLength?: number;
+    sameTemplateAllWeeks?: boolean;
+    weekTypeOverrides?: Array<{ weekType: number; week: TrainingWeek }>;
+    skippedWeeks?: number[];
     friendTrainingMaxes?: { name: string; mode: string; linkedExercise?: string }[];
   }) => {
-    /** Plan: series, %, kg, modo, linkedTo tm-*; sin historial ni series del amigo. TMs nuevos a 0. */
+    /** Plan: series, %, kg, modo, linkedTo tm-*; sin historial ni series del amigo. TMs = mismos que el amigo/plan, valor 0 (no se añade el paquete por defecto si ya hay TMs reales). */
     const newWeeks = cloneFriendRoutineWeeks(routine.weeks);
-    const normMode = (m: string): 'weight' | 'reps' | 'seconds' => {
-      if (m === 'reps' || m === 'seconds' || m === 'weight') return m;
-      return 'weight';
-    };
-    const linkOk = (s?: string): s is 'bench' | 'squat' | 'deadlift' =>
-      s === 'bench' || s === 'squat' || s === 'deadlift';
+    const cl = Math.max(1, Math.min(52, routine.cycleLength ?? 4));
 
     try {
-      const copiedBaseTemplate = deriveBaseTemplateFromWeeks(newWeeks);
+      const copiedBaseTemplate = deriveBaseTemplateFromWeeks(newWeeks, cl);
+      const friendSuffix = (routine.friendName || 'Amigo').trim() || 'Amigo';
+      const sameTemplateAllWeeks = parseSameTemplateAllWeeks(routine.sameTemplateAllWeeks);
+      const weekTypeOverrides = Array.isArray(routine.weekTypeOverrides)
+        ? JSON.parse(JSON.stringify(routine.weekTypeOverrides)) as Array<{ weekType: number; week: TrainingWeek }>
+        : [];
       const created = await apiPost<any>('/api/routines', {
-        name: `${routine.name} (de amigo)`,
+        name: `${routine.name} (${friendSuffix})`,
         versions: [{ effectiveFromWeek: 1, weeks: copiedBaseTemplate }],
         baseTemplate: copiedBaseTemplate,
-        weekTypeOverrides: [],
+        weekTypeOverrides,
         isActive: true,
+        cycleLength: cl,
+        sameTemplateAllWeeks,
+        skippedWeeks: [],
       });
       const planId = String(created._id || created.id);
 
-      const seen = new Set<string>();
-      const fromFriend =
-        routine.friendTrainingMaxes?.filter((r) => {
-          const name = String(r.name || '').trim();
-          if (!name) return false;
-          const m = normMode(String(r.mode || 'weight'));
-          const k = `${name}::${m}`;
-          if (seen.has(k)) return false;
-          seen.add(k);
-          return true;
-        }).map((r) => ({
-          name: String(r.name).trim(),
-          value: 0,
-          mode: normMode(String(r.mode || 'weight')),
-          ...(r.linkedExercise && linkOk(r.linkedExercise) ? { linkedExercise: r.linkedExercise } : {}),
-        })) ?? [];
-
+      const mergedSeeds = mergeFriendProfileAndPlanTmSeeds(routine.friendTrainingMaxes, newWeeks);
       const seedRows =
-        fromFriend.length > 0
-          ? fromFriend
-          : DEFAULT_TM_SEED_ZERO.map((row) => ({ ...row }));
+        mergedSeeds.length > 0
+          ? mergedSeeds
+          : !hasAnyLinkedExerciseInWeeks(newWeeks)
+            ? DEFAULT_TM_SEED_ZERO.map((row) => ({ ...row }))
+            : [];
 
       await Promise.all(
         seedRows.map((row) =>
@@ -1919,17 +1944,7 @@ export default function App() {
             value: 0,
             mode: row.mode,
             routineId: planId,
-            ...('linkedExercise' in row && row.linkedExercise ? { linkedExercise: row.linkedExercise } : {}),
-          }).catch(() => {})
-        )
-      );
-
-      const tmsList = await apiGet<any[]>(`/api/training-maxes?routineId=${encodeURIComponent(planId)}`).catch(() => []);
-      await Promise.all(
-        (tmsList || []).map((t: any) =>
-          apiPut(`/api/training-maxes/${t._id || t.id}`, {
-            value: 0,
-            routineId: planId,
+            ...(row.linkedExercise ? { linkedExercise: row.linkedExercise } : {}),
           }).catch(() => {})
         )
       );
@@ -1955,10 +1970,8 @@ export default function App() {
       setProgramScreen('plan');
       setView('program');
       bumpRoutineDataRefresh();
-      toast.success('Rutina copiada: mismos ejercicios y TMs a 0 en tu cuenta.');
     } catch (e) {
       console.error('[Routine] Error copiando:', e);
-      toast.error('No se pudo copiar la rutina. Inténtalo de nuevo.');
     }
   };
 
@@ -1974,12 +1987,9 @@ export default function App() {
 
   const handleDeleteRoutine = async (routineId: string) => {
     if (routines.length <= 1) {
-      toast.warning(
-        'No puedes borrar tu única rutina. Crea otra rutina primero y luego podrás eliminar esta.',
-        5500
-      );
       return;
     }
+    setRoutineDeleteLoadingId(routineId);
     try {
       await apiDelete(`/api/routines/${routineId}`);
       const remaining = routines.filter((r) => r.id !== routineId);
@@ -1998,6 +2008,8 @@ export default function App() {
       bumpRoutineDataRefresh();
     } catch (e) {
       console.error('[Routine] Error eliminando:', e);
+    } finally {
+      setRoutineDeleteLoadingId(null);
     }
   };
 
@@ -2750,7 +2762,6 @@ export default function App() {
       const accounts = loadSavedAccounts();
       const acc = accounts.find((a) => a.id === userId);
       if (!acc) {
-        toast.error('Cuenta no encontrada');
         return;
       }
       setIsSwitchingAccount(true);
@@ -2783,7 +2794,6 @@ export default function App() {
         });
         if (!res.ok) {
           localStorage.setItem('auth_token', prevToken || '');
-          toast.error('Sesión inválida o caducada');
           removeAccount(userId);
           setSavedAccountsState(loadSavedAccounts());
           return;
@@ -2814,12 +2824,11 @@ export default function App() {
         setUser(u);
       } catch (e) {
         console.error('[Account] Error al cambiar de cuenta:', e);
-        toast.error('No se pudo cambiar de cuenta');
       } finally {
         setIsSwitchingAccount(false);
       }
     },
-    [toast]
+    []
   );
 
   const handleLogout = useCallback(async () => {
@@ -2927,30 +2936,16 @@ export default function App() {
               setSavedAccountsState(loadSavedAccounts());
             }
           } catch (parseError) {
-            console.error('[SESSION] Error parseando respuesta:', parseError);
-            localStorage.removeItem('auth_token');
-            localStorage.removeItem(AUTH_USER_STORAGE_KEY);
-            setUser(null);
+            console.error('[SESSION] Error parseando respuesta — sesión local mantenida:', parseError);
           }
         } else {
-          try {
-            const raw = localStorage.getItem(AUTH_USER_STORAGE_KEY);
-            if (raw) {
-              const u = JSON.parse(raw) as User;
-              if (u?.id) {
-                removeAccount(u.id);
-                setSavedAccountsState(loadSavedAccounts());
-              }
-            }
-          } catch {
-            /* ignore */
-          }
-          localStorage.removeItem('auth_token');
-          localStorage.removeItem(AUTH_USER_STORAGE_KEY);
-          setUser(null);
+          // Server returned non-ok — keep session alive unless we're certain the user was deleted.
+          // Never force re-login due to transient server issues, token format changes, etc.
+          // Only an explicit handleLogout() should clear the token.
+          console.warn('[SESSION] /api/auth/me respondió', res.status, '— sesión local mantenida');
         }
       } catch (e: any) {
-        // Error de conexión o servidor no disponible: mantener sesión local activa hasta logout.
+        // Network error or server unavailable: keep local session alive until explicit logout.
         console.error('[SESSION] Error verificando sesión:', e.message || e);
       } finally {
         setIsCheckingSession(false);
@@ -3107,29 +3102,20 @@ export default function App() {
   }
 
   if (!user) {
-    return (
-      <>
-        <LoginView onLogin={handleLoginComplete} toast={toast} />
-        <ToastContainer toasts={toast.toasts} onClose={toast.removeToast} />
-      </>
-    );
+    return <LoginView onLogin={handleLoginComplete} />;
   }
 
   if (user && addAccountMode) {
     return (
-      <>
-        <LoginView
-          variant="addAccount"
-          onCancel={() => setAddAccountMode(false)}
-          onLogin={(userData) => {
-            handleLoginComplete(userData);
-            setAddAccountMode(false);
-            setView('settings');
-          }}
-          toast={toast}
-        />
-        <ToastContainer toasts={toast.toasts} onClose={toast.removeToast} />
-      </>
+      <LoginView
+        variant="addAccount"
+        onCancel={() => setAddAccountMode(false)}
+        onLogin={(userData) => {
+          handleLoginComplete(userData);
+          setAddAccountMode(false);
+          setView('settings');
+        }}
+      />
     );
   }
 
@@ -3146,7 +3132,6 @@ export default function App() {
         })
         .catch((e) => {
           console.error('[Routine] Error guardando Mes/Sem:', e);
-          toast.error('No se pudo guardar la preferencia Mes/Sem');
         });
     }
   };
@@ -3196,7 +3181,6 @@ export default function App() {
         setRoutines((prev) =>
           prev.map((r) => (r.id === routineId ? { ...r, hiddenFromSocial: routine.hiddenFromSocial } : r))
         );
-        toast.error('No se pudo guardar la visibilidad');
       }
     }
   };
@@ -3240,6 +3224,7 @@ export default function App() {
           {view === 'dashboard' && (
             <DashboardView 
               key={`dashboard-${activeRoutineId}`}
+              chartEnterKey={dashboardEnterKey}
               user={user}
               history={sortedHistory}
               rms={rms}
@@ -3279,6 +3264,7 @@ export default function App() {
                 onActivateRoutine={handleSelectRoutine}
                 onCreateRoutine={handleCreateRoutine}
                 createRoutineLoading={routineCreateLoading}
+                deleteRoutineLoadingId={routineDeleteLoadingId}
                 onRenameRoutine={handleRenameRoutine}
                 onDeleteRoutine={handleDeleteRoutine}
                 onToggleHiddenRoutine={handleToggleHiddenRoutine}
@@ -3287,7 +3273,7 @@ export default function App() {
               <TrainingPlanView 
                 key="program"
                 activeRoutineName={activeRoutine?.name || 'Rutina activa'}
-                sameTemplateAllWeeks={activeRoutine?.sameTemplateAllWeeks !== false}
+                sameTemplateAllWeeks={activeRoutine?.sameTemplateAllWeeks === true}
                 cycleLength={activeRoutine?.cycleLength ?? 4}
                 onToggleSameTemplateAllWeeks={handleToggleSameTemplateAllWeeks}
                 trainingMaxes={tms}
@@ -3360,6 +3346,12 @@ export default function App() {
               onCheckInDelete={handleCheckInDelete}
               onRefreshChallenges={refreshChallenges}
               onCopyFriendRoutine={handleCopyFriendRoutine}
+              myRoutines={routines.map((r) => ({ id: r.id, name: r.name }))}
+              activeRoutineId={activeRoutineId}
+              onGoToCopiedRoutine={(routineId) => {
+                setView('program');
+                void handleSelectRoutine(routineId);
+              }}
               onUnfriend={handleUnfriend}
             />
           )}
@@ -3425,9 +3417,6 @@ export default function App() {
           <span className="text-[7px] max-[360px]:text-[6px] sm:text-[10px] font-black tracking-widest uppercase truncate w-full text-center">Ajustes</span>
         </button>
       </nav>
-      
-      {/* Toast Notifications */}
-      <ToastContainer toasts={toast.toasts} onClose={toast.removeToast} />
     </div>
   );
 }

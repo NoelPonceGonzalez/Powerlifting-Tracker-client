@@ -9,18 +9,14 @@ interface AvatarProps extends React.ImgHTMLAttributes<HTMLImageElement> {
   fallback?: string;
 }
 
-export const Avatar: React.FC<AvatarProps> = ({ src, name, fallback, className, alt, ...props }) => {
+export const Avatar: React.FC<AvatarProps> = ({ src, name, fallback, className, alt, onError, ...props }) => {
   const defaultAvatar = fallback || AVATAR_FALLBACK;
-  const initialSrc = (src && src.trim()) ? src : defaultAvatar;
-  const [imgSrc, setImgSrc] = React.useState(initialSrc);
-
+  /** Carga fallida: no guardar el src en estado aparte — si no, el avatar puede quedar desincronizado un ciclo respecto a `src`. */
+  const [broken, setBroken] = React.useState(false);
   React.useEffect(() => {
-    setImgSrc((src && src.trim()) ? src : defaultAvatar);
+    setBroken(false);
   }, [src, fallback]);
-
-  const handleError = () => {
-    setImgSrc(defaultAvatar);
-  };
+  const resolved = !broken && (src && src.trim()) ? src : defaultAvatar;
 
   return (
     <div
@@ -32,11 +28,14 @@ export const Avatar: React.FC<AvatarProps> = ({ src, name, fallback, className, 
     >
       <img
         {...props}
-        src={imgSrc}
+        src={resolved}
         alt={alt ?? name ?? 'Avatar'}
         className="absolute inset-0 h-full w-full min-h-0 min-w-0 object-cover object-center"
         referrerPolicy="no-referrer"
-        onError={handleError}
+        onError={(e) => {
+          setBroken(true);
+          onError?.(e);
+        }}
         draggable={false}
       />
     </div>

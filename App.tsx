@@ -165,7 +165,7 @@ export default function App() {
             name: 'General',
             importance: Notifications.AndroidImportance.MAX,
             vibrationPattern: [0, 250, 250, 250],
-            lightColor: '#4f46e5',
+            lightColor: '#FFFFFF',
           });
         }
 
@@ -232,7 +232,7 @@ export default function App() {
         const Notifications = await import('expo-notifications');
 
         const goToActivity = (data: Record<string, any> | undefined) => {
-          const screen = String(data?.screen ?? 'social');
+          const screen = String(data?.screen ?? 'dashboard');
           const tab = String(data?.tab ?? 'checkins');
           setPendingNotificationOpen({ screen, tab });
         };
@@ -324,8 +324,8 @@ export default function App() {
   };
 
   return (
-    <SafeAreaView style={{ flex: 1, backgroundColor: '#0f172a' }}>
-      <StatusBar style="light" />
+    <SafeAreaView style={{ flex: 1, backgroundColor: '#f8fafc' }}>
+      <StatusBar style="dark" />
       {hasError ? (
         <View
           style={{
@@ -488,7 +488,7 @@ export default function App() {
                 backgroundColor: '#f8fafc',
               }}
             >
-              <ActivityIndicator size="large" color="#4f46e5" />
+              <ActivityIndicator size="large" color="#334155" />
               <Text style={{ marginTop: 12, color: '#64748b', fontSize: 14 }}>
                 {webAppUrl.startsWith('file://') ? 'Cargando Tracker...' : `Cargando desde ${webAppUrl}...`}
               </Text>
