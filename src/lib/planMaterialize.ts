@@ -6,6 +6,24 @@ import type { DayType, LogEntry, TrainingWeek, RoutineVersion } from '@/src/type
 import { getWeekTypeSlot } from '@/src/lib/mesocycleWeek';
 import { parseRoutineLogsFromMongo } from '@/src/lib/routineLogs';
 
+/**
+ * Rutinas por bloque (mesociclo): `skippedWeeks` almacena posiciones 1…cycleLength en el ciclo.
+ * Datos antiguos usaban semana civil (1–53); si algún valor supera `cycleLength`, se convierten a índice de ciclo.
+ */
+export function migrateSkippedWeeksForBlockMode(skipped: number[], cycleLength: number): number[] {
+  if (!Array.isArray(skipped) || skipped.length === 0) return [];
+  const cl = Math.max(1, cycleLength);
+  const rounded = skipped
+    .map((w) => Math.round(Number(w)))
+    .filter((w) => Number.isFinite(w) && w >= 1);
+  if (rounded.some((w) => w > cl)) {
+    return [...new Set(rounded.map((w) => ((Math.max(1, w) - 1) % cl) + 1))]
+      .filter((x) => x >= 1 && x <= cl)
+      .sort((a, b) => a - b);
+  }
+  return [...new Set(rounded.filter((w) => w <= cl))].sort((a, b) => a - b);
+}
+
 export function normalizeTemplateWeek(week: TrainingWeek, weekType: number): TrainingWeek {
   return {
     ...week,
@@ -131,6 +149,7 @@ export function expandRoutineFromApi(raw: {
   sameTemplateAllWeeks: boolean;
   hiddenFromSocial: boolean;
   cycleLength: number;
+  /** En rutina lineal: semanas civiles 1–53. En rutina por bloque: posición en el ciclo 1…cycleLength. */
   skippedWeeks: number[];
   weeks: TrainingWeek[];
   versions: RoutineVersion[];
@@ -142,6 +161,9 @@ export function expandRoutineFromApi(raw: {
   progressCheckpointTms?: Record<string, number>;
 } {
   const cycleLength = Number.isFinite(raw.cycleLength) && raw.cycleLength! >= 1 ? raw.cycleLength! : 4;
+  const sameTemplateAllWeeks = raw.sameTemplateAllWeeks !== false;
+  const skippedRaw = Array.isArray(raw.skippedWeeks) ? raw.skippedWeeks : [];
+  const skippedWeeks = sameTemplateAllWeeks ? skippedRaw : migrateSkippedWeeksForBlockMode(skippedRaw, cycleLength);
   const logs = parseRoutineLogsFromMongo(raw.logs);
   const baseTemplateRaw = raw.baseTemplate?.length ? raw.baseTemplate : [];
 
@@ -222,10 +244,10 @@ export function expandRoutineFromApi(raw: {
   return {
     id: String(raw._id ?? raw.id ?? ''),
     name: raw.name || 'Rutina',
-    sameTemplateAllWeeks: raw.sameTemplateAllWeeks !== false,
+    sameTemplateAllWeeks,
     hiddenFromSocial: !!raw.hiddenFromSocial,
     cycleLength,
-    skippedWeeks: Array.isArray(raw.skippedWeeks) ? raw.skippedWeeks : [],
+    skippedWeeks,
     weeks: outWeeks,
     versions: outVersions,
     baseTemplate: baseTemplateOut.length > 0 ? baseTemplateOut : deriveBaseTemplateFromWeeks(outWeeks, cycleLength),

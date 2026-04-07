@@ -3136,16 +3136,27 @@ export default function App() {
     }
   };
 
-  /** Lista única 1–53; no altera la semana visible del plan al marcar/desmarcar. */
-  const normalizeSkippedWeeks = (arr: number[]) =>
+  /** Lista única 1–53 (rutina lineal: semana civil). */
+  const normalizeSkippedWeeksLinear = (arr: number[]) =>
     [...new Set(arr.map((w) => Math.round(Number(w))).filter((w) => Number.isFinite(w) && w >= 1 && w <= 53))].sort(
       (a, b) => a - b
     );
 
+  /** Rutina por bloque: índices 1…cycleLength dentro del mesociclo. */
+  const normalizeSkippedWeeksCycle = (arr: number[], cycleLength: number) => {
+    const cl = Math.max(1, Math.min(52, cycleLength));
+    return [...new Set(arr.map((w) => Math.round(Number(w))).filter((w) => Number.isFinite(w) && w >= 1 && w <= cl))].sort(
+      (a, b) => a - b
+    );
+  };
+
+  /** `weekNumber` en lineal = semana civil; en bloque = posición en el ciclo (1…N). */
   const handleSkipWeek = async (weekNumber: number, mode: 'shift' | 'skip_only') => {
     const routine = routines.find((r) => r.id === activeRoutineId);
     if (!routine || routine.id.startsWith('routine-')) return;
     const current = routine.skippedWeeks || [];
+    const isBlock = routine.sameTemplateAllWeeks === false;
+    const cl = routine.cycleLength ?? 4;
     let next: number[];
     if (mode === 'skip_only') {
       next = current.includes(weekNumber) ? current.filter((w) => w !== weekNumber) : [...current, weekNumber];
@@ -3155,7 +3166,7 @@ export default function App() {
         ? current.filter((w) => w !== weekNumber)
         : [...current, weekNumber].filter((v, i, a) => a.indexOf(v) === i);
     }
-    next = normalizeSkippedWeeks(next);
+    next = isBlock ? normalizeSkippedWeeksCycle(next, cl) : normalizeSkippedWeeksLinear(next);
     updateActiveRoutine((r) => ({ ...r, skippedWeeks: next }));
     try {
       await apiPut(`/api/routines/${routine.id}`, { skippedWeeks: next });

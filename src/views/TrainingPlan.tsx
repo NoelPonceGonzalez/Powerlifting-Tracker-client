@@ -244,8 +244,14 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     [displayWeekNum, cycleLength]
   );
 
-  /** Semana civil visible marcada como saltada (persistido en Mongo: `skippedWeeks`). No muta el plan: es una capa visual. */
-  const calendarWeekSkipped = skippedWeeks.includes(displayWeekNum);
+  /**
+   * Clave en `skippedWeeks`: en rutina lineal, semana civil; en rutina por bloque, posición del mesociclo (1…N),
+   * para que al cambiar de semana civil la semana del ciclo siga marcada como saltada.
+   */
+  const skipWeekKey = sameTemplateAllWeeks ? displayWeekNum : cycleWeek;
+
+  /** Semana del plan marcada como saltada (persistido en Mongo: `skippedWeeks`). No muta el plan: es una capa visual. */
+  const calendarWeekSkipped = skippedWeeks.includes(skipWeekKey);
 
   /** Con semana saltada, entreno/descarga se muestran como descanso; al quitar el salto vuelve el plan tal cual estaba guardado. */
   const effectiveDayType = useCallback(
@@ -700,20 +706,20 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 <button
                   type="button"
                   title={
-                    skippedWeeks.includes(displayWeekNum)
+                    skippedWeeks.includes(skipWeekKey)
                       ? 'Pulsa para quitar el salto (puedes ir a otras semanas con las flechas y desmarcarlas igual)'
                       : 'Marcar semana como saltada'
                   }
                   className={cn(
                     "flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-bold border-2 transition-all",
-                    skippedWeeks.includes(displayWeekNum)
+                    skippedWeeks.includes(skipWeekKey)
                       ? "border-amber-400 bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400"
                       : "border-slate-200 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:border-slate-300"
                   )}
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (skippedWeeks.includes(displayWeekNum)) {
-                      onSkipWeek(displayWeekNum, 'skip_only');
+                    if (skippedWeeks.includes(skipWeekKey)) {
+                      onSkipWeek(skipWeekKey, 'skip_only');
                       setShowSkipDropdown(false);
                       return;
                     }
@@ -721,7 +727,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   }}
                 >
                   <SkipForward size={12} />
-                  {skippedWeeks.includes(displayWeekNum) ? 'Saltada' : 'Saltar'}
+                  {skippedWeeks.includes(skipWeekKey) ? 'Saltada' : 'Saltar'}
                 </button>
                 {showSkipDropdown && (
                   <>
@@ -730,7 +736,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                       <div className="bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-600 rounded-xl shadow-lg p-2 min-w-[10rem] space-y-1">
                         <button
                           type="button"
-                          onClick={() => { onSkipWeek(displayWeekNum, 'skip_only'); setShowSkipDropdown(false); }}
+                          onClick={() => { onSkipWeek(skipWeekKey, 'skip_only'); setShowSkipDropdown(false); }}
                           className="w-full text-left px-3 py-2 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors"
                         >
                           Saltar el día
@@ -738,7 +744,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                         </button>
                         <button
                           type="button"
-                          onClick={() => { onSkipWeek(displayWeekNum, 'shift'); setShowSkipDropdown(false); }}
+                          onClick={() => { onSkipWeek(skipWeekKey, 'shift'); setShowSkipDropdown(false); }}
                           className="w-full text-left px-3 py-2 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors"
                         >
                           Saltar la semana
