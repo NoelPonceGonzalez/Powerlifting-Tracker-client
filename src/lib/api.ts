@@ -22,6 +22,26 @@ function getBaseUrl(): string {
     const fromEnv =
       (vite != null && String(vite).trim() !== '' ? String(vite).trim() : '') ||
       (expo != null && String(expo).trim() !== '' ? String(expo).trim() : '');
+
+    /**
+     * Web en HTTPS (p. ej. Vercel): una API en `http://…` incrustada en el bundle no puede llamarse
+     * desde el navegador (mixed content). Usar el mismo origen y proxy en vercel.json → AWS.
+     * EAS/APK (file:// o WebView sin HTTPS de la página) sigue usando `fromEnv` hacia el servidor.
+     */
+    if (fromEnv) {
+      try {
+        const apiU = new URL(fromEnv.endsWith('/') ? fromEnv : `${fromEnv}/`);
+        if (window.location.protocol === 'https:' && apiU.protocol === 'http:') {
+          const o = window.location.origin;
+          if (o && o !== 'null' && !o.startsWith('file:')) {
+            return o.replace(/\/$/, '');
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
     if (fromEnv) {
       return fromEnv.replace(/\/$/, '');
     }
