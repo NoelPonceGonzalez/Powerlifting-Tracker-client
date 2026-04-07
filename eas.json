@@ -10,10 +10,9 @@
     },
     "preview": {
       "distribution": "internal",
-      "image": "sdk-53",
       "android": {
         "buildType": "apk",
-        "resourceClass": "large"
+        "image": "sdk-53"
       },
       "env": {
         "EXPO_PUBLIC_API_URL": "http://3.231.3.49:3000"
