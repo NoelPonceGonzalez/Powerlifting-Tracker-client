@@ -1,5 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
+
+/**
+ * Evita reabrir el modal de gym y saltar a «Actividad» al volver a Social: el efecto que
+ * escucha `openCheckInModalSignal` se volvería a disparar en cada remount si solo comparamos
+ * el número guardado en App (sigue siendo > 0). Solo reaccionamos a incrementos nuevos.
+ */
+let lastConsumedOpenCheckInModalSignal = 0;
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Search, 
@@ -151,6 +158,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [search, setSearch] = useState('');
   const [challengeSearch, setChallengeSearch] = useState('');
   const [activeTab, setActiveTab] = useState<'friends' | 'challenges' | 'checkins'>(initialTab);
+  const prevInitialTabPropRef = useRef(initialTab);
   const [challengeSubTab, setChallengeSubTab] = useState<'active' | 'finished' | 'progress'>('active');
   const [routineLeaderboard, setRoutineLeaderboard] = useState<RoutineProgressLeaderboardEntry[] | null>(null);
   const [routineLeaderboardLoading, setRoutineLeaderboardLoading] = useState(false);
@@ -218,6 +226,13 @@ export const SocialView: React.FC<SocialViewProps> = ({
     }
   }, [activeTab, challengeSubTab, loadRoutineLeaderboard, friendsList.length]);
 
+  /** Si el padre cambia la pestaña (p. ej. «Avisar yo» → checkins), sincronizar sin remount por key. */
+  useEffect(() => {
+    if (initialTab === prevInitialTabPropRef.current) return;
+    prevInitialTabPropRef.current = initialTab;
+    setActiveTab(initialTab);
+  }, [initialTab]);
+
   // Marcar notificaciones como leídas al ver la pestaña Actividad
   useEffect(() => {
     if (activeTab === 'checkins') {
@@ -225,15 +240,21 @@ export const SocialView: React.FC<SocialViewProps> = ({
     }
   }, [activeTab]);
 
-  /** Desde Progreso (dashboard): «Avisar yo» abre Social → Actividad con el modal de gym. */
+  /** Desde Progreso (dashboard): «Avisar yo» abre Social → Actividad con el modal de gym (solo al pulsar, no al volver a entrar). */
   useEffect(() => {
     if (!openCheckInModalSignal) return;
+    if (openCheckInModalSignal <= lastConsumedOpenCheckInModalSignal) return;
+    lastConsumedOpenCheckInModalSignal = openCheckInModalSignal;
     setActiveTab('checkins');
     setEditingCheckIn(null);
     setGymName('');
     setGymTime('');
     setShowCheckInModal(true);
   }, [openCheckInModalSignal]);
+
+  useEffect(() => {
+    lastConsumedOpenCheckInModalSignal = 0;
+  }, [user.id]);
 
   // Búsqueda desde la 1.ª letra (sin mínimo de 2); debounce corto para que responda al instante
   useEffect(() => {
@@ -965,21 +986,31 @@ export const SocialView: React.FC<SocialViewProps> = ({
                     </Card>
                   )}
                   {othersCheckIns.length === 0 && !myCheckInToday ? (
-                    <Card padding="lg" className="text-center border-dashed border-2 border-slate-200 bg-transparent">
-                      <p className="text-slate-400 font-medium mb-4">Nadie ha avisado que va al gym hoy</p>
-                      <Button
-                        variant="primary"
-                        className="rounded-xl w-full sm:w-auto"
+                    <div className="rounded-2xl border-2 border-dashed border-slate-200/90 bg-slate-50/60 py-8 text-center dark:border-slate-600/70 dark:bg-slate-800/25">
+                      <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-indigo-100/90 dark:bg-indigo-950/55">
+                        <Plus className="text-indigo-600 dark:text-indigo-400" size={20} strokeWidth={2.25} />
+                      </div>
+                      <p className="mb-3 text-sm font-medium text-slate-500 dark:text-slate-400">
+                        Nadie ha avisado que va al gym hoy
+                      </p>
+                      <button
+                        type="button"
                         onClick={() => {
                           setEditingCheckIn(null);
                           setGymName('');
                           setGymTime('');
                           setShowCheckInModal(true);
                         }}
+                        className="group inline-flex items-center gap-1.5 rounded-lg border border-indigo-200/90 bg-white px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-indigo-700 shadow-sm transition-all hover:border-indigo-300 hover:bg-indigo-50 active:scale-[0.98] dark:border-indigo-500/35 dark:bg-indigo-950/35 dark:text-indigo-200 dark:hover:border-indigo-400/50 dark:hover:bg-indigo-900/40"
                       >
-                        Avisar mi hora
-                      </Button>
-                    </Card>
+                        <Plus
+                          size={14}
+                          strokeWidth={2.5}
+                          className="text-indigo-500 transition-transform group-hover:scale-110 dark:text-indigo-300"
+                        />
+                        <span>Avisar mi hora</span>
+                      </button>
+                    </div>
                   ) : (
                     othersCheckIns.map(checkIn => {
                       const alreadyJoined = myCheckInToday && myCheckInToday.gymName === checkIn.gymName && myCheckInToday.time === checkIn.time;

@@ -248,6 +248,7 @@ interface RoutinePlan {
   hiddenFromSocial?: boolean;
   cycleLength?: number;
   skippedWeeks?: number[];
+  shiftedAtCalendarWeeks?: number[];
   /** ISO del servidor: inicio de la rutina (gráficos en 0 antes de esta fecha). */
   createdAt?: string;
   /** ISO: referencia para % en gráficos (sin cambiar TM). */
@@ -974,6 +975,7 @@ export default function App() {
               hiddenFromSocial: created.hiddenFromSocial,
               cycleLength: created.cycleLength,
               skippedWeeks: created.skippedWeeks,
+              shiftedAtCalendarWeeks: created.shiftedAtCalendarWeeks,
               weeks: created.weeks,
               versions: created.versions,
               baseTemplate: created.baseTemplate,
@@ -1000,6 +1002,7 @@ export default function App() {
               hiddenFromSocial: r.hiddenFromSocial,
               cycleLength: r.cycleLength,
               skippedWeeks: r.skippedWeeks,
+              shiftedAtCalendarWeeks: r.shiftedAtCalendarWeeks,
               weeks: r.weeks,
               versions: r.versions,
               baseTemplate: r.baseTemplate,
@@ -1860,6 +1863,7 @@ export default function App() {
         hiddenFromSocial: created.hiddenFromSocial,
         cycleLength: created.cycleLength,
         skippedWeeks: created.skippedWeeks,
+        shiftedAtCalendarWeeks: created.shiftedAtCalendarWeeks,
         weeks: created.weeks,
         versions: created.versions,
         baseTemplate: created.baseTemplate,
@@ -1957,6 +1961,7 @@ export default function App() {
         hiddenFromSocial: created.hiddenFromSocial,
         cycleLength: created.cycleLength,
         skippedWeeks: created.skippedWeeks,
+        shiftedAtCalendarWeeks: created.shiftedAtCalendarWeeks,
         weeks: created.weeks,
         versions: created.versions,
         baseTemplate: created.baseTemplate,
@@ -3150,22 +3155,35 @@ export default function App() {
     );
   };
 
-  /** `weekNumber` en lineal = semana civil; en bloque = posición en el ciclo (1…N). */
+  /**
+   * `weekNumber` en skip_only (lineal = semana civil; bloque = posición ciclo).
+   * En shift + bloque: `weekNumber` = semana civil (displayWeekNum) que se desplaza.
+   */
   const handleSkipWeek = async (weekNumber: number, mode: 'shift' | 'skip_only') => {
     const routine = routines.find((r) => r.id === activeRoutineId);
     if (!routine || routine.id.startsWith('routine-')) return;
-    const current = routine.skippedWeeks || [];
     const isBlock = routine.sameTemplateAllWeeks === false;
+
+    if (mode === 'shift' && isBlock) {
+      const calWeek = weekNumber;
+      const current: number[] = routine.shiftedAtCalendarWeeks ?? [];
+      const next = current.includes(calWeek)
+        ? current.filter((w) => w !== calWeek)
+        : [...current, calWeek].sort((a, b) => a - b);
+      updateActiveRoutine((r) => ({ ...r, shiftedAtCalendarWeeks: next }));
+      try {
+        await apiPut(`/api/routines/${routine.id}`, { shiftedAtCalendarWeeks: next });
+        bumpRoutineDataRefresh();
+      } catch (e) {
+        console.error('[Routine] Error guardando shift de semana:', e);
+      }
+      return;
+    }
+
+    const current = routine.skippedWeeks || [];
     const cl = routine.cycleLength ?? 4;
     let next: number[];
-    if (mode === 'skip_only') {
-      next = current.includes(weekNumber) ? current.filter((w) => w !== weekNumber) : [...current, weekNumber];
-    } else {
-      // Misma lista que skip_only: si ya estaba saltada (p. ej. "Saltar la semana"), se puede deshacer
-      next = current.includes(weekNumber)
-        ? current.filter((w) => w !== weekNumber)
-        : [...current, weekNumber].filter((v, i, a) => a.indexOf(v) === i);
-    }
+    next = current.includes(weekNumber) ? current.filter((w) => w !== weekNumber) : [...current, weekNumber];
     next = isBlock ? normalizeSkippedWeeksCycle(next, cl) : normalizeSkippedWeeksLinear(next);
     updateActiveRoutine((r) => ({ ...r, skippedWeeks: next }));
     try {
@@ -3325,6 +3343,7 @@ export default function App() {
                 onOpenRoutineManager={() => setProgramScreen('routines')}
                 onExport={exportToExcel}
                 skippedWeeks={activeRoutine?.skippedWeeks ?? []}
+                shiftedAtCalendarWeeks={activeRoutine?.shiftedAtCalendarWeeks ?? []}
                 onSkipWeek={handleSkipWeek}
                 onRoutineProgressCheckpoint={
                   activeRoutine &&
@@ -3339,7 +3358,7 @@ export default function App() {
           )}
           {view === 'social' && (
             <SocialView 
-              key={socialTab}
+              key={user?.id ?? 'social'}
               user={user}
               friendsList={friendsList}
               requests={friends}

@@ -117,6 +117,8 @@ interface TrainingPlanViewProps {
   onOpenRoutineManager: () => void;
   onExport: () => void;
   skippedWeeks?: number[];
+  /** Semanas civiles donde «Saltar la semana» desplazó el ciclo (solo block mode). */
+  shiftedAtCalendarWeeks?: number[];
   onSkipWeek?: (weekNumber: number, mode: 'shift' | 'skip_only') => void;
   /** Reinicia la referencia de % en gráficos (no modifica TM). */
   onRoutineProgressCheckpoint?: () => void | Promise<void>;
@@ -161,6 +163,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   onOpenRoutineManager,
   onExport,
   skippedWeeks = [],
+  shiftedAtCalendarWeeks = [],
   onSkipWeek,
   onRoutineProgressCheckpoint,
   routineProgressCheckpointLoading = false,
@@ -217,11 +220,11 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   const [targetInputDraft, setTargetInputDraft] = useState<Record<string, string>>({});
   const [logInputDraft, setLogInputDraft] = useState<Record<string, string>>({});
 
-  // Scroll al día actual cuando se carga la semana
+  // Scroll al día actual cuando cambia la semana civil o el día (no solo activeWeekIdx: con shift puede repetirse el índice)
   useEffect(() => {
     const el = dayButtonRefs.current[activeDayIdx];
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
-  }, [activeWeekIdx]);
+  }, [displayWeekNum, activeDayIdx]);
 
   const months = [
     'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 
@@ -238,11 +241,25 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   const currentWeek = weeks[activeWeekIdx];
   const currentDay = currentWeek?.days[activeDayIdx];
   const currentMonth = getMonthForWeek(displayWeekNum);
-  /** Semana del ciclo (1–N) según cycleLength de la rutina. */
-  const cycleWeek = useMemo(
-    () => ((Math.max(1, displayWeekNum) - 1) % Math.max(1, cycleLength)) + 1,
-    [displayWeekNum, cycleLength]
+  /** Cuántas semanas se han desplazado por «Saltar la semana» antes de la semana actual (block mode). */
+  const weekShift = useMemo(() => {
+    if (sameTemplateAllWeeks) return 0;
+    return shiftedAtCalendarWeeks.filter((w) => w < displayWeekNum).length;
+  }, [sameTemplateAllWeeks, shiftedAtCalendarWeeks, displayWeekNum]);
+
+  /** ¿Esta semana civil fue desplazada con «Saltar la semana»? */
+  const isShiftedWeek = useMemo(
+    () => !sameTemplateAllWeeks && shiftedAtCalendarWeeks.includes(displayWeekNum),
+    [sameTemplateAllWeeks, shiftedAtCalendarWeeks, displayWeekNum]
   );
+
+  /** Semana del ciclo (1–N) teniendo en cuenta los shifts acumulados. */
+  const cycleWeek = useMemo(() => {
+    const cl = Math.max(1, cycleLength);
+    if (sameTemplateAllWeeks) return ((Math.max(1, displayWeekNum) - 1) % cl) + 1;
+    const effective = displayWeekNum - weekShift;
+    return (((Math.max(1, effective) - 1) % cl) + cl) % cl + 1;
+  }, [displayWeekNum, cycleLength, weekShift, sameTemplateAllWeeks]);
 
   /**
    * Clave en `skippedWeeks`: en rutina lineal, semana civil; en rutina por bloque, posición del mesociclo (1…N),
@@ -250,8 +267,8 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
    */
   const skipWeekKey = sameTemplateAllWeeks ? displayWeekNum : cycleWeek;
 
-  /** Semana del plan marcada como saltada (persistido en Mongo: `skippedWeeks`). No muta el plan: es una capa visual. */
-  const calendarWeekSkipped = skippedWeeks.includes(skipWeekKey);
+  /** Semana del plan marcada como saltada (visual o shift). */
+  const calendarWeekSkipped = skippedWeeks.includes(skipWeekKey) || isShiftedWeek;
 
   /** Con semana saltada, entreno/descarga se muestran como descanso; al quitar el salto vuelve el plan tal cual estaba guardado. */
   const effectiveDayType = useCallback(
@@ -269,9 +286,16 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   );
 
   useEffect(() => {
-    const targetIdx = Math.max(0, Math.min(weeks.length - 1, displayWeekNum - 1));
+    let idx: number;
+    if (sameTemplateAllWeeks) {
+      idx = displayWeekNum - 1;
+    } else {
+      const effective = displayWeekNum - weekShift;
+      idx = ((effective - 1) % weeks.length + weeks.length) % weeks.length;
+    }
+    const targetIdx = Math.max(0, Math.min(weeks.length - 1, idx));
     setActiveWeekIdx(targetIdx);
-  }, [displayWeekNum, weeks.length]);
+  }, [displayWeekNum, weeks.length, weekShift, sameTemplateAllWeeks]);
 
   const viewDateISO = useMemo(
     () => dateISOFromYearWeekDay(displayPlanYear, displayWeekNum, activeDayIdx),
@@ -405,7 +429,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     return Math.round(weight * (1 + reps / 30) * 10) / 10;
   };
 
-  /** Pie de serie en modo kg: 1RM estimado (Epley), mismo criterio que el veredicto fuerte/débil. */
+  /** Pie de serie en modo kg (con o sin TM): 1RM estimado (Epley) desde peso y reps de la serie. */
   const estimatedOneRmFooterKg = (weight: number | null, reps: number | null): string => {
     if (weight == null || reps == null || reps <= 0) return '—';
     const e = calculateRM(weight, reps);
@@ -660,8 +684,6 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                         onClick={() => {
                           const year = displayPlanYear;
                           const targetWeekNum = firstWeekOfYearStartingInMonth(year, idx);
-                          const targetIdx = Math.max(0, Math.min(weeks.length - 1, targetWeekNum - 1));
-                          setActiveWeekIdx(targetIdx);
                           onViewAsOfWeekChange?.(targetWeekNum === currentWeekOfYear ? null : targetWeekNum);
                           setShowMonthSelector(false);
                         }}
@@ -680,23 +702,19 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
 
             <div className="flex gap-2">
               <Button variant="outline" size="sm" onClick={() => {
-                if (activeWeekIdx > 0) {
-                  const newIdx = activeWeekIdx - 1;
-                  setActiveWeekIdx(newIdx);
-                  const weekNum = newIdx + 1;
-                  onViewAsOfWeekChange?.(weekNum === currentWeekOfYear ? null : weekNum);
+                if (displayWeekNum > 1) {
+                  const newWeek = displayWeekNum - 1;
+                  onViewAsOfWeekChange?.(newWeek === currentWeekOfYear ? null : newWeek);
                 }
-              }} disabled={activeWeekIdx === 0} className="px-3 py-2">
+              }} disabled={displayWeekNum <= 1} className="px-3 py-2">
                 <ChevronLeft size={18} />
               </Button>
               <Button variant="outline" size="sm" onClick={() => {
-                if (activeWeekIdx < weeks.length - 1) {
-                  const newIdx = activeWeekIdx + 1;
-                  setActiveWeekIdx(newIdx);
-                  const weekNum = newIdx + 1;
-                  onViewAsOfWeekChange?.(weekNum === currentWeekOfYear ? null : weekNum);
+                if (displayWeekNum < 52) {
+                  const newWeek = displayWeekNum + 1;
+                  onViewAsOfWeekChange?.(newWeek === currentWeekOfYear ? null : newWeek);
                 }
-              }} disabled={activeWeekIdx === weeks.length - 1} className="px-3 py-2">
+              }} disabled={displayWeekNum >= 52} className="px-3 py-2">
                 <ChevronRight size={18} />
               </Button>
             </div>
@@ -706,20 +724,24 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 <button
                   type="button"
                   title={
-                    skippedWeeks.includes(skipWeekKey)
-                      ? 'Pulsa para quitar el salto (puedes ir a otras semanas con las flechas y desmarcarlas igual)'
+                    calendarWeekSkipped
+                      ? 'Pulsa para quitar el salto'
                       : 'Marcar semana como saltada'
                   }
                   className={cn(
                     "flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-bold border-2 transition-all",
-                    skippedWeeks.includes(skipWeekKey)
+                    calendarWeekSkipped
                       ? "border-amber-400 bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400"
                       : "border-slate-200 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:border-slate-300"
                   )}
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (skippedWeeks.includes(skipWeekKey)) {
-                      onSkipWeek(skipWeekKey, 'skip_only');
+                    if (calendarWeekSkipped) {
+                      if (isShiftedWeek) {
+                        onSkipWeek(displayWeekNum, 'shift');
+                      } else {
+                        onSkipWeek(skipWeekKey, 'skip_only');
+                      }
                       setShowSkipDropdown(false);
                       return;
                     }
@@ -727,7 +749,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   }}
                 >
                   <SkipForward size={12} />
-                  {skippedWeeks.includes(skipWeekKey) ? 'Saltada' : 'Saltar'}
+                  {calendarWeekSkipped ? 'Saltada' : 'Saltar'}
                 </button>
                 {showSkipDropdown && (
                   <>
@@ -744,7 +766,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                         </button>
                         <button
                           type="button"
-                          onClick={() => { onSkipWeek(skipWeekKey, 'shift'); setShowSkipDropdown(false); }}
+                          onClick={() => { onSkipWeek(displayWeekNum, 'shift'); setShowSkipDropdown(false); }}
                           className="w-full text-left px-3 py-2 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors"
                         >
                           Saltar la semana
@@ -766,7 +788,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
             </motion.div>
           ) : viewMode === 'daily' ? (
             <motion.div
-              key={`daily-${activeWeekIdx}`}
+              key={`daily-${displayWeekNum}`}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
@@ -825,7 +847,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
 
               <AnimatePresence mode="wait">
               <motion.div
-                key={`${activeWeekIdx}-${activeDayIdx}`}
+                key={`${displayWeekNum}-${activeDayIdx}`}
                 initial={
                   activeDayIdx === 0
                     ? { opacity: 0 }
@@ -1304,7 +1326,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
             </motion.div>
           ) : (
             <motion.div
-              key={`weekly-${activeWeekIdx}`}
+              key={`weekly-${displayWeekNum}`}
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
@@ -1666,15 +1688,9 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                     <p className="mt-2 text-center text-xs font-bold leading-tight text-indigo-600 dark:text-indigo-400">
                                       {effectiveMode === 'pct'
                                         ? `= ${setLog.weight !== null ? roundTo25(setLog.weight) : '—'} kg`
-                                        : effectiveTM.isInternal && exerciseMode === 'weight'
-                                          ? setLog.weight != null && effectiveTM.value > 0
-                                            ? `${Math.round((setLog.weight / effectiveTM.value) * 100)}% de tu máx. (${roundTo25(effectiveTM.value)} kg)`
-                                            : '—'
-                                          : setLog.weight != null && setLog.reps != null && setLog.reps > 0
-                                            ? estimatedOneRmFooterKg(setLog.weight, setLog.reps)
-                                            : setLog.weight !== null && effectiveTM
-                                              ? `${Math.round((setLog.weight / effectiveTM.value) * 100)}% RM`
-                                              : '—'}
+                                        : setLog.weight != null && setLog.reps != null && setLog.reps > 0
+                                          ? estimatedOneRmFooterKg(setLog.weight, setLog.reps)
+                                          : '—'}
                                     </p>
                                   </>
                                 ) : (
