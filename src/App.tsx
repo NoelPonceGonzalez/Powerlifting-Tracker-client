@@ -1,0 +1,3813 @@
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { flushSync } from 'react-dom';
+import { AnimatePresence, MotionConfig, motion } from 'motion/react';
+import * as XLSX from 'xlsx';
+import { LayoutDashboard, Dumbbell, Users, UserRound, Plus } from 'lucide-react';
+import { ComposeSheet } from '@/src/components/ComposeSheet';
+
+// Views
+import { LoginView } from '@/src/views/Login';
+import { DashboardView } from '@/src/views/Dashboard';
+import { TrainingPlanView } from '@/src/views/TrainingPlan';
+import { RoutineManagerView } from '@/src/views/RoutineManager';
+import { SocialView, type SocialTab } from '@/src/views/Social';
+import { ProfileView } from '@/src/views/Profile';
+
+// Components
+import { useRealtimeUpdates } from '@/src/hooks/useRealtimeUpdates';
+
+// Types
+import { 
+  RMData, 
+  LogEntry, 
+  HistoryEntry, 
+  ViewType, 
+  Exercise, 
+  ExerciseMode,
+  TrainingMax, 
+  TrainingWeek,
+  TrainingDay,
+  PlannedExercise,
+  RoutineVersion,
+  FriendRequest,
+  Friend,
+  User,
+  Challenge,
+  BodyWeightScoringMode,
+  GymCheckIn,
+  SetLog,
+  InternalExerciseMax,
+  getInternalValueForMode,
+  DayType
+} from '@/src/types';
+import { apiGet, apiPost, apiPut, apiPatch, apiDelete, apiUpload, getApiBaseUrl } from '@/src/lib/api';
+import { cn } from '@/src/lib/utils';
+import { normalizeExerciseNameKey } from '@/src/lib/normalizeExerciseName';
+import { computeRoutineProgressTotal } from '@/src/lib/routineProgressTotal';
+import {
+  calendarMonth1FromDateISO,
+  dateISOFromYearWeekDay,
+  dateISOToUtcNoonISO,
+  entryDateISO,
+} from '@/src/lib/calendarWeekDate';
+import { buildBaselineHistoryEntry, TM_BASELINE_DATE_ISO } from '@/src/lib/historyTm';
+import { mergeRoutineHistoryFromServer } from '@/src/lib/routineHistoryMerge';
+import { serializeLogEntryForMongo } from '@/src/lib/routineLogs';
+import {
+  getLogEntryForExercise,
+  parseRoutineLogKeyLoose,
+  resolveExerciseNameFromRoutineLogKey,
+  resolveLogEntryForMerge,
+  routineLogKeyFromIds,
+  stripLegacyLogKeysForCanonical,
+  purgeAndReindexLogsAfterExerciseRemoval,
+} from '@/src/lib/routineLogKey';
+import { resolveTmForAutoBump } from '@/src/lib/trainingMaxResolve';
+import { getWeekTypeSlot } from '@/src/lib/mesocycleWeek';
+import {
+  expandRoutineFromApi,
+  deriveBaseTemplateFromWeeks,
+  materialize52WeeksFromFourTemplateWeeks,
+  normalizeTemplateWeek,
+} from '@/src/lib/planMaterialize';
+import {
+  cloneFriendRoutineWeeks,
+  parseSameTemplateAllWeeks,
+  DEFAULT_TM_SEED_ZERO,
+  mergeFriendProfileAndPlanTmSeeds,
+  hasAnyLinkedExerciseInWeeks,
+} from '@/src/lib/cloneFriendRoutine';
+import { buildPlanPatchPayload } from '@/src/lib/planSyncPayload';
+import { mergeCoachImportIntoRoutine } from '@/src/lib/coachPlan/applyCoachPlan';
+import type { ImportCoachPlanResult, LastCoachImport } from '@/src/components/ImportCoachPlanModal';
+import { usePushNotifications } from '@/src/hooks/usePushNotifications';
+import {
+  loadSavedAccounts,
+  upsertAccount,
+  removeAccount,
+  setActiveAccountId,
+  migrateLegacyIfNeeded,
+  toSummaries,
+  type SavedAccount,
+} from '@/src/lib/savedAccounts';
+import { checkInExpiresAtMs, expiresAtFromSaved } from '@/src/lib/checkInExpires';
+
+function mapCheckInFromApi(c: Record<string, unknown>): GymCheckIn {
+  const ts =
+    typeof c.timestamp === 'number'
+      ? c.timestamp
+      : new Date(String(c.timestamp)).getTime();
+  const time = String(c.time ?? '00:00');
+  let expiresAt: number | undefined;
+  if (typeof c.expiresAt === 'number') expiresAt = c.expiresAt;
+  else if (c.expiresAt != null) expiresAt = new Date(String(c.expiresAt)).getTime();
+  else expiresAt = checkInExpiresAtMs(new Date(ts), time);
+  return {
+    id: String(c.id ?? c._id),
+    userId: String(c.userId),
+    userName: String(c.userName ?? 'Usuario'),
+    avatar: c.avatar != null ? String(c.avatar) : undefined,
+    gymName: String(c.gymName ?? ''),
+    time,
+    timestamp: ts,
+    expiresAt,
+  };
+}
+
+// --- Constants & Mock Data ---
+const INITIAL_USER: User = {
+  id: 'u-1',
+  name: 'Noel Ponce',
+  email: 'noel.ponce.gonzalez@gmail.com',
+  avatar: 'https://picsum.photos/seed/noel/200/200',
+  bodyWeight: 80,
+  theme: 'light'
+};
+
+const INITIAL_CHALLENGES: Challenge[] = [];
+
+const INITIAL_CHECKINS: GymCheckIn[] = [];
+
+// --- Constants & Mock Data ---
+const INITIAL_RMS: RMData = {
+  bench: 110,
+  squat: 140,
+  deadlift: 190
+};
+
+const EXERCISES: readonly Exercise[] = [
+  { key: 'bench', label: 'Press Banca', color: '#3b82f6', bg: 'bg-blue-50', border: 'border-blue-500', text: 'text-blue-600' },
+  { key: 'squat', label: 'Sentadilla', color: '#10b981', bg: 'bg-emerald-50', border: 'border-emerald-500', text: 'text-emerald-600' },
+  { key: 'deadlift', label: 'Peso Muerto', color: '#f43f5e', bg: 'bg-rose-50', border: 'border-rose-500', text: 'text-rose-600' }
+] as const;
+
+const INITIAL_TMS: TrainingMax[] = [
+  { id: 'tm-1', name: 'Press Banca', value: 110, mode: 'weight', linkedExercise: 'bench' },
+  { id: 'tm-2', name: 'Sentadilla', value: 140, mode: 'weight', linkedExercise: 'squat' },
+  { id: 'tm-3', name: 'Peso Muerto', value: 190, mode: 'weight', linkedExercise: 'deadlift' },
+  { id: 'tm-4', name: 'Dominadas', value: 15, mode: 'reps' },
+  { id: 'tm-5', name: 'Plancha', value: 60, mode: 'seconds' },
+];
+
+/** Si el GET de TMs llega tarde, no pisa un TM ya subido al registrar series en el plan. */
+function mergeTrainingMaxesFromServer(prev: TrainingMax[], server: TrainingMax[]): TrainingMax[] {
+  if (!server.length) return prev;
+  if (!prev.length) return server;
+  return server.map(tm => {
+    const p = prev.find(x => x.id === tm.id);
+    if (p && p.value > tm.value) return { ...tm, value: p.value };
+    return tm;
+  });
+}
+
+const generateWeeks = (): TrainingWeek[] => {
+  const weeks: TrainingWeek[] = [];
+  const dayNames = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+  
+  for (let i = 1; i <= 52; i++) {
+    weeks.push({
+      id: `w${i}`,
+      number: i,
+      days: dayNames.map((name, dIdx) => ({
+        id: `w${i}-d${dIdx}`,
+        name,
+        type: (dIdx === 0 || dIdx === 2 || dIdx === 4) ? 'workout' : 'rest',
+        exercises: dIdx === 0 ? [
+          { id: `w${i}-d${dIdx}-e1`, name: 'Press Banca', sets: 3, reps: 5, pct: 65 + (i % 4) * 5, mode: 'weight', linkedTo: 'tm-1' },
+          { id: `w${i}-d${dIdx}-e2`, name: 'Press Militar', sets: 3, reps: 10, mode: 'weight' },
+        ] : dIdx === 2 ? [
+          { id: `w${i}-d${dIdx}-e3`, name: 'Sentadilla', sets: 3, reps: 5, pct: 65 + (i % 4) * 5, mode: 'weight', linkedTo: 'tm-2' },
+        ] : dIdx === 4 ? [
+          { id: `w${i}-d${dIdx}-e4`, name: 'Peso Muerto', sets: 3, reps: 5, pct: 65 + (i % 4) * 5, mode: 'weight', linkedTo: 'tm-3' },
+        ] : []
+      }))
+    });
+  }
+  return weeks;
+};
+
+/** Misma estructura semanal (52 semanas), sin ejercicios — rutinas nuevas creadas por el usuario. */
+const generateEmptyWeeks = (): TrainingWeek[] => {
+  const weeks: TrainingWeek[] = [];
+  const dayNames = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+  for (let i = 1; i <= 52; i++) {
+    weeks.push({
+      id: `w${i}`,
+      number: i,
+      days: dayNames.map((name, dIdx) => ({
+        id: `w${i}-d${dIdx}`,
+        name,
+        type: (dIdx === 0 || dIdx === 2 || dIdx === 4) ? 'workout' : 'rest',
+        exercises: [],
+      })),
+    });
+  }
+  return weeks;
+};
+
+const INITIAL_WEEKS: TrainingWeek[] = generateWeeks();
+const AUTH_USER_STORAGE_KEY = 'auth_user';
+
+const getCurrentWeekOfYear = (date = new Date()): number => {
+  const start = new Date(date.getFullYear(), 0, 1);
+  const diffDays = Math.floor((date.getTime() - start.getTime()) / 86400000);
+  return Math.max(1, Math.min(52, Math.floor(diffDays / 7) + 1));
+};
+
+/** Fecha del día visible en Rutina (mes/semana/día), no “hoy” del reloj. */
+type PlanViewAnchor = {
+  year: number;
+  week: number;
+  dayOfWeek: number;
+  dateISO: string;
+};
+
+function buildDefaultPlanViewAnchor(): PlanViewAnchor {
+  const now = new Date();
+  const y = now.getFullYear();
+  const w = getCurrentWeekOfYear(now);
+  const dow = (now.getDay() + 6) % 7;
+  return {
+    year: y,
+    week: w,
+    dayOfWeek: dow,
+    dateISO: dateISOFromYearWeekDay(y, w, dow),
+  };
+}
+
+function monthLabelFromDateISO(iso: string): string {
+  const parts = iso.split('-').map((x) => parseInt(x, 10));
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) {
+    return new Date().toLocaleDateString('es-ES', { month: 'short' });
+  }
+  const [y, m, d] = parts;
+  return new Date(y, m - 1, d).toLocaleDateString('es-ES', { month: 'short' });
+}
+
+interface RoutinePlan {
+  id: string;
+  name: string;
+  sameTemplateAllWeeks?: boolean;
+  hiddenFromSocial?: boolean;
+  cycleLength?: number;
+  skippedWeeks?: number[];
+  shiftedAtCalendarWeeks?: number[];
+  /** ISO del servidor: inicio de la rutina (gráficos en 0 antes de esta fecha). */
+  createdAt?: string;
+  /** ISO: referencia para % en gráficos (sin cambiar TM). */
+  progressCheckpointAt?: string;
+  /** Snapshot de TM al checkpoint ({ tmId: valor }). */
+  progressCheckpointTms?: Record<string, number>;
+  weeks: TrainingWeek[];
+  versions?: RoutineVersion[];
+  baseTemplate?: TrainingWeek[];
+  weekTypeOverrides?: Array<{ weekType: number; week: TrainingWeek }>;
+  logs: Record<string, LogEntry>;
+}
+
+function materializeRoutineWeeksIfNeeded(routine: RoutinePlan): TrainingWeek[] {
+  const rw = routine.weeks;
+  if (!rw?.length) return rw;
+  if (rw.length >= 52) return rw;
+  const cl = routine.cycleLength ?? 4;
+  const tpl = rw.length <= cl ? rw : deriveBaseTemplateFromWeeks(rw, cl);
+  return materialize52WeeksFromFourTemplateWeeks(tpl.length <= cl ? tpl : deriveBaseTemplateFromWeeks(tpl, cl), cl);
+}
+
+function getWeeksAt(routine: RoutinePlan, weekNumber: number): TrainingWeek[] {
+  const cl = routine.cycleLength ?? 4;
+  const versions = routine.versions;
+  if (!versions || versions.length === 0) {
+    return materializeRoutineWeeksIfNeeded(routine);
+  }
+  const applicable = versions.filter(v => v.effectiveFromWeek <= weekNumber);
+  if (applicable.length === 0) {
+    return materializeRoutineWeeksIfNeeded(routine);
+  }
+  const best = applicable.reduce((a, b) => a.effectiveFromWeek >= b.effectiveFromWeek ? a : b);
+  const w = best.weeks;
+  if (!w?.length) return materializeRoutineWeeksIfNeeded(routine);
+  /** Ciclo con el que se guardó esa versión: al cambiar de ciclo, las semanas ya pasadas se siguen leyendo igual. */
+  const vcl = Math.max(1, Math.min(52, best.cycleLength ?? (w.length < 52 ? w.length : cl)));
+  if (w.length <= vcl) return materialize52WeeksFromFourTemplateWeeks(w, vcl);
+  if (w.length >= 52) return w;
+  return materialize52WeeksFromFourTemplateWeeks(deriveBaseTemplateFromWeeks(w, vcl), vcl);
+}
+
+/** Plan completo a guardar en Mongo: la versión más reciente. No usar `getWeeksAt(..., semanaActual)` aquí: si editas una semana futura, eso devolvía una versión vieja y el PUT pisaba series/reps. */
+function getRoutineWeeksForPersistence(routine: RoutinePlan): TrainingWeek[] {
+  if (routine.versions?.length) {
+    const latest = routine.versions.reduce((a, b) =>
+      a.effectiveFromWeek >= b.effectiveFromWeek ? a : b
+    );
+    return latest.weeks;
+  }
+  return routine.weeks;
+}
+
+/**
+ * Semanas para enlazar `logs` con ejercicios al subir TM. Debe cubrir los mismos IDs que el plan visible
+ * (`getWeeksAt` para la semana del calendario) y además el array completo en Mongo (`routine.weeks`), si no
+ * las claves tipo `template-w4-d0-e1` vs `w14-d0-e1` no coinciden y el TM no sube al registrar series.
+ */
+function getWeeksForTrainingMaxScan(routine: RoutinePlan): TrainingWeek[] {
+  const versionWeeksTpl =
+    routine.versions?.length > 0
+      ? routine.versions[routine.versions.length - 1].weeks
+      : [];
+  const rootWeeks = routine.weeks || [];
+  const ref = getCurrentWeekOfYear();
+  const atCalendarWeek = getWeeksAt(routine, ref);
+
+  const merged = new Map<string, TrainingWeek>();
+  const add = (arr: TrainingWeek[]) => {
+    arr.forEach((w) => merged.set(w.id, w));
+  };
+
+  if (rootWeeks.length > 0) add(rootWeeks);
+  add(atCalendarWeek);
+  if (rootWeeks.length === 0 && versionWeeksTpl.length > 0) {
+    const cl = routine.cycleLength ?? 4;
+    const expanded =
+      versionWeeksTpl.length <= cl
+        ? materialize52WeeksFromFourTemplateWeeks(versionWeeksTpl, cl)
+        : versionWeeksTpl.length >= 52
+          ? versionWeeksTpl
+          : materialize52WeeksFromFourTemplateWeeks(deriveBaseTemplateFromWeeks(versionWeeksTpl, cl), cl);
+    add(expanded);
+  }
+
+  return Array.from(merged.values());
+}
+
+/** Incluye la semana del log si el merge de plantillas no traía ese `wN` (evita no subir TM al registrar series). */
+function getWeeksForTrainingMaxScanWithLog(routine: RoutinePlan, logId: string): TrainingWeek[] {
+  const base = getWeeksForTrainingMaxScan(routine);
+  const parsed = parseRoutineLogKeyLoose(logId);
+  if (!parsed) return base;
+  if (base.some((w) => w.number === parsed.planWeek)) return base;
+  const extra = getWeeksAt(routine, parsed.planWeek);
+  const merged = new Map<string, TrainingWeek>();
+  base.forEach((w) => merged.set(w.id, w));
+  extra.forEach((w) => merged.set(w.id, w));
+  return Array.from(merged.values());
+}
+
+/** Acepta clave canónica `w13-d0-e1` (servidor/DB) o legada `w13-w13-d0-w13-d0-e1`. */
+function parseLogIdForHistory(logId: string): { weekId: string; dayId: string; exId: string } | null {
+  const canon = /^w(\d+)-d(\d+)-e(\d+)$/.exec(logId);
+  if (canon) {
+    const w = canon[1];
+    const d = canon[2];
+    const e = canon[3];
+    return { weekId: `w${w}`, dayId: `w${w}-d${d}`, exId: `w${w}-d${d}-e${e}` };
+  }
+  const m = logId.match(/^(.*?)-(.*)-(e\d+)$/);
+  if (!m) return null;
+  return { weekId: m[1], dayId: m[2], exId: m[3] };
+}
+
+/**
+ * Año / semana del calendario (1–52) / día (Lun=0) del plan donde cayó el log — alineado con el gráfico y getTMsForView.
+ * `calendarWeekRef` = semana que el usuario tiene seleccionada en el plan (viewAsOfWeek ?? semana actual).
+ */
+function resolveCalendarFromLogId(
+  routine: RoutinePlan,
+  logId: string,
+  calendarWeekRef: number
+): { year: number; week: number; dayOfWeek: number } | null {
+  const parts = parseLogIdForHistory(logId);
+  if (!parts) return null;
+  const weeks = getWeeksForTrainingMaxScan(routine);
+  const week = weeks.find((w) => w.id === parts.weekId);
+  if (!week) return null;
+  const dm = parts.dayId.match(/d(\d+)$/i);
+  const dayOfWeek = dm ? parseInt(dm[1], 10) : 0;
+  const year = new Date().getFullYear();
+  /** Rutina con plantilla 1–4 semanas: los logs usan w1…w4 como “slot” del mesociclo, no la semana civil. */
+  const rootWeeksLen = routine.weeks?.length ?? 0;
+  const isFourWeekTemplateRoutine = rootWeeksLen > 0 && rootWeeksLen <= 4;
+  const slotM = /^w(\d+)$/.exec(parts.weekId);
+  const slotFromId = slotM ? parseInt(slotM[1], 10) : 0;
+  let weekNum = week.number;
+  if (isFourWeekTemplateRoutine && slotFromId >= 1 && slotFromId <= 4) {
+    weekNum = Math.max(1, Math.min(52, calendarWeekRef));
+  }
+  return { year, week: weekNum, dayOfWeek };
+}
+
+function buildRmsFromLinkedTms(tms: TrainingMax[], base: RMData): RMData {
+  const out: RMData = { bench: base.bench, squat: base.squat, deadlift: base.deadlift };
+  tms.forEach((tm) => {
+    if (tm.linkedExercise) out[tm.linkedExercise] = tm.value;
+  });
+  return out;
+}
+
+/** Copia un día con nuevos IDs para la semana/día destino. Conserva `_dbId` de cada ejercicio del día destino (cada semana tiene su fila en Mongo). */
+function copyDayWithNewIds(
+  srcDay: { id: string; name: string; type: DayType; exercises: PlannedExercise[] },
+  targetWeekId: string,
+  targetDayId: string,
+  targetDay?: { exercises: PlannedExercise[] }
+): { id: string; name: string; type: DayType; exercises: PlannedExercise[] } {
+  const targetEx = targetDay?.exercises;
+  return {
+    id: targetDayId,
+    name: srcDay.name,
+    type: srcDay.type,
+    exercises: srcDay.exercises.map((e, idx) => ({
+      ...e,
+      id: `${targetWeekId}-${targetDayId}-e${idx + 1}`,
+      _dbId: targetEx?.[idx]?._dbId ?? e._dbId,
+    })),
+  };
+}
+
+/** Campos que acepta PATCH /exercises/:id (evita mandar id/_dbId u otros campos del cliente). */
+function exercisePatchBodyFromUpdates(updates: Partial<PlannedExercise>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (updates.name !== undefined) out.name = updates.name;
+  if (updates.sets !== undefined) out.sets = updates.sets;
+  if (updates.reps !== undefined) {
+    const r = updates.reps;
+    if (typeof r === 'string' && /^\d+$/.test(r.trim())) {
+      out.reps = parseInt(r.trim(), 10);
+    } else {
+      out.reps = r;
+    }
+  }
+  if (updates.pct !== undefined) out.pct = updates.pct;
+  if (updates.pctPerSet !== undefined) out.pctPerSet = updates.pctPerSet;
+  if (updates.weight !== undefined) out.weight = updates.weight;
+  if (updates.mode !== undefined) out.mode = updates.mode;
+  if (updates.linkedTo !== undefined) out.linkedTo = updates.linkedTo;
+  return out;
+}
+
+/** Profundidad de copia de weeks */
+function deepCloneWeeks(weeks: TrainingWeek[]): TrainingWeek[] {
+  return weeks.map(w => ({
+    ...w,
+    days: w.days.map(d => ({
+      ...d,
+      exercises: d.exercises.map(e => ({ ...e })),
+    })),
+  }));
+}
+
+/**
+ * Resuelve índices 0..51 en la plantilla anual (w1…w52). Debe usar la misma semana que `getWeeksAt`
+ * aunque `routine.weeks` en estado tenga solo 4 semanas plantilla.
+ */
+function resolveWeekDayIndex(
+  routine: RoutinePlan,
+  weekId: string,
+  dayId: string
+): { weekIdx: number; dayIdx: number } | null {
+  const base = routine.weeks;
+  if (!base.length) return null;
+
+  let calendarWeekNum: number;
+  const wMatch = /^w(\d+)$/.exec(weekId);
+  if (wMatch) {
+    calendarWeekNum = Math.max(1, Math.min(52, parseInt(wMatch[1], 10)));
+  } else {
+    const byId = base.findIndex((w) => w.id === weekId);
+    if (byId < 0) return null;
+    calendarWeekNum = base[byId].number ?? byId + 1;
+  }
+
+  const weekIdx = calendarWeekNum - 1;
+  if (weekIdx < 0 || weekIdx > 51) return null;
+
+  const weeksView = getWeeksAt(routine, calendarWeekNum);
+  const wk = weeksView[weekIdx] ?? weeksView.find((w) => w.number === calendarWeekNum);
+  if (!wk?.days?.length) return null;
+
+  let dayIdx = wk.days.findIndex((d) => d.id === dayId);
+  if (dayIdx < 0) {
+    const dm = /-d(\d+)$/.exec(dayId);
+    if (dm) dayIdx = parseInt(dm[1], 10);
+  }
+  if (dayIdx < 0 || dayIdx >= wk.days.length) return null;
+
+  return { weekIdx, dayIdx };
+}
+
+type CreateRoutinePlanOptions = { empty?: boolean; sameTemplateAllWeeks?: boolean; cycleLength?: number };
+
+const createRoutinePlan = (id: string, name: string, options?: boolean | CreateRoutinePlanOptions) => {
+  const opts: CreateRoutinePlanOptions =
+    typeof options === 'boolean' ? { empty: options } : options ?? {};
+  const empty = opts.empty ?? false;
+  const sameTemplateAllWeeks = opts.sameTemplateAllWeeks !== false;
+  const cycleLength = opts.cycleLength ?? 4;
+  const weeks = empty ? generateEmptyWeeks() : generateWeeks();
+  const tpl = deriveBaseTemplateFromWeeks(weeks, cycleLength);
+  return {
+    id,
+    name,
+    sameTemplateAllWeeks,
+    hiddenFromSocial: false,
+    cycleLength,
+    skippedWeeks: [] as number[],
+    createdAt: new Date().toISOString(),
+    weeks,
+    versions: [{ effectiveFromWeek: 1, weeks: tpl }],
+    baseTemplate: tpl,
+    weekTypeOverrides: [],
+    logs: {},
+  };
+};
+
+const INITIAL_ROUTINES: RoutinePlan[] = [
+  createRoutinePlan('routine-a', 'Rutina A', { empty: true }),
+  createRoutinePlan('routine-b', 'Rutina B', { empty: true }),
+];
+
+const INITIAL_FRIENDS: FriendRequest[] = [];
+
+export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [isCheckingSession, setIsCheckingSession] = useState(true);
+  const [view, setView] = useState<ViewType>('dashboard');
+  /** Incrementa al volver a Progreso desde otra pestaña → remonta gráficos y replay de animación. */
+  const [dashboardEnterKey, setDashboardEnterKey] = useState(0);
+  const prevViewForDashboardRef = useRef<ViewType | null>(null);
+
+  // State
+  const [rms, setRms] = useState<RMData>(INITIAL_RMS);
+  const [tms, setTms] = useState<TrainingMax[]>(INITIAL_TMS);
+  /** TM inferidos por nombre de ejercicio (sin vínculo a TM de rutina). */
+  const [internalExerciseMaxes, setInternalExerciseMaxes] = useState<InternalExerciseMax[]>([]);
+  /** Evita cierres obsoletos en handleSetLogChange (varias series antes del siguiente render). */
+  const tmsRef = useRef<TrainingMax[]>(tms);
+  tmsRef.current = tms;
+  const rmsRef = useRef<RMData>(rms);
+  rmsRef.current = rms;
+  const internalExerciseMaxesRef = useRef<InternalExerciseMax[]>(internalExerciseMaxes);
+  internalExerciseMaxesRef.current = internalExerciseMaxes;
+  const [routines, setRoutines] = useState<RoutinePlan[]>(INITIAL_ROUTINES);
+  const [activeRoutineId, setActiveRoutineId] = useState<string>(INITIAL_ROUTINES[0].id);
+  /** Ref para ignorar respuestas de fetch de TM/historial si el usuario ya cambió de rutina. */
+  const activeRoutineIdRef = useRef(activeRoutineId);
+  activeRoutineIdRef.current = activeRoutineId;
+  /** Clave anterior user::routine; el cleanup del efecto la actualiza para detectar solo cambio real de rutina/usuario. */
+  const prevRoutineDataKeyRef = useRef('');
+  const [programScreen, setProgramScreen] = useState<'plan' | 'routines'>('plan');
+  /** Tras crear una rutina con «tengo un documento»: abre el importador en el plan. */
+  const [openImportAfterCreate, setOpenImportAfterCreate] = useState(0);
+  const [viewAsOfWeek, setViewAsOfWeek] = useState<number | null>(null); // null = presente, número = viaje en el tiempo
+  const [friends, setFriends] = useState<FriendRequest[]>(INITIAL_FRIENDS);
+  const [friendsList, setFriendsList] = useState<Friend[]>([]);
+  const [challenges, setChallenges] = useState<Challenge[]>(INITIAL_CHALLENGES);
+  const [checkIns, setCheckIns] = useState<GymCheckIn[]>(INITIAL_CHECKINS);
+  const [socialTab, setSocialTab] = useState<SocialTab>('feed');
+  /** Abrir los ajustes dentro de Perfil sin que el usuario tenga que buscar el engranaje. */
+  const [profileOpenSettingsSignal, setProfileOpenSettingsSignal] = useState(0);
+  const [savedAccountsState, setSavedAccountsState] = useState<SavedAccount[]>(() => loadSavedAccounts());
+  const [addAccountMode, setAddAccountMode] = useState(false);
+  const [isSwitchingAccount, setIsSwitchingAccount] = useState(false);
+  const [isLoadingData, setIsLoadingData] = useState(false);
+
+  const mapUserFromMePayload = (data: { user: any }): User => {
+    const u = data.user;
+    return {
+      id: String(u._id || u.id),
+      name: u.name || 'Atleta',
+      email: u.email,
+      avatar: u.avatar || 'https://picsum.photos/seed/user/200/200',
+      bodyWeight: u.bodyWeight ?? 80,
+      theme: (u.theme ||
+        (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
+          ? 'dark'
+          : 'light')) as 'light' | 'dark',
+      progressMode:
+        u.progressMode === 'year'
+          ? 'year'
+          : u.progressMode === 'month' || u.progressMode === 'week'
+            ? 'month'
+            : undefined,
+      mbMode: !!u.mbMode,
+    };
+  };
+
+  const [openCheckInModalSignal, setOpenCheckInModalSignal] = useState(0);
+  /** Tick that forces social data refresh (friends, requests, check-ins, challenges). */
+  const [socialRefreshTick, setSocialRefreshTick] = useState(0);
+  const bumpSocialRefresh = useCallback(() => setSocialRefreshTick(t => t + 1), []);
+  /** Refetch TM, TM internos e historial (progreso / gráficas) sin cerrar sesión. */
+  const [routineDataRefreshTick, setRoutineDataRefreshTick] = useState(0);
+  const bumpRoutineDataRefresh = useCallback(() => setRoutineDataRefreshTick(t => t + 1), []);
+
+  // SSE real-time: server pushes events → bump the corresponding refresh tick
+  useRealtimeUpdates(user?.id ?? null, {
+    onSocialUpdate: bumpSocialRefresh,
+    onCheckinUpdate: bumpSocialRefresh,
+    onChallengeUpdate: bumpSocialRefresh,
+    onRoutineUpdate: bumpRoutineDataRefresh,
+  });
+
+  const [openPublishSignal, setOpenPublishSignal] = useState(0);
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [checkInIntent, setCheckInIntent] = useState<'now' | 'later' | null>(null);
+  const [socialBackTo, setSocialBackTo] = useState<'feed' | 'profile' | 'dashboard'>('feed');
+
+  const goToSocial = useCallback(
+    (
+      tab?: SocialTab,
+      opts?: {
+        openCheckInModal?: boolean;
+        openPublish?: boolean;
+        gymNow?: boolean;
+        from?: 'profile' | 'dashboard' | 'feed';
+      }
+    ) => {
+      const next = tab ?? 'feed';
+      setSocialTab(next);
+      setView('social');
+      if (opts?.from) {
+        setSocialBackTo(opts.from);
+      } else if (next === 'friends') {
+        setSocialBackTo('profile');
+      } else if (next === 'challenges' || next === 'checkins') {
+        setSocialBackTo(view === 'settings' ? 'profile' : view === 'dashboard' ? 'dashboard' : 'feed');
+      } else {
+        setSocialBackTo('feed');
+      }
+      if (opts?.openPublish) {
+        setOpenPublishSignal((s) => s + 1);
+      }
+      if (opts?.openCheckInModal || opts?.gymNow) {
+        setCheckInIntent(opts?.gymNow ? 'now' : 'later');
+        setOpenCheckInModalSignal((s) => s + 1);
+      }
+    },
+    [view]
+  );
+
+  const openProgramPlan = useCallback(() => {
+    setProgramScreen('plan');
+    setView('program');
+  }, []);
+
+  const getYearAndWeek = (d = new Date()) => ({
+    year: d.getFullYear(),
+    week: getCurrentWeekOfYear(d),
+  });
+
+  /** Año, semana ISO y día (Lun=0 … Dom=6) — para snapshots de TM por día dentro de la semana. */
+  const getYearWeekDay = (d = new Date()) => ({
+    year: d.getFullYear(),
+    week: getCurrentWeekOfYear(d),
+    dayOfWeek: (d.getDay() + 6) % 7,
+  });
+
+  // Función helper para crear entrada de historial con todos los TMs
+  const createHistoryEntry = (
+    date: string,
+    currentTms: TrainingMax[],
+    currentRms: RMData,
+    weekYear?: { week: number; year: number; dayOfWeek?: number }
+  ): HistoryEntry => {
+    const tmValues: Record<string, number> = {};
+    currentTms.forEach(tm => {
+      tmValues[tm.id] = tm.value;
+    });
+    const progress = computeRoutineProgressTotal(currentTms);
+    const resolved = weekYear ?? getYearWeekDay();
+    const dow = typeof resolved.dayOfWeek === 'number' ? resolved.dayOfWeek : 0;
+    const dateISO = dateISOFromYearWeekDay(resolved.year, resolved.week, dow);
+    const nowIso = new Date().toISOString();
+    return {
+      date,
+      week: resolved.week,
+      year: resolved.year,
+      ...(typeof resolved.dayOfWeek === 'number' ? { dayOfWeek: resolved.dayOfWeek } : {}),
+      dateISO,
+      month: calendarMonth1FromDateISO(dateISO),
+      rms: { ...currentRms },
+      total: progress.value,
+      progressKind: progress.kind,
+      trainingMaxes: tmValues,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+  };
+
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const historyRef = useRef<HistoryEntry[]>([]);
+  historyRef.current = history;
+  /** Día/semana visibles en Rutina: TMs manuales deben anclarse aquí, no a `getYearWeekDay()`. */
+  const planViewAnchorRef = useRef<PlanViewAnchor>(buildDefaultPlanViewAnchor());
+  /** Evita repetir la hidratación de línea base 1970 para la misma rutina. */
+  const baselineHydratedForRoutineRef = useRef<string | null>(null);
+
+  usePushNotifications(user?.id ?? null);
+
+  const activeRoutine = useMemo(
+    () => routines.find((routine) => routine.id === activeRoutineId) || routines[0],
+    [routines, activeRoutineId]
+  );
+  /** Nombres únicos de ejercicios de la rutina activa (sugerencias al crear un torneo). */
+  const activeRoutineExerciseNames = useMemo(() => {
+    if (!activeRoutine) return [];
+    const seen = new Set<string>();
+    const names: string[] = [];
+    for (const week of activeRoutine.weeks) {
+      for (const day of week.days) {
+        for (const ex of day.exercises) {
+          const name = ex.name?.trim();
+          if (!name) continue;
+          const key = name.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          names.push(name);
+        }
+      }
+    }
+    return names;
+  }, [activeRoutine]);
+  /** Siempre la rutina activa más reciente: el flush del debounce de sync debe leer esto, no el closure del efecto (evita guardar sin logs nuevos). */
+  const routineForSyncRef = useRef<RoutinePlan | null>(null);
+  routineForSyncRef.current = activeRoutine ?? null;
+  /** Todas las rutinas: el flush debe poder guardar una rutina que ya no está activa. */
+  const routinesRef = useRef<RoutinePlan[]>(routines);
+  routinesRef.current = routines;
+  /** Claves de log modificadas por rutina (sync incremental a ExerciseLog en Mongo). */
+  const dirtyLogKeysByRoutineRef = useRef<Map<string, Set<string>>>(new Map());
+  const planBulkSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /** PATCH /plan real. Separado del debounce para poder forzarlo al salir de la pestaña. */
+  const runPlanBulkSync = useCallback(async () => {
+    const r = routineForSyncRef.current;
+    if (!r || (r.id.startsWith('routine-') && r.id.length < 20)) return;
+    try {
+      const body = buildPlanPatchPayload(r);
+      const res = await apiPatch<Record<string, unknown>>(`/api/routines/${r.id}/plan`, body);
+      const plan = expandRoutineFromApi({
+        ...res,
+        progressCheckpointAt:
+          (res as any).progressCheckpointAt ?? r.progressCheckpointAt,
+        progressCheckpointTms:
+          (res as any).progressCheckpointTms ?? r.progressCheckpointTms,
+      });
+      // La respuesta trae los logs de Mongo; las series aún sin sincronizar solo viven
+      // en memoria, así que se conservan para no perderlas al reemplazar la rutina.
+      const dirtyKeys = dirtyLogKeysByRoutineRef.current.get(r.id);
+      if (dirtyKeys?.size) {
+        const preserved: Record<string, LogEntry> = { ...plan.logs };
+        for (const k of dirtyKeys) {
+          const local = r.logs[k];
+          if (local) preserved[k] = local;
+        }
+        plan.logs = preserved;
+      }
+      setRoutines((prev) => prev.map((x) => (x.id === plan.id ? plan : x)));
+      bumpRoutineDataRefresh();
+    } catch (e) {
+      console.error('[Routine] Error sync plan (fallback):', e);
+    }
+  }, []);
+
+  /** Si no hay _dbId en ejercicio/día, el servidor solo recibe cambios vía PATCH /plan. */
+  const schedulePlanBulkSync = useCallback(() => {
+    if (planBulkSyncTimeoutRef.current) clearTimeout(planBulkSyncTimeoutRef.current);
+    planBulkSyncTimeoutRef.current = setTimeout(() => {
+      planBulkSyncTimeoutRef.current = null;
+      void runPlanBulkSync();
+    }, 500);
+  }, [runPlanBulkSync]);
+
+  const markLogDirty = useCallback((routineId: string, logKey: string) => {
+    if (routineId.startsWith('routine-') && routineId.length < 20) return;
+    let s = dirtyLogKeysByRoutineRef.current.get(routineId);
+    if (!s) {
+      s = new Set();
+      dirtyLogKeysByRoutineRef.current.set(routineId, s);
+    }
+    s.add(logKey);
+  }, []);
+
+  /** PATCH logs a Mongo (WorkoutSession / WorkoutExercise / WorkoutSet). No limpia `dirty` si no hay payload. */
+  const syncDirtyLogsForRoutine = useCallback(
+    async (routine: RoutinePlan): Promise<boolean> => {
+      const routineId = routine.id;
+      if (routineId.startsWith('routine-') && routineId.length < 20) return false;
+      if (!user) return false;
+      const dirty = dirtyLogKeysByRoutineRef.current.get(routineId);
+      const keysToSend = dirty && dirty.size > 0 ? [...dirty] : [];
+      if (keysToSend.length === 0) return true;
+      const logsToPatch: Record<string, LogEntry> = {};
+      for (const k of keysToSend) {
+        const entry = routine.logs[k];
+        if (!entry) continue;
+        const exerciseName = resolveExerciseNameFromRoutineLogKey(routine, k);
+        logsToPatch[k] = serializeLogEntryForMongo({
+          ...entry,
+          ...(exerciseName ? { exerciseName } : {}),
+        });
+      }
+      if (Object.keys(logsToPatch).length === 0) {
+        console.warn('[Routine] Claves dirty sin entrada en logs; no se limpia la cola:', keysToSend);
+        return false;
+      }
+      const sentKeys = Object.keys(logsToPatch);
+      try {
+        const todayISO = new Date().toISOString().slice(0, 10);
+        await apiPatch(`/api/routines/${routineId}/logs`, { logs: logsToPatch, dateISO: todayISO });
+        // Solo las claves realmente enviadas: durante el await el usuario puede haber ensuciado otras.
+        const stillDirty = dirtyLogKeysByRoutineRef.current.get(routineId);
+        for (const k of sentKeys) stillDirty?.delete(k);
+        return true;
+      } catch (e) {
+        console.error('[Routine] Error sincronizando logs:', e);
+        return false;
+      }
+    },
+    [user]
+  );
+  /** Evita guardar historial/TM en Mongo con `routineId` nuevo y `tms` aún de la rutina anterior. */
+  const tmsLoadedForRoutineRef = useRef<string | null>(null);
+  const tmHighlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Tarjetas TM que acaban de subir desde el registro de series (feedback visual). */
+  const [tmAutoHighlightIds, setTmAutoHighlightIds] = useState<string[]>([]);
+  /** PUT /api/routines/:id progressCheckpointAt (botón Checkpoint en Rutina). */
+  const [routineCheckpointSaving, setRoutineCheckpointSaving] = useState(false);
+  /** POST /api/routines (modal Crear rutina). */
+  const [routineCreateLoading, setRoutineCreateLoading] = useState(false);
+  /** DELETE /api/routines/:id — tarjeta en gestión de rutinas. */
+  const [routineDeleteLoadingId, setRoutineDeleteLoadingId] = useState<string | null>(null);
+  /** PUT /api/routines/:id/activate — seleccionar rutina. */
+  const [routineSwitchingId, setRoutineSwitchingId] = useState<string | null>(null);
+  /** Incrementa para forzar que el efecto de sync de logs vuelva a ejecutarse con el estado ya committed. */
+  const [planSyncTick, setPlanSyncTick] = useState(0);
+  /** Recalcula cada render para no quedar congelado en la semana del primer mount. */
+  const currentWeekOfYear = getCurrentWeekOfYear(new Date());
+  const weeks = useMemo(() => {
+    if (!activeRoutine) return [];
+    const refWeek = viewAsOfWeek ?? currentWeekOfYear;
+    return getWeeksAt(activeRoutine, refWeek);
+  }, [activeRoutine, viewAsOfWeek, currentWeekOfYear]);
+  const logs = activeRoutine?.logs || {};
+  /**
+   * `viewAsOfWeek` solo indica qué semana del año materializar en el plan (mes / flechas).
+   * No debe activar “solo lectura”: si `isHistoryMode` dependía de `viewAsOfWeek !== null`, al navegar
+   * a otra semana desaparecían editar/borrar ejercicios y los handlers quedaban en no-op.
+   */
+  const isHistoryMode = false;
+
+  const sortedHistory = useMemo(() => {
+    return [...history].sort((a, b) => {
+      const c = entryDateISO(a).localeCompare(entryDateISO(b));
+      if (c !== 0) return c;
+      return (a.createdAt || '').localeCompare(b.createdAt || '');
+    });
+  }, [history]);
+
+  /**
+   * Solo si el historial está vacío: línea base con los TM cargados (antes de cualquier PR).
+   * Si ya hay filas del servidor, no insertar aquí (evita mezclar TM “actuales” tras subir el máximo en un PR).
+   */
+  useEffect(() => {
+    if (!user?.id || !activeRoutineId) return;
+    const isLocalOnlyRoutine = activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20;
+    if (isLocalOnlyRoutine) return;
+    if (tms.length === 0) return;
+    setHistory((prev) => {
+      if (prev.length > 0) return prev;
+      if (prev.some((h) => entryDateISO(h) === TM_BASELINE_DATE_ISO)) return prev;
+      const baseline = buildBaselineHistoryEntry(
+        activeRoutineId,
+        tms,
+        buildRmsFromLinkedTms(tms, rms),
+        'Origen'
+      );
+      return [baseline];
+    });
+  }, [user?.id, activeRoutineId, tms, rms]);
+
+  useEffect(() => {
+    baselineHydratedForRoutineRef.current = null;
+  }, [activeRoutineId]);
+
+  /**
+   * Historial del servidor sin snapshot 1970-01-01: añadir una vez por rutina (TM vigentes hasta el primer cambio con fecha).
+   */
+  useEffect(() => {
+    if (!user?.id || !activeRoutineId) return;
+    if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) return;
+    if (tms.length === 0 || history.length === 0) return;
+    if (baselineHydratedForRoutineRef.current === activeRoutineId) return;
+    if (history.some((h) => entryDateISO(h) === TM_BASELINE_DATE_ISO)) {
+      baselineHydratedForRoutineRef.current = activeRoutineId;
+      return;
+    }
+    setHistory((prev) => {
+      if (prev.some((h) => entryDateISO(h) === TM_BASELINE_DATE_ISO)) {
+        baselineHydratedForRoutineRef.current = activeRoutineId;
+        return prev;
+      }
+      const baseline = buildBaselineHistoryEntry(
+        activeRoutineId,
+        tms,
+        buildRmsFromLinkedTms(tms, rms),
+        'Origen'
+      );
+      baselineHydratedForRoutineRef.current = activeRoutineId;
+      return [...prev, baseline].sort((a, b) => {
+        const c = entryDateISO(a).localeCompare(entryDateISO(b));
+        if (c !== 0) return c;
+        return (a.createdAt || '').localeCompare(b.createdAt || '');
+      });
+    });
+  }, [user?.id, activeRoutineId, tms, rms, history]);
+
+  // Al volver a Rutina desde otra vista, resetear a presente
+  const prevViewRef = useRef<ViewType>(view);
+  useEffect(() => {
+    if (prevViewRef.current !== 'program' && view === 'program') {
+      setViewAsOfWeek(null);
+    }
+    prevViewRef.current = view;
+  }, [view]);
+
+  // Al volver al plan desde gestor de rutinas, resetear a presente (no al estar ya en plan)
+  const prevProgramScreenRef = useRef(programScreen);
+  useEffect(() => {
+    if (prevProgramScreenRef.current === 'routines' && programScreen === 'plan') {
+      setViewAsOfWeek(null);
+    }
+    prevProgramScreenRef.current = programScreen;
+  }, [programScreen]);
+
+  /** Dónde empezó el último plan importado, para poder continuarlo cuando llega el documento ampliado. */
+  const lastCoachImportKey = (routineId: string) => `pl:lastCoachImport:${routineId}`;
+  const [lastCoachImport, setLastCoachImport] = useState<LastCoachImport | null>(null);
+  useEffect(() => {
+    if (!activeRoutineId) return setLastCoachImport(null);
+    try {
+      const raw = localStorage.getItem(lastCoachImportKey(activeRoutineId));
+      setLastCoachImport(raw ? (JSON.parse(raw) as LastCoachImport) : null);
+    } catch {
+      setLastCoachImport(null);
+    }
+  }, [activeRoutineId]);
+
+  const updateActiveRoutine = (updater: (routine: RoutinePlan) => RoutinePlan) => {
+    setRoutines((prev) => prev.map((routine) => (
+      routine.id === activeRoutineId ? updater(routine) : routine
+    )));
+  };
+
+  // Theme logic: usuario logueado usa su preferencia; sin login usa preferencia del sistema
+  useEffect(() => {
+    const apply = (isDark: boolean) => {
+      document.documentElement.classList.toggle('dark', isDark);
+    };
+    if (user) {
+      const isDark = user.theme === 'dark' || (user.theme !== 'light' && typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      apply(isDark);
+    } else {
+      const mq = window.matchMedia('(prefers-color-scheme: dark)');
+      apply(mq.matches);
+      const handler = () => apply(mq.matches);
+      mq.addEventListener('change', handler);
+      return () => mq.removeEventListener('change', handler);
+    }
+  }, [user?.id, user?.theme]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    if (user?.mbMode) {
+      document.documentElement.setAttribute('data-mb', 'true');
+    } else {
+      document.documentElement.removeAttribute('data-mb');
+    }
+  }, [user?.mbMode]);
+
+  // Notificar a la capa nativa al iniciar sesión (reinyectar token push en la WebView)
+  useEffect(() => {
+    if (user?.id && typeof window !== 'undefined' && (window as any).ReactNativeWebView) {
+      (window as any).ReactNativeWebView.postMessage(JSON.stringify({ type: 'user_logged_in', userId: user.id }));
+    }
+  }, [user?.id]);
+
+  // Si el token ya estaba en window antes del login, disparar registro en API
+  useEffect(() => {
+    if (!user?.id || typeof window === 'undefined') return;
+    const w = window as unknown as { __EXPO_PUSH_TOKEN__?: string };
+    if (w.__EXPO_PUSH_TOKEN__) {
+      queueMicrotask(() => window.dispatchEvent(new Event('expoPushTokenReady')));
+    }
+  }, [user?.id]);
+
+  // Al pulsar una notificación push: pantalla según `data.screen` / `data.tab` (servidor → push.ts)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const validTabs = ['friends', 'challenges', 'checkins'] as const;
+    const handle = (d: { screen?: string; tab?: string }) => {
+      const screen = d?.screen ?? 'dashboard';
+      if (screen === 'social') {
+        const raw = String(d.tab ?? 'checkins');
+        const tab = (validTabs as readonly string[]).includes(raw)
+          ? (raw as 'friends' | 'challenges' | 'checkins')
+          : 'checkins';
+        setSocialTab(tab);
+        setView('social');
+        return;
+      }
+      if (screen === 'program') {
+        setProgramScreen('plan');
+        setView('program');
+        return;
+      }
+      setView('dashboard');
+    };
+    const onNotificationOpened = (e: CustomEvent<{ screen?: string; tab?: string }>) => handle(e.detail || {});
+    window.addEventListener('notificationOpened', onNotificationOpened as EventListener);
+    const checkPending = () => {
+      const pending = (window as any).__PENDING_NOTIFICATION_OPEN__;
+      if (pending) {
+        handle(pending);
+        delete (window as any).__PENDING_NOTIFICATION_OPEN__;
+      }
+    };
+    checkPending();
+    const t = setTimeout(checkPending, 800);
+    return () => {
+      window.removeEventListener('notificationOpened', onNotificationOpened as EventListener);
+      clearTimeout(t);
+    };
+  }, []);
+
+  // Cargar datos del usuario (routines, TMs, history, checkins) desde DB al hacer login
+  useEffect(() => {
+    if (!user) return;
+    const loadUserData = async () => {
+      setIsLoadingData(true);
+      try {
+        const [routinesRes, checkInsRes] = await Promise.all([
+          apiGet<any[]>('/api/routines').catch(() => []),
+          apiGet<any[]>('/api/checkins').catch(() => []),
+        ]);
+        // Usuario sin rutinas: una rutina vacía (sin TM ni ejercicios; mismo criterio que "Crear rutina")
+        if (!routinesRes?.length) {
+          const seedRoutine = createRoutinePlan('seed', 'Mi rutina', { empty: true, sameTemplateAllWeeks: true });
+          try {
+            const w = getWeeksAt(seedRoutine, currentWeekOfYear);
+            const bt =
+              seedRoutine.baseTemplate?.length ? seedRoutine.baseTemplate : deriveBaseTemplateFromWeeks(w);
+            const created = await apiPost<any>('/api/routines', {
+              name: seedRoutine.name,
+              versions: [{ effectiveFromWeek: 1, weeks: bt }],
+              baseTemplate: bt,
+              weekTypeOverrides: seedRoutine.weekTypeOverrides || [],
+              sameTemplateAllWeeks: true,
+              isActive: true,
+            });
+            const plan: RoutinePlan = expandRoutineFromApi({
+              _id: created._id,
+              id: created.id,
+              name: created.name,
+              sameTemplateAllWeeks: created.sameTemplateAllWeeks,
+              hiddenFromSocial: created.hiddenFromSocial,
+              cycleLength: created.cycleLength,
+              skippedWeeks: created.skippedWeeks,
+              shiftedAtCalendarWeeks: created.shiftedAtCalendarWeeks,
+              weeks: created.weeks,
+              versions: created.versions,
+              baseTemplate: created.baseTemplate,
+              weekTypeOverrides: created.weekTypeOverrides,
+              logs: {},
+              progressCheckpointAt: created.progressCheckpointAt,
+              progressCheckpointTms: created.progressCheckpointTms,
+            });
+            setRoutines([plan]);
+            setActiveRoutineId(plan.id);
+          } catch (e) {
+            console.error('[App] Error creando rutina seed:', e);
+          }
+        }
+        // Los TM se cargan por rutina activa (efecto dedicado).
+        // Rutinas: server → RoutinePlan
+        if (routinesRes?.length > 0) {
+          const plans: RoutinePlan[] = routinesRes.map((r: any) =>
+            expandRoutineFromApi({
+              _id: r._id,
+              id: r.id,
+              name: r.name,
+              sameTemplateAllWeeks: r.sameTemplateAllWeeks,
+              hiddenFromSocial: r.hiddenFromSocial,
+              cycleLength: r.cycleLength,
+              skippedWeeks: r.skippedWeeks,
+              shiftedAtCalendarWeeks: r.shiftedAtCalendarWeeks,
+              weeks: r.weeks,
+              versions: r.versions,
+              baseTemplate: r.baseTemplate,
+              weekTypeOverrides: r.weekTypeOverrides,
+              logs: r.logs,
+              progressCheckpointAt: r.progressCheckpointAt,
+              progressCheckpointTms: r.progressCheckpointTms,
+            })
+          );
+          setRoutines(plans);
+          const active = routinesRes.find((r: any) => r.isActive);
+          if (active) setActiveRoutineId(String(active._id || active.id));
+        }
+        // Historial: se carga por rutina activa en un efecto dedicado
+        // Check-ins
+        if (checkInsRes?.length > 0) {
+          setCheckIns(checkInsRes.map((c: any) => mapCheckInFromApi(c)));
+        }
+      } catch (e) {
+        console.error('[App] Error cargando datos:', e);
+      } finally {
+        setIsLoadingData(false);
+      }
+    };
+    loadUserData();
+  }, [user?.id]);
+
+  // Training Maxes ligados a la rutina activa (API: GET /api/training-maxes?routineId=…)
+  useEffect(() => {
+    if (!user?.id) {
+      tmsLoadedForRoutineRef.current = null;
+      prevRoutineDataKeyRef.current = '';
+      return;
+    }
+    if (!activeRoutineId) return;
+    const key = `${user.id}::${activeRoutineId}`;
+    const scopeChanged = prevRoutineDataKeyRef.current !== key;
+
+    if (scopeChanged) {
+      if (tmHighlightTimerRef.current) {
+        clearTimeout(tmHighlightTimerRef.current);
+        tmHighlightTimerRef.current = null;
+      }
+      setTmAutoHighlightIds([]);
+    }
+    const isLocalOnlyRoutine = activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20;
+    if (isLocalOnlyRoutine) {
+      if (scopeChanged) {
+        setTms(INITIAL_TMS);
+        setRms({
+          bench: INITIAL_TMS[0]?.value ?? 110,
+          squat: INITIAL_TMS[1]?.value ?? 140,
+          deadlift: INITIAL_TMS[2]?.value ?? 190,
+        });
+        tmsLoadedForRoutineRef.current = activeRoutineId;
+      }
+      return () => {
+        prevRoutineDataKeyRef.current = key;
+      };
+    }
+    if (scopeChanged) {
+      tmsLoadedForRoutineRef.current = null;
+      setTms([]);
+      setRms({ bench: 0, squat: 0, deadlift: 0 });
+    }
+    const rid = activeRoutineId;
+    let cancelled = false;
+    (async () => {
+      try {
+        const tmsRes = await apiGet<any[]>(`/api/training-maxes?routineId=${encodeURIComponent(rid)}`).catch(() => []);
+        if (cancelled) return;
+        if (activeRoutineIdRef.current !== rid) return;
+        if (!tmsRes?.length) {
+          setTms([]);
+          setRms({ bench: 0, squat: 0, deadlift: 0 });
+          tmsLoadedForRoutineRef.current = rid;
+          return;
+        }
+        const mapped: TrainingMax[] = tmsRes.map((t: any) => ({
+          id: String(t._id || t.id),
+          name: t.name,
+          value: Number(t.value),
+          mode: t.mode,
+          linkedExercise: t.linkedExercise,
+          sharedToSocial: !!t.sharedToSocial,
+        }));
+        if (activeRoutineIdRef.current !== rid) return;
+        setTms(prev => {
+          const merged = mergeTrainingMaxesFromServer(prev, mapped);
+          const rmsFromTms: RMData = { bench: 0, squat: 0, deadlift: 0 };
+          merged.forEach(tm => {
+            if (tm.linkedExercise === 'bench' || tm.linkedExercise === 'squat' || tm.linkedExercise === 'deadlift') {
+              rmsFromTms[tm.linkedExercise] = tm.value;
+            }
+          });
+          queueMicrotask(() => setRms(rmsFromTms));
+          return merged;
+        });
+        if (!cancelled && activeRoutineIdRef.current === rid) tmsLoadedForRoutineRef.current = rid;
+      } catch (e) {
+        console.error('[App] Error cargando TMs de la rutina:', e);
+        if (!cancelled && activeRoutineIdRef.current === rid) {
+          setTms([]);
+          setRms({ bench: 0, squat: 0, deadlift: 0 });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      prevRoutineDataKeyRef.current = key;
+    };
+  }, [user?.id, activeRoutineId, routineDataRefreshTick]);
+
+  // TM internos por rutina activa (GET ?routineId= — mismos nombres en otra rutina = otros registros)
+  useEffect(() => {
+    if (!user?.id) {
+      setInternalExerciseMaxes([]);
+      return;
+    }
+    if (!activeRoutineId) return;
+    const key = `${user.id}::${activeRoutineId}`;
+    const scopeChanged = prevRoutineDataKeyRef.current !== key;
+    const isLocalOnlyRoutine = activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20;
+    if (isLocalOnlyRoutine) {
+      if (scopeChanged) setInternalExerciseMaxes([]);
+      return;
+    }
+    const rid = activeRoutineId;
+    if (scopeChanged) setInternalExerciseMaxes([]);
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await apiGet<any[]>(`/api/internal-exercise-maxes`, { routineId: rid }).catch(() => []);
+        if (cancelled || activeRoutineIdRef.current !== rid) return;
+        if (!Array.isArray(rows)) return;
+        setInternalExerciseMaxes(
+          rows.map((r: any) => ({
+            id: String(r._id || r.id),
+            name: r.name,
+            valueWeight:
+              r.valueWeight != null
+                ? Number(r.valueWeight)
+                : r.value != null
+                  ? Number(r.value)
+                  : undefined,
+            valueReps: r.valueReps != null ? Number(r.valueReps) : undefined,
+            valueSeconds: r.valueSeconds != null ? Number(r.valueSeconds) : undefined,
+            value: r.value != null ? Number(r.value) : undefined,
+          }))
+        );
+      } catch (e) {
+        console.error('[App] Error cargando TM internos:', e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id, activeRoutineId, routineDataRefreshTick]);
+
+  // Historial de progreso por rutina activa (mismos TM que la rutina)
+  useEffect(() => {
+    if (!user?.id || !activeRoutineId) return;
+    const key = `${user.id}::${activeRoutineId}`;
+    const scopeChanged = prevRoutineDataKeyRef.current !== key;
+    const isLocalOnlyRoutine = activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20;
+    if (isLocalOnlyRoutine) {
+      if (scopeChanged) {
+        const base = INITIAL_TMS;
+        const feb = base.map(tm => ({ ...tm, value: tm.value + (tm.linkedExercise === 'bench' ? 2.5 : tm.linkedExercise === 'squat' || tm.linkedExercise === 'deadlift' ? 5 : 0) }));
+        const mar = base.map(tm => ({ ...tm, value: tm.value + (tm.linkedExercise === 'bench' ? 5 : tm.linkedExercise === 'squat' || tm.linkedExercise === 'deadlift' ? 10 : 0) }));
+        setHistory([
+          createHistoryEntry('Ene', base, { bench: 100, squat: 130, deadlift: 180 }, { week: 1, year: new Date().getFullYear() }),
+          createHistoryEntry('Feb', feb, { bench: 105, squat: 135, deadlift: 185 }, { week: 5, year: new Date().getFullYear() }),
+          createHistoryEntry('Mar', mar, { bench: 110, squat: 140, deadlift: 190 }, { week: 10, year: new Date().getFullYear() }),
+        ]);
+      }
+      return;
+    }
+    if (scopeChanged) setHistory([]);
+    const hid = activeRoutineId;
+    let cancelled = false;
+    (async () => {
+      try {
+        const historyRes = await apiGet<any[]>(`/api/training-maxes/history?routineId=${encodeURIComponent(hid)}`).catch(() => []);
+        if (cancelled || activeRoutineIdRef.current !== hid) return;
+        if (!historyRes?.length) return;
+        const mapped: HistoryEntry[] = historyRes.map((h: any) => ({
+          date: h.date ?? h.dateLabel ?? '',
+          week: h.week,
+          year: h.year,
+          dayOfWeek: h.dayOfWeek != null ? Number(h.dayOfWeek) : undefined,
+          dateISO: h.dateISO ? String(h.dateISO) : undefined,
+          month: h.month != null ? Number(h.month) : undefined,
+          rms: h.rms || {},
+          total: Number(h.total),
+          trainingMaxes: h.trainingMaxes || {},
+          progressKind: h.progressKind,
+          routineId: h.routineId ? String(h.routineId) : hid,
+          createdAt: h.createdAt ? String(h.createdAt) : undefined,
+          updatedAt: h.updatedAt ? String(h.updatedAt) : undefined,
+        }));
+        setHistory((prev) => mergeRoutineHistoryFromServer(prev, mapped));
+      } catch (e) {
+        console.error('[App] Error cargando historial de la rutina:', e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id, activeRoutineId, routineDataRefreshTick]);
+
+  // Sincronizar rutina activa a la DB (debounce corto; series/reps disparan flush al salir del campo)
+  const routineSyncRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const routineSyncFlush = useRef<() => Promise<void> | null>(null);
+  const syncInFlightRef = useRef<Promise<void> | null>(null);
+  /** Tras editar series/reps: el PUT debe ejecutarse en useEffect (ya committed), no en setTimeout(0) antes del render. */
+  const shouldFlushRoutineAfterCommitRef = useRef(false);
+  const ROUTINE_SYNC_DEBOUNCE_MS = 500;
+
+  useEffect(() => {
+    if (!user || !activeRoutine) {
+      shouldFlushRoutineAfterCommitRef.current = false;
+      return;
+    }
+    const routine = routines.find(r => r.id === activeRoutineId);
+    if (!routine || (routine.id.startsWith('routine-') && routine.id.length < 20)) {
+      shouldFlushRoutineAfterCommitRef.current = false;
+      return;
+    }
+    const doSync = async () => {
+      if (syncInFlightRef.current) {
+        try { await syncInFlightRef.current; } catch { /* ignore */ }
+      }
+      // Todas las rutinas con logs pendientes, no solo la activa: al cambiar de rutina
+      // el debounce anterior se cancela y sus ediciones se perderían.
+      const pendingIds = [...dirtyLogKeysByRoutineRef.current.entries()]
+        .filter(([, keys]) => keys.size > 0)
+        .map(([id]) => id);
+      const toSyncList = pendingIds
+        .map((id) => routinesRef.current.find((r) => r.id === id))
+        .filter((r): r is RoutinePlan => !!r && !(r.id.startsWith('routine-') && r.id.length < 20));
+      if (toSyncList.length === 0) {
+        routineSyncRef.current = null;
+        return;
+      }
+      const syncPromise = (async () => {
+        for (const r of toSyncList) {
+          await syncDirtyLogsForRoutine(r);
+        }
+      })();
+      syncInFlightRef.current = syncPromise;
+      await syncPromise;
+      syncInFlightRef.current = null;
+      routineSyncRef.current = null;
+    };
+    routineSyncFlush.current = doSync;
+
+    if (shouldFlushRoutineAfterCommitRef.current) {
+      shouldFlushRoutineAfterCommitRef.current = false;
+      void doSync();
+      return () => {
+        if (routineSyncRef.current) {
+          clearTimeout(routineSyncRef.current);
+          routineSyncRef.current = null;
+        }
+      };
+    }
+
+    routineSyncRef.current && clearTimeout(routineSyncRef.current);
+    routineSyncRef.current = setTimeout(doSync, ROUTINE_SYNC_DEBOUNCE_MS);
+    return () => {
+      if (routineSyncRef.current) {
+        clearTimeout(routineSyncRef.current);
+        routineSyncRef.current = null;
+      }
+    };
+  }, [routines, activeRoutineId, user?.id, activeRoutine, planSyncTick, syncDirtyLogsForRoutine]);
+
+  /** Enviar rutina pendiente al salir de la pestaña / cerrar (por si el debounce no ha disparado). */
+  useEffect(() => {
+    const flushPendingRoutine = () => {
+      if (routineSyncRef.current) {
+        clearTimeout(routineSyncRef.current);
+        routineSyncRef.current = null;
+      }
+      if (planBulkSyncTimeoutRef.current) {
+        clearTimeout(planBulkSyncTimeoutRef.current);
+        planBulkSyncTimeoutRef.current = null;
+        void runPlanBulkSync();
+      }
+      void routineSyncFlush.current?.();
+    };
+    const onVis = () => {
+      if (document.visibilityState === 'hidden') flushPendingRoutine();
+    };
+    window.addEventListener('pagehide', flushPendingRoutine);
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('pagehide', flushPendingRoutine);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [runPlanBulkSync]);
+
+  // Al abrir Progreso, Programa o Comunidad: refresco inmediato (torneos, gyms, amigos, TM, gráficas).
+  useEffect(() => {
+    if (!user) return;
+    if (view === 'dashboard' || view === 'social' || view === 'program') {
+      bumpSocialRefresh();
+      bumpRoutineDataRefresh();
+    }
+  }, [view, user?.id, bumpSocialRefresh, bumpRoutineDataRefresh]);
+
+  useEffect(() => {
+    const prev = prevViewForDashboardRef.current;
+    prevViewForDashboardRef.current = view;
+    // No remount de animaciones al volver a Progreso: es pesado y no aporta.
+  }, [view]);
+
+  // Al volver a primer plano: refrescar datos, quedarse en la pantalla actual.
+  useEffect(() => {
+    if (!user) return;
+    const onVis = () => {
+      if (document.visibilityState === 'visible') {
+        bumpSocialRefresh();
+        bumpRoutineDataRefresh();
+      }
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [user?.id, bumpSocialRefresh, bumpRoutineDataRefresh]);
+
+  // Amigos y solicitudes: cargar siempre que haya usuario (no solo en Social) para que estén listos al navegar.
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const loadSocial = async () => {
+      try {
+        const [friendsRes, requestsRes] = await Promise.all([
+          apiGet<Friend[]>('/api/social/friends').catch(() => null),
+          apiGet<FriendRequest[]>('/api/social/requests').catch(() => null),
+        ]);
+        if (cancelled) return;
+        if (Array.isArray(friendsRes)) {
+          setFriendsList(friendsRes.filter((f: { id: string }) => f.id !== user.id));
+        }
+        if (Array.isArray(requestsRes)) {
+          setFriends(requestsRes.map((r: FriendRequest) => ({ ...r, status: r.status ?? 'pending' })));
+        }
+      } catch {
+        /* silently ignore */
+      }
+    };
+    loadSocial();
+    return () => { cancelled = true; };
+  }, [user?.id, socialRefreshTick]);
+
+  // Check-ins y torneos: cada bumpSocialRefresh trae datos frescos (también en Programa/Ajustes) para que al ir a Progreso/Comunidad ya estén al día.
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const loadData = async () => {
+      try {
+        const [checkInsRes, challengesRes] = await Promise.all([
+          apiGet<any[]>('/api/checkins').catch(() => null),
+          apiGet<Challenge[]>('/api/challenges').catch(() => null),
+        ]);
+        if (cancelled) return;
+        if (Array.isArray(checkInsRes)) {
+          setCheckIns(checkInsRes.map((c: any) => mapCheckInFromApi(c)));
+        }
+        if (Array.isArray(challengesRes)) {
+          setChallenges(challengesRes);
+        }
+      } catch (e) {
+        console.error('[App] Error cargando datos:', e);
+      }
+    };
+    loadData();
+    return () => { cancelled = true; };
+  }, [user?.id, socialRefreshTick]);
+
+  /** Quitar check-ins caducados en todos los clientes sin recargar (misma regla que TTL en Mongo). */
+  useEffect(() => {
+    if (!user) return;
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    const now = Date.now();
+    for (const ci of checkIns) {
+      const exp = ci.expiresAt;
+      if (typeof exp !== 'number' || exp <= now) continue;
+      const delay = Math.min(Math.max(0, exp - now) + 400, 2147483647);
+      timers.push(
+        setTimeout(() => {
+          setCheckIns((prev) => prev.filter((x) => x.id !== ci.id));
+        }, delay)
+      );
+    }
+    return () => {
+      timers.forEach(clearTimeout);
+    };
+  }, [user?.id, checkIns]);
+
+  // Al cambiar de pestaña, scroll al inicio para que el encabezado quede arriba
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [view, programScreen]);
+
+  // Handlers
+  const handleUpdateUser = useCallback(async (updates: Partial<User>) => {
+    setUser(prev => (prev ? { ...prev, ...updates } : prev));
+    // Persistir en el servidor: theme, name, bodyWeight, avatar, progressMode
+    const toSync = ['theme', 'name', 'bodyWeight', 'avatar', 'progressMode', 'mbMode'] as const;
+    const hasSync = toSync.some(k => k in updates);
+    if (hasSync) {
+      try {
+        const payload: Record<string, unknown> = {};
+        toSync.forEach(k => { if (k in updates) payload[k] = updates[k]; });
+        const data = await apiPut<{ user: User }>('/api/auth/me', payload);
+        if (data?.user) {
+          setUser(prev => (prev ? { ...prev, ...data.user } : prev));
+        }
+        bumpRoutineDataRefresh();
+        bumpSocialRefresh();
+      } catch (e) {
+        console.error('[App] Error al guardar preferencias:', e);
+      }
+    }
+  }, [bumpRoutineDataRefresh, bumpSocialRefresh]);
+
+  const handleCreateChallenge = async (data: {
+    title: string;
+    description?: string;
+    type: 'max_reps' | 'weight' | 'seconds';
+    exercise: string;
+    endDate: string;
+    usePointsSystem?: boolean;
+    bodyWeightScoring?: BodyWeightScoringMode;
+  }) => {
+    try {
+      const created = await apiPost<Challenge>('/api/challenges', data);
+      setChallenges(prev => [...prev, created]);
+      bumpSocialRefresh();
+    } catch (e: any) {
+    }
+  };
+
+  const handleJoinChallenge = async (id: string, value: number) => {
+    try {
+      const updated = await apiPut<Challenge>(`/api/challenges/${id}/join`, { value });
+      setChallenges(prev => prev.map(c => c.id === id ? updated : c));
+      bumpSocialRefresh();
+    } catch (e: any) {
+    }
+  };
+
+  const handleAcceptFriend = async (id: string) => {
+    try {
+      await apiPut(`/api/social/requests/${id}/accept`, {});
+      setFriends(prev => prev.filter(f => f.id !== id));
+      const [friendsRes, requestsRes] = await Promise.all([
+        apiGet<Friend[]>('/api/social/friends'),
+        apiGet<FriendRequest[]>('/api/social/requests'),
+      ]);
+      setFriendsList((friendsRes || []).filter(f => f.id !== user?.id));
+      setFriends(requestsRes.map(r => ({ ...r, status: 'pending' as const })));
+      bumpSocialRefresh();
+    } catch (e: any) {
+      console.error('[Social] Error aceptando solicitud:', e);
+      bumpSocialRefresh();
+      throw e;
+    }
+  };
+
+  const handleRejectFriend = async (id: string) => {
+    try {
+      await apiPut(`/api/social/requests/${id}/reject`, {});
+      setFriends(prev => prev.filter(f => f.id !== id));
+      bumpSocialRefresh();
+    } catch (e: any) {
+      console.error('[Social] Error rechazando solicitud:', e);
+      bumpSocialRefresh();
+      throw e;
+    }
+  };
+
+  const handleUnfriend = async (friendId: string) => {
+    try {
+      await apiDelete(`/api/social/friends/${friendId}`);
+      setFriendsList(prev => prev.filter(f => f.id !== friendId));
+      bumpSocialRefresh();
+    } catch (e: any) {
+      console.error('[Social] Error eliminando amigo:', e);
+      bumpSocialRefresh();
+      throw e;
+    }
+  };
+
+  const handleSendFriendRequest = async (userId: string): Promise<void> => {
+    // El error se propaga: Social lo muestra y así no se marca "Enviada" en falso.
+    await apiPost('/api/social/requests', { userId });
+    bumpSocialRefresh();
+  };
+
+  const refreshChallenges = async () => {
+    try {
+      const challengesRes = await apiGet<Challenge[]>('/api/challenges');
+      setChallenges(challengesRes);
+    } catch {
+      // ignore
+    }
+  };
+
+  const upsertLocalDailyCheckIn = useCallback((nextCheckIn: GymCheckIn) => {
+    const day = new Date(nextCheckIn.timestamp).toDateString();
+    setCheckIns(prev => {
+      const filtered = prev.filter(ci => !(ci.userId === nextCheckIn.userId && new Date(ci.timestamp).toDateString() === day));
+      return [nextCheckIn, ...filtered];
+    });
+  }, []);
+
+  const handleCheckIn = async (gymName: string, time: string) => {
+    if (!user) return;
+    const ts = Date.now();
+    const optimisticCheckIn: GymCheckIn = {
+      id: `ci-${Math.random().toString(36).substr(2, 5)}`,
+      userId: user.id,
+      userName: user.name,
+      avatar: user.avatar,
+      gymName,
+      time,
+      timestamp: ts,
+      expiresAt: checkInExpiresAtMs(new Date(ts), time),
+    };
+    upsertLocalDailyCheckIn(optimisticCheckIn);
+    try {
+      const saved = await apiPost<any>('/api/checkins', { gymName, time });
+      const savedTs = saved?.timestamp ? new Date(saved.timestamp).getTime() : optimisticCheckIn.timestamp;
+      upsertLocalDailyCheckIn({
+        id: String(saved?._id || saved?.id || optimisticCheckIn.id),
+        userId: String(saved?.userId || optimisticCheckIn.userId),
+        userName: saved?.userName || optimisticCheckIn.userName,
+        avatar: optimisticCheckIn.avatar,
+        gymName: saved?.gymName || optimisticCheckIn.gymName,
+        time: saved?.time || optimisticCheckIn.time,
+        timestamp: savedTs,
+        expiresAt: expiresAtFromSaved(saved, savedTs, saved?.time || time),
+      });
+      bumpSocialRefresh();
+    } catch (e) {
+      // Mantener en local aunque falle el backend
+    }
+  };
+
+  const handleCheckInUpdate = async (checkInId: string, gymName: string, time: string) => {
+    if (!user) return;
+    try {
+      const saved = await apiPut<any>(`/api/checkins/${checkInId}`, { gymName, time });
+      const savedTs = saved?.timestamp ? new Date(saved.timestamp).getTime() : Date.now();
+      upsertLocalDailyCheckIn({
+        id: checkInId,
+        userId: user.id,
+        userName: user.name,
+        avatar: user.avatar,
+        gymName: saved?.gymName || gymName,
+        time: saved?.time || time,
+        timestamp: savedTs,
+        expiresAt: expiresAtFromSaved(saved, savedTs, saved?.time || time),
+      });
+      bumpSocialRefresh();
+    } catch {
+      // mantener en local si falla
+    }
+  };
+
+  const handleCheckInDelete = async (checkInId: string) => {
+    if (!user) return;
+    try {
+      await apiDelete(`/api/checkins/${checkInId}`);
+      setCheckIns(prev => prev.filter(ci => ci.id !== checkInId));
+      bumpSocialRefresh();
+    } catch {
+      // mantener en local si falla
+    }
+  };
+
+  const handleJoinFriendCheckIn = useCallback(async (friendCheckIn: GymCheckIn) => {
+    if (!user) return;
+
+    // Crear check-in propio a la misma hora/gimnasio para reflejarlo en Progreso y Comunidad.
+    const joinTs = Date.now();
+    const myCheckIn: GymCheckIn = {
+      id: `ci-${Math.random().toString(36).substr(2, 5)}`,
+      userId: user.id,
+      userName: user.name,
+      avatar: user.avatar,
+      gymName: friendCheckIn.gymName,
+      time: friendCheckIn.time,
+      timestamp: joinTs,
+      expiresAt: checkInExpiresAtMs(new Date(joinTs), friendCheckIn.time),
+    };
+
+    upsertLocalDailyCheckIn(myCheckIn);
+
+    // Notificación in-app (compatible con móvil vía WebView).
+
+    // Intentar notificación del sistema si está disponible.
+    try {
+      if (typeof window !== 'undefined' && 'Notification' in window) {
+        if (Notification.permission === 'granted') {
+          new Notification('Powerlifting Tracker', {
+            body: `Confirmaste que vas con ${friendCheckIn.userName} a las ${friendCheckIn.time}`,
+          });
+        } else if (Notification.permission !== 'denied') {
+          await Notification.requestPermission();
+        }
+      }
+    } catch {
+      // Ignorar si el entorno no soporta notifications del sistema.
+    }
+
+    // Enviar notificación al amigo en backend.
+    try {
+      const saved = await apiPost<any>('/api/checkins', {
+        gymName: friendCheckIn.gymName,
+        time: friendCheckIn.time,
+      });
+      const savedTs = saved?.timestamp ? new Date(saved.timestamp).getTime() : myCheckIn.timestamp;
+      upsertLocalDailyCheckIn({
+        id: String(saved?._id || saved?.id || myCheckIn.id),
+        userId: String(saved?.userId || myCheckIn.userId),
+        userName: saved?.userName || myCheckIn.userName,
+        avatar: myCheckIn.avatar,
+        gymName: saved?.gymName || myCheckIn.gymName,
+        time: saved?.time || myCheckIn.time,
+        timestamp: savedTs,
+        expiresAt: expiresAtFromSaved(saved, savedTs, saved?.time || friendCheckIn.time),
+      });
+
+      await apiPost('/api/notifications/same-time', {
+          friendUserId: friendCheckIn.userId,
+          gymName: friendCheckIn.gymName,
+          time: friendCheckIn.time,
+      });
+      bumpSocialRefresh();
+    } catch {
+      // Si falla la notificación remota, no bloqueamos la UX local.
+    }
+  }, [user, upsertLocalDailyCheckIn, bumpSocialRefresh]);
+
+  // Handlers
+  const handleCreateTM = async (payload: {
+    name: string;
+    value: number;
+    mode: 'weight' | 'reps' | 'seconds';
+    sharedToSocial?: boolean;
+  }) => {
+    const name = payload.name.trim();
+    const value = Number(payload.value);
+    if (!name || !Number.isFinite(value) || value < 1) return;
+    const mode = payload.mode;
+    const sharedToSocial = !!payload.sharedToSocial;
+    if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) {
+      const local: TrainingMax = {
+        id: `tm-${Math.random().toString(36).slice(2, 9)}`,
+        name,
+        value,
+        mode,
+        sharedToSocial,
+      };
+      setTms((prev) => [...prev, local]);
+      return;
+    }
+    try {
+      const anchor = planViewAnchorRef.current;
+      const created = await apiPost<any>('/api/training-maxes', {
+        routineId: activeRoutineId,
+        name,
+        value,
+        mode,
+        sharedToSocial,
+        createdAt: dateISOToUtcNoonISO(anchor.dateISO),
+      });
+      const newTm = {
+        id: String(created._id || created.id),
+        name: created.name,
+        value: Number(created.value),
+        mode: created.mode,
+        linkedExercise: created.linkedExercise,
+        sharedToSocial: !!created.sharedToSocial,
+      };
+      setTms((prev) => [...prev, newTm]);
+      const currentDate = monthLabelFromDateISO(anchor.dateISO);
+      setHistory((prev) => {
+        if (prev.length === 0) return prev;
+        const last = prev[prev.length - 1];
+        const newTmsRecord = { ...last.trainingMaxes, [newTm.id]: newTm.value };
+        const updatedTmsList = [...tms, newTm];
+        const progNew = computeRoutineProgressTotal(updatedTmsList);
+        const newTotal = progNew.value;
+        const newKind = progNew.kind;
+        const samePeriod =
+          last.year === anchor.year &&
+          last.week === anchor.week &&
+          (last.dayOfWeek ?? 0) === anchor.dayOfWeek;
+        if (samePeriod) {
+          return [...prev.slice(0, -1), { ...last, trainingMaxes: newTmsRecord, total: newTotal, progressKind: newKind }];
+        }
+        const entry = createHistoryEntry(currentDate, updatedTmsList, rms, {
+          week: anchor.week,
+          year: anchor.year,
+          dayOfWeek: anchor.dayOfWeek,
+        });
+        return [...prev, entry];
+      });
+      bumpRoutineDataRefresh();
+    } catch (e) {
+      console.error('[TM] Error creando:', e);
+    }
+  };
+
+  const handleRemoveTM = async (id: string) => {
+    const removed = tms.find((tm) => tm.id === id);
+    const remainingTms = tms.filter((tm) => tm.id !== id);
+    setTms((prev) => prev.filter((tm) => tm.id !== id));
+    if (removed?.linkedExercise) {
+      setRms((prev) => ({ ...prev, [removed.linkedExercise]: 0 }));
+    }
+    setHistory((prev) =>
+      prev.map((entry) => {
+        if (!entry.trainingMaxes) return entry;
+        const nextTm: Record<string, number> = { ...entry.trainingMaxes };
+        delete nextTm[id];
+        const snapshotTms = remainingTms.map((t) => ({
+          ...t,
+          value: nextTm[t.id] ?? 0,
+        }));
+        const prog = computeRoutineProgressTotal(snapshotTms);
+        const le = removed?.linkedExercise;
+        const nextRms =
+          le && entry.rms
+            ? { ...entry.rms, [le]: 0 }
+            : entry.rms;
+        return {
+          ...entry,
+          trainingMaxes: Object.keys(nextTm).length > 0 ? nextTm : {},
+          rms: nextRms ?? entry.rms,
+          total: prog.value,
+          progressKind: prog.kind,
+        };
+      })
+    );
+    if (!/^[a-f0-9]{24}$/i.test(id)) return;
+    if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) return;
+    try {
+      await apiDelete(
+        `/api/training-maxes/${id}?routineId=${encodeURIComponent(activeRoutineId)}`
+      );
+      bumpRoutineDataRefresh();
+    } catch (e) {
+      console.error('[TM] Error eliminando:', e);
+    }
+  };
+
+  const handleUpdateTM = (id: string, updates: Partial<TrainingMax>) => {
+    const prevTms = tms;
+    const prevRms = rms;
+    setTms(prev => prev.map(tm => tm.id === id ? { ...tm, ...updates } : tm));
+    const currentTm = tms.find(t => t.id === id);
+    if (currentTm?.linkedExercise && updates.value !== undefined) {
+      setRms(prev => ({ ...prev, [currentTm.linkedExercise!]: updates.value! }));
+    }
+    // Actualizar historial para que Progreso refleje el cambio al instante
+    if (updates.value !== undefined) {
+      const anchor = planViewAnchorRef.current;
+      const currentDate = monthLabelFromDateISO(anchor.dateISO);
+      const { week, year, dayOfWeek: d } = anchor;
+      const linked = currentTm?.linkedExercise;
+      setHistory(prev => {
+        if (prev.length === 0) return prev;
+        const last = prev[prev.length - 1];
+        const newTms = { ...last.trainingMaxes, [id]: updates.value! };
+        const newRms = linked ? { ...rms, [linked]: updates.value! } : rms;
+        const updatedTmsList = tms.map(t => t.id === id ? { ...t, value: updates.value! } : t);
+        const progUp = computeRoutineProgressTotal(updatedTmsList);
+        const newTotal = progUp.value;
+        const newKind = progUp.kind;
+        const samePeriod =
+          last.year === year && last.week === week && (last.dayOfWeek ?? 0) === d;
+        if (samePeriod) {
+          const iso = anchor.dateISO;
+          return [
+            ...prev.slice(0, -1),
+            {
+              ...last,
+              trainingMaxes: newTms,
+              rms: newRms,
+              total: newTotal,
+              progressKind: newKind,
+              dateISO: iso,
+              month: calendarMonth1FromDateISO(iso),
+            },
+          ];
+        }
+        const entry = createHistoryEntry(currentDate, updatedTmsList, newRms, { week, year, dayOfWeek: d });
+        return [...prev, { ...entry, routineId: activeRoutineId }];
+      });
+    }
+    (async () => {
+      if (!/^[a-f0-9]{24}$/i.test(id)) return;
+      if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) return;
+      try {
+        await apiPut(`/api/training-maxes/${id}`, {
+          ...updates,
+          routineId: activeRoutineId,
+          updatedAt: dateISOToUtcNoonISO(planViewAnchorRef.current.dateISO),
+        });
+        bumpRoutineDataRefresh();
+      } catch (e) {
+        console.error('[TM] Error actualizando:', e);
+        setTms(prevTms);
+        setRms(prevRms);
+      }
+    })();
+  };
+
+  const handleCreateRoutine = async (
+    routineName: string,
+    opts?: { sameTemplateAllWeeks?: boolean; cycleLength?: number; importAfter?: boolean }
+  ) => {
+    const name = routineName?.trim();
+    if (!name) return;
+    setRoutineCreateLoading(true);
+    const sameTemplateAllWeeks = opts?.sameTemplateAllWeeks !== false;
+    const cycleLength = opts?.cycleLength ?? 4;
+    const newRoutine = createRoutinePlan(`routine-${Math.random().toString(36).slice(2, 8)}`, name, {
+      empty: true,
+      sameTemplateAllWeeks,
+      cycleLength,
+    });
+    try {
+      const w = getWeeksAt(newRoutine, currentWeekOfYear);
+      const bt =
+        newRoutine.baseTemplate?.length ? newRoutine.baseTemplate : deriveBaseTemplateFromWeeks(w, cycleLength);
+      const created = await apiPost<any>('/api/routines', {
+        name: newRoutine.name,
+        versions: [{ effectiveFromWeek: 1, weeks: bt }],
+        baseTemplate: bt,
+        weekTypeOverrides: newRoutine.weekTypeOverrides || [],
+        sameTemplateAllWeeks,
+        cycleLength,
+        isActive: true,
+      });
+      const plan: RoutinePlan = expandRoutineFromApi({
+        _id: created._id,
+        id: created.id,
+        name: created.name,
+        sameTemplateAllWeeks: created.sameTemplateAllWeeks,
+        hiddenFromSocial: created.hiddenFromSocial,
+        cycleLength: created.cycleLength,
+        skippedWeeks: created.skippedWeeks,
+        shiftedAtCalendarWeeks: created.shiftedAtCalendarWeeks,
+        weeks: created.weeks,
+        versions: created.versions,
+        baseTemplate: created.baseTemplate,
+        weekTypeOverrides: created.weekTypeOverrides,
+        logs: created.logs,
+        progressCheckpointAt: created.progressCheckpointAt,
+        progressCheckpointTms: created.progressCheckpointTms,
+      });
+      setRoutines(prev => [...prev, plan]);
+      setActiveRoutineId(plan.id);
+      setProgramScreen('plan');
+      if (opts?.importAfter) setOpenImportAfterCreate((n) => n + 1);
+      try {
+        await apiPut(`/api/routines/${plan.id}/activate`, {});
+      } catch (activateErr) {
+        console.error('[Routine] Error activando rutina recién creada:', activateErr);
+      }
+      bumpRoutineDataRefresh();
+    } catch (e) {
+      console.error('[Routine] Error creando:', e);
+      throw e;
+    } finally {
+      setRoutineCreateLoading(false);
+    }
+  };
+
+  const handleSelectRoutine = async (routineId: string) => {
+    if (routineId === activeRoutineId) return;
+    setRoutineSwitchingId(routineId);
+    // Guardar lo pendiente de la rutina que dejamos antes de que el debounce se cancele.
+    if (routineSyncRef.current) {
+      clearTimeout(routineSyncRef.current);
+      routineSyncRef.current = null;
+    }
+    if (planBulkSyncTimeoutRef.current) {
+      clearTimeout(planBulkSyncTimeoutRef.current);
+      planBulkSyncTimeoutRef.current = null;
+      await runPlanBulkSync();
+    }
+    try { await routineSyncFlush.current?.(); } catch { /* el flush ya loguea */ }
+    setActiveRoutineId(routineId);
+    setProgramScreen('plan');
+    try {
+      await apiPut(`/api/routines/${routineId}/activate`, {});
+      bumpRoutineDataRefresh();
+    } catch (e) {
+      console.error('[Routine] Error activando:', e);
+    } finally {
+      setRoutineSwitchingId(null);
+    }
+  };
+
+  const handleCopyFriendRoutine = async (routine: {
+    name: string;
+    friendName: string;
+    weeks: TrainingWeek[];
+    cycleLength?: number;
+    sameTemplateAllWeeks?: boolean;
+    weekTypeOverrides?: Array<{ weekType: number; week: TrainingWeek }>;
+    skippedWeeks?: number[];
+    friendTrainingMaxes?: { name: string; mode: string; linkedExercise?: string }[];
+  }) => {
+    /** Plan: series, %, kg, modo, linkedTo tm-*; sin historial ni series del amigo. TMs = mismos que el amigo/plan, valor 0 (no se añade el paquete por defecto si ya hay TMs reales). */
+    const newWeeks = cloneFriendRoutineWeeks(routine.weeks);
+    const cl = Math.max(1, Math.min(52, routine.cycleLength ?? 4));
+
+    try {
+      const copiedBaseTemplate = deriveBaseTemplateFromWeeks(newWeeks, cl);
+      const friendSuffix = (routine.friendName || 'Amigo').trim() || 'Amigo';
+      const sameTemplateAllWeeks = parseSameTemplateAllWeeks(routine.sameTemplateAllWeeks);
+      const weekTypeOverrides = Array.isArray(routine.weekTypeOverrides)
+        ? JSON.parse(JSON.stringify(routine.weekTypeOverrides)) as Array<{ weekType: number; week: TrainingWeek }>
+        : [];
+      const created = await apiPost<any>('/api/routines', {
+        name: `${routine.name} (${friendSuffix})`,
+        versions: [{ effectiveFromWeek: 1, weeks: copiedBaseTemplate }],
+        baseTemplate: copiedBaseTemplate,
+        weekTypeOverrides,
+        isActive: true,
+        cycleLength: cl,
+        sameTemplateAllWeeks,
+        skippedWeeks: [],
+      });
+      const planId = String(created._id || created.id);
+
+      const mergedSeeds = mergeFriendProfileAndPlanTmSeeds(routine.friendTrainingMaxes, newWeeks);
+      const seedRows =
+        mergedSeeds.length > 0
+          ? mergedSeeds
+          : !hasAnyLinkedExerciseInWeeks(newWeeks)
+            ? DEFAULT_TM_SEED_ZERO.map((row) => ({ ...row }))
+            : [];
+
+      await Promise.all(
+        seedRows.map((row) =>
+          apiPost('/api/training-maxes', {
+            name: row.name,
+            value: 0,
+            mode: row.mode,
+            routineId: planId,
+            ...(row.linkedExercise ? { linkedExercise: row.linkedExercise } : {}),
+          }).catch(() => {})
+        )
+      );
+
+      const plan: RoutinePlan = expandRoutineFromApi({
+        _id: created._id,
+        id: created.id,
+        name: created.name,
+        sameTemplateAllWeeks: created.sameTemplateAllWeeks,
+        hiddenFromSocial: created.hiddenFromSocial,
+        cycleLength: created.cycleLength,
+        skippedWeeks: created.skippedWeeks,
+        shiftedAtCalendarWeeks: created.shiftedAtCalendarWeeks,
+        weeks: created.weeks,
+        versions: created.versions,
+        baseTemplate: created.baseTemplate,
+        weekTypeOverrides: created.weekTypeOverrides,
+        logs: created.logs,
+        progressCheckpointAt: created.progressCheckpointAt,
+        progressCheckpointTms: created.progressCheckpointTms,
+      });
+      setRoutines(prev => [...prev, plan]);
+      setActiveRoutineId(plan.id);
+      setProgramScreen('plan');
+      setView('program');
+      bumpRoutineDataRefresh();
+    } catch (e) {
+      console.error('[Routine] Error copiando:', e);
+    }
+  };
+
+  const handleRenameRoutine = async (routineId: string, name: string) => {
+    setRoutines((prev) => prev.map((r) => (r.id === routineId ? { ...r, name } : r)));
+    try {
+      await apiPut(`/api/routines/${routineId}`, { name });
+      bumpRoutineDataRefresh();
+    } catch (e) {
+      console.error('[Routine] Error renombrando:', e);
+    }
+  };
+
+  const handleDeleteRoutine = async (routineId: string) => {
+    const target = routines.find((r) => r.id === routineId);
+    const label = target?.name || 'esta rutina';
+    const isLast = routines.length <= 1;
+    const isLocalId = (id: string) => id.startsWith('routine-') && id.length < 20;
+    const confirmMsg = isLast
+      ? `¿Borrar «${label}»? Se creará una rutina vacía en su lugar.`
+      : `¿Borrar «${label}»? No se puede deshacer.`;
+    if (!window.confirm(confirmMsg)) return;
+
+    setRoutineDeleteLoadingId(routineId);
+    try {
+      if (isLast) {
+        const blank = createRoutinePlan(`routine-${Math.random().toString(36).slice(2, 8)}`, 'Mi rutina', {
+          empty: true,
+          sameTemplateAllWeeks: true,
+          cycleLength: 4,
+        });
+        const w = getWeeksAt(blank, currentWeekOfYear);
+        const bt = blank.baseTemplate?.length ? blank.baseTemplate : deriveBaseTemplateFromWeeks(w, 4);
+        const created = await apiPost<any>('/api/routines', {
+          name: blank.name,
+          versions: [{ effectiveFromWeek: 1, weeks: bt }],
+          baseTemplate: bt,
+          weekTypeOverrides: blank.weekTypeOverrides || [],
+          sameTemplateAllWeeks: true,
+          cycleLength: 4,
+          isActive: true,
+        });
+        const plan: RoutinePlan = expandRoutineFromApi({
+          _id: created._id,
+          id: created.id,
+          name: created.name,
+          sameTemplateAllWeeks: created.sameTemplateAllWeeks,
+          hiddenFromSocial: created.hiddenFromSocial,
+          cycleLength: created.cycleLength,
+          skippedWeeks: created.skippedWeeks,
+          shiftedAtCalendarWeeks: created.shiftedAtCalendarWeeks,
+          weeks: created.weeks,
+          versions: created.versions,
+          baseTemplate: created.baseTemplate,
+          weekTypeOverrides: created.weekTypeOverrides,
+          logs: created.logs,
+          progressCheckpointAt: created.progressCheckpointAt,
+          progressCheckpointTms: created.progressCheckpointTms,
+        });
+        if (!isLocalId(routineId)) {
+          await apiDelete(`/api/routines/${routineId}`);
+        }
+        setRoutines([plan]);
+        setActiveRoutineId(plan.id);
+        try {
+          await apiPut(`/api/routines/${plan.id}/activate`, {});
+        } catch (activateErr) {
+          console.error('[Routine] Error activando rutina nueva:', activateErr);
+        }
+        bumpRoutineDataRefresh();
+        return;
+      }
+
+      if (!isLocalId(routineId)) {
+        await apiDelete(`/api/routines/${routineId}`);
+      }
+      const remaining = routines.filter((r) => r.id !== routineId);
+      setRoutines(remaining);
+      if (activeRoutineId === routineId) {
+        const nextId = remaining[0].id;
+        setActiveRoutineId(nextId);
+        if (!isLocalId(nextId)) {
+          try {
+            await apiPut(`/api/routines/${nextId}/activate`, {});
+          } catch (activateErr) {
+            console.error('[Routine] Error activando rutina restante:', activateErr);
+          }
+        }
+      }
+      bumpRoutineDataRefresh();
+    } catch (e: any) {
+      console.error('[Routine] Error eliminando:', e);
+      window.alert(e?.message || 'No se ha podido borrar la rutina. Prueba otra vez.');
+    } finally {
+      setRoutineDeleteLoadingId(null);
+    }
+  };
+
+  const applyRoutineChangeWithVersioning = (
+    routine: RoutinePlan,
+    weekIdx: number,
+    dayIdx: number,
+    applyToDay: (day: TrainingWeek['days'][0]) => TrainingWeek['days'][0],
+    options?: { propagate?: boolean; forwardOnly?: boolean }
+  ): RoutinePlan => {
+    const weekNumber = weekIdx + 1;
+    /** Ciclo de la versión vigente esa semana: si estás en un tramo sin plan (ciclo 1) no se usa el de la rutina. */
+    const activeVersion = (routine.versions ?? [])
+      .filter(v => v.effectiveFromWeek <= weekNumber)
+      .reduce<RoutineVersion | null>((a, b) => (a && a.effectiveFromWeek >= b.effectiveFromWeek ? a : b), null);
+    const cl = Math.max(1, Math.min(52, activeVersion?.cycleLength ?? routine.cycleLength ?? 4));
+    const vers = routine.versions?.length
+      ? routine.versions
+      : [{ effectiveFromWeek: 1, cycleLength: cl, weeks: deriveBaseTemplateFromWeeks(routine.weeks, cl) }];
+    /** Se edita lo que se ve en esa semana, no la última plantilla guardada. */
+    const baseWeeks = deepCloneWeeks(getWeeksAt(routine, weekNumber));
+    const srcWeek = baseWeeks[weekIdx];
+    if (!srcWeek || !srcWeek.days[dayIdx]) return { ...routine, weeks: baseWeeks };
+    const slot = getWeekTypeSlot(srcWeek.number, cl);
+    const modifiedDay = applyToDay({ ...srcWeek.days[dayIdx] });
+    baseWeeks[weekIdx] = { ...srcWeek, days: srcWeek.days.map((d, i) => i === dayIdx ? modifiedDay : d) };
+
+    const propagate = options?.propagate !== false;
+    const forwardOnly = options?.forwardOnly === true;
+    if (propagate) {
+      const sameAll = !!routine.sameTemplateAllWeeks;
+      for (let wi = 0; wi < baseWeeks.length; wi++) {
+        if (wi === weekIdx) continue;
+        if (forwardOnly && wi < weekIdx) continue;
+        const w = baseWeeks[wi];
+        if (!w.days[dayIdx]) continue;
+        if (!sameAll && getWeekTypeSlot(w.number, cl) !== slot) continue;
+        const targetDay = copyDayWithNewIds(modifiedDay, w.id, w.days[dayIdx].id, w.days[dayIdx]);
+        baseWeeks[wi] = { ...w, days: w.days.map((d, i) => (i === dayIdx ? targetDay : d)) };
+      }
+    }
+
+    const currentBaseTemplate = deriveBaseTemplateFromWeeks(baseWeeks, cl);
+    const nextOverrides = propagate
+      ? [
+          ...(routine.weekTypeOverrides || []).filter((ov: { weekType: number }) => ov.weekType !== slot),
+          { weekType: slot, week: normalizeTemplateWeek(baseWeeks[weekIdx], slot) },
+        ].sort((a: { weekType: number }, b: { weekType: number }) => a.weekType - b.weekType)
+      : (routine.weekTypeOverrides || []);
+
+    const newVersion: RoutineVersion = {
+      effectiveFromWeek: weekNumber,
+      cycleLength: cl,
+      weeks: deriveBaseTemplateFromWeeks(baseWeeks, cl),
+    };
+    /**
+     * El cambio vale desde esta semana en adelante: las anteriores se quedan como estaban y los tramos
+     * posteriores (otro bloque importado, o el corte de un plan que no se repite) tampoco se pisan.
+     */
+    const newVersions = [...vers.filter(v => v.effectiveFromWeek !== weekNumber), newVersion].sort((a, b) => a.effectiveFromWeek - b.effectiveFromWeek);
+    return {
+      ...routine,
+      weeks: baseWeeks,
+      versions: newVersions,
+      baseTemplate: currentBaseTemplate,
+      weekTypeOverrides: nextOverrides,
+    };
+  };
+
+  const handleAddExercise = (weekId: string, dayId: string, initialValues?: Partial<PlannedExercise>) => {
+    const routine = routines.find(r => r.id === activeRoutineId);
+    if (!routine) return;
+    const resolved = resolveWeekDayIndex(routine, weekId, dayId);
+    if (!resolved) return;
+    const fullWeeks = routine.weeks.length >= 52 ? routine.weeks : materializeRoutineWeeksIfNeeded(routine);
+    const day = fullWeeks[resolved.weekIdx]?.days[resolved.dayIdx];
+    if (!day) return;
+
+    const trimmedName = (initialValues?.name ?? '').trim();
+    if (!trimmedName) return;
+
+    const newEx: PlannedExercise = {
+      id: `${weekId}-${dayId}-e${day.exercises.length + 1}`,
+      sets: initialValues?.sets ?? 3,
+      reps: initialValues?.reps ?? 10,
+      mode: (initialValues?.mode as ExerciseMode) ?? 'weight',
+      ...initialValues,
+      name: trimmedName,
+    };
+
+    updateActiveRoutine((r) => {
+      const res2 = resolveWeekDayIndex(r, weekId, dayId);
+      if (!res2) return r;
+      return applyRoutineChangeWithVersioning(r, res2.weekIdx, res2.dayIdx, (d) => ({
+        ...d,
+        exercises: [...d.exercises, newEx],
+      }), { forwardOnly: true });
+    });
+
+    if (routine.id && !routine.id.startsWith('routine-')) {
+      schedulePlanBulkSync();
+    }
+  };
+
+  /** Vuelca un plan leído de un documento del entrenador sobre la rutina activa. */
+  const handleImportCoachPlan = async (opts: ImportCoachPlanResult) => {
+    const routine = routines.find(r => r.id === activeRoutineId);
+    if (!routine) return;
+
+    const prevCycleLength = routine.cycleLength ?? 4;
+    const cycleLength = Math.max(1, Math.min(52, opts.cycleLength || opts.plan.weeks.length || prevCycleLength));
+    const cycleChanged =
+      cycleLength !== prevCycleLength || (cycleLength === 1) !== (routine.sameTemplateAllWeeks === true);
+
+    updateActiveRoutine((r) =>
+      mergeCoachImportIntoRoutine(r, {
+        plan: opts.plan,
+        startWeekNumber: opts.startWeekNumber,
+        repeatAfterPlan: opts.repeatAfterPlan,
+        cycleLength,
+        clearUntouchedDays: opts.clearUntouchedDays,
+        continuesPreviousPlan: opts.continuesPreviousPlan,
+        currentWeekOfYear,
+      })
+    );
+
+    const importMark: LastCoachImport = {
+      startWeekNumber: opts.startWeekNumber,
+      weeks: opts.plan.weeks.length,
+    };
+    setLastCoachImport(importMark);
+    try {
+      localStorage.setItem(lastCoachImportKey(routine.id), JSON.stringify(importMark));
+    } catch {
+      /* Sin localStorage solo se pierde el atajo «Continuar el plan». */
+    }
+
+    if (cycleChanged && routine.id && !routine.id.startsWith('routine-')) {
+      try {
+        await apiPut(`/api/routines/${routine.id}`, { skippedWeeks: [], shiftedAtCalendarWeeks: [] });
+      } catch (e) {
+        console.error('[Import] No se pudieron limpiar las semanas saltadas', e);
+      }
+    }
+
+    if (opts.importMaxes) {
+      for (const max of opts.plan.maxes) {
+        const already = tms.some(
+          t => normalizeExerciseNameKey(t.name) === normalizeExerciseNameKey(max.name)
+        );
+        if (already) continue;
+        try {
+          await handleCreateTM({ name: max.name, value: max.value, mode: 'weight', sharedToSocial: true });
+        } catch (e) {
+          console.error('[Import] No se pudo crear el TM', max.name, e);
+        }
+      }
+    }
+
+    if (routine.id && !routine.id.startsWith('routine-')) {
+      schedulePlanBulkSync();
+    }
+  };
+
+  const handleRemoveExercise = (weekId: string, dayId: string, exerciseId: string) => {
+    const routine = routines.find(r => r.id === activeRoutineId);
+    if (!routine) return;
+    const resolved = resolveWeekDayIndex(routine, weekId, dayId);
+    if (!resolved) return;
+    const fullWeeks = routine.weeks.length >= 52 ? routine.weeks : materializeRoutineWeeksIfNeeded(routine);
+    const day = fullWeeks[resolved.weekIdx]?.days[resolved.dayIdx];
+    const ex = day?.exercises.find(e => e.id === exerciseId);
+    const exIdx1Based = ex ? day.exercises.indexOf(ex) + 1 : -1;
+
+    updateActiveRoutine((r) => {
+      const res2 = resolveWeekDayIndex(r, weekId, dayId);
+      if (!res2) return r;
+      /** No usar `forwardOnly: true` aquí: solo actualizaba semanas “futuras” (índice > actual) y las semanas
+       * anteriores del año seguían con el ejercicio; al navegar o al derivar plantilla parecía que “volvía”. */
+      const updated = applyRoutineChangeWithVersioning(r, res2.weekIdx, res2.dayIdx, (d) => ({
+        ...d,
+        exercises: d.exercises.filter(e => e.id !== exerciseId),
+      }), { forwardOnly: false });
+      if (exIdx1Based > 0) {
+        return {
+          ...updated,
+          logs: purgeAndReindexLogsAfterExerciseRemoval(updated.logs, res2.dayIdx, exIdx1Based),
+        };
+      }
+      return updated;
+    });
+
+    if (routine.id && !routine.id.startsWith('routine-')) {
+      schedulePlanBulkSync();
+    }
+  };
+
+  const handleUpdateExercise = (weekId: string, dayId: string, exerciseId: string, updates: Partial<PlannedExercise>) => {
+    const routine = routines.find(r => r.id === activeRoutineId);
+    if (!routine) return;
+    const resolved = resolveWeekDayIndex(routine, weekId, dayId);
+    if (!resolved) return;
+    const fullWeeks = routine.weeks.length >= 52 ? routine.weeks : materializeRoutineWeeksIfNeeded(routine);
+    const day = fullWeeks[resolved.weekIdx]?.days[resolved.dayIdx];
+    const ex = day?.exercises.find(e => e.id === exerciseId);
+    const dbExId = ex?._dbId;
+
+    updateActiveRoutine((r) => {
+      const res2 = resolveWeekDayIndex(r, weekId, dayId);
+      if (!res2) return r;
+      return applyRoutineChangeWithVersioning(r, res2.weekIdx, res2.dayIdx, (d) => ({
+        ...d,
+        exercises: d.exercises.map(e => e.id === exerciseId ? { ...e, ...updates } : e),
+      }));
+    });
+
+    if (dbExId && routine.id && !routine.id.startsWith('routine-')) {
+      const body = exercisePatchBodyFromUpdates(updates);
+      if (Object.keys(body).length === 0) {
+        /* Sin campos persistibles; el estado local ya se actualizó arriba. */
+      } else {
+      void apiPatch<{
+        ok?: boolean;
+        exercise?: Partial<PlannedExercise>;
+      }>(`/api/routines/${routine.id}/exercises/${dbExId}`, body)
+        .then((res) => {
+          const ex = res?.exercise;
+          if (!ex) return;
+          updateActiveRoutine((r) => {
+            const res2 = resolveWeekDayIndex(r, weekId, dayId);
+            if (!res2) return r;
+            return applyRoutineChangeWithVersioning(r, res2.weekIdx, res2.dayIdx, (d) => ({
+              ...d,
+              exercises: d.exercises.map((e) =>
+                e.id === exerciseId
+                  ? {
+                      ...e,
+                      ...(ex.sets !== undefined ? { sets: ex.sets } : {}),
+                      ...(ex.reps !== undefined ? { reps: ex.reps } : {}),
+                      ...(ex.pct !== undefined ? { pct: ex.pct } : {}),
+                      ...(ex.pctPerSet !== undefined ? { pctPerSet: ex.pctPerSet } : {}),
+                      ...(ex.weight !== undefined ? { weight: ex.weight } : {}),
+                      ...(ex.mode !== undefined ? { mode: ex.mode } : {}),
+                    }
+                  : e
+              ),
+            }));
+          });
+        })
+        .catch((e: any) => console.error('[Routine] Error updating exercise:', e));
+      }
+    }
+    /**
+     * El PATCH por ejercicio solo toca ese documento: no guarda la versión nueva que crea el cambio
+     * («desde esta semana en adelante»), así que hay que mandar también el plan completo.
+     */
+    if (routine.id && !routine.id.startsWith('routine-')) {
+      schedulePlanBulkSync();
+    }
+  };
+
+  const handleLogChange = (id: string, field: keyof LogEntry, value: any) => {
+    markLogDirty(activeRoutineId, id);
+    updateActiveRoutine((routine) => {
+      const base = resolveLogEntryForMerge(routine.logs, id);
+      const cleaned = stripLegacyLogKeysForCanonical(routine.logs, id);
+      return {
+        ...routine,
+        logs: {
+          ...cleaned,
+          [id]: { ...base, [field]: value },
+        },
+      };
+    });
+  };
+
+  const roundTo25 = (n: number) => Math.round(n / 2.5) * 2.5;
+
+  /**
+   * Safety-net: re-escanea TODOS los logs de la rutina buscando TMs superados.
+   * Se ejecuta al pulsar "Guardar sesión" para atrapar bumps que el onChange por tecla no detectó.
+   */
+  const rescanTmBumpsFromLogs = (routine: RoutinePlan) => {
+    if (!user) return;
+    const allWeeks = getWeeksForTrainingMaxScan(routine);
+    const currentTms = tmsRef.current;
+    const newTms = currentTms.map((tm) => ({ ...tm }));
+    let didBump = false;
+    allWeeks.forEach((week: TrainingWeek) => {
+      week.days.forEach((day: TrainingDay) => {
+        day.exercises.forEach((ex: PlannedExercise) => {
+          const linkedTM = resolveTmForAutoBump(ex, newTms);
+          if (!linkedTM) return;
+          const idxTm = newTms.findIndex((t) => t.id === linkedTM.id);
+          if (idxTm < 0) return;
+          const lid = routineLogKeyFromIds(week, day, ex);
+          const l = resolveLogEntryForMerge(routine.logs, lid);
+          if (!l?.sets) return;
+          l.sets.forEach((set: SetLog) => {
+            if (linkedTM.mode === 'weight') {
+              const w = set.weight ?? 0;
+              if (w <= 0) return;
+              const candidate = roundTo25(w);
+              if (candidate > newTms[idxTm].value) {
+                newTms[idxTm] = { ...newTms[idxTm], value: candidate };
+                didBump = true;
+              }
+            } else if (linkedTM.mode === 'reps' || linkedTM.mode === 'seconds') {
+              const val = set.reps ?? 0;
+              if (val <= 0) return;
+              const candidate = Math.round(val);
+              if (candidate > newTms[idxTm].value) {
+                newTms[idxTm] = { ...newTms[idxTm], value: candidate };
+                didBump = true;
+              }
+            }
+          });
+        });
+      });
+    });
+    if (didBump) {
+      tmsRef.current = newTms;
+      setTms(newTms);
+      const linked = newTms.filter(t => t.linkedExercise);
+      const newRms = { ...rmsRef.current };
+      linked.forEach(tm => { if (tm.linkedExercise) newRms[tm.linkedExercise] = tm.value; });
+      rmsRef.current = newRms;
+      setRms(newRms);
+      const resolvedCal = getYearWeekDay();
+      const { week: w, year: y, dayOfWeek: d } = resolvedCal;
+      const newTmsRecord = newTms.reduce((acc, tm) => ({ ...acc, [tm.id]: tm.value }), {} as Record<string, number>);
+      const currentDate = new Date().toLocaleDateString('es-ES', { month: 'short' });
+      setHistory((prev) => {
+        const samePeriodNew = (e: HistoryEntry) =>
+          e.year === y && e.week === w && (e.dayOfWeek ?? 0) === (d ?? 0);
+        const filtered = prev.filter((e) => !samePeriodNew(e));
+        const entries: HistoryEntry[] = [...filtered];
+        const hasBaseline = entries.some((e) => entryDateISO(e) === TM_BASELINE_DATE_ISO);
+        if (!hasBaseline) {
+          const prevRmsSnap = buildRmsFromLinkedTms(currentTms, rmsRef.current);
+          entries.push(buildBaselineHistoryEntry(activeRoutineId, currentTms, prevRmsSnap, currentDate));
+        }
+        const newEntry: HistoryEntry = {
+          ...createHistoryEntry(currentDate, newTms, newRms, { week: w, year: y, dayOfWeek: d }),
+          routineId: activeRoutineId,
+        };
+        entries.push(newEntry);
+        return entries.sort((a, b) => {
+          const c = entryDateISO(a).localeCompare(entryDateISO(b));
+          if (c !== 0) return c;
+          return (a.createdAt || '').localeCompare(b.createdAt || '');
+        });
+      });
+      const bumpIso = dateISOFromYearWeekDay(y, w, d ?? 0);
+      newTms.filter(t => t.value !== currentTms.find(ot => ot.id === t.id)?.value).forEach(tm => {
+        apiPut(`/api/training-maxes/${tm.id}`, {
+          value: tm.value,
+          routineId: activeRoutineId,
+          updatedAt: dateISOToUtcNoonISO(bumpIso),
+        }).catch(() => {});
+      });
+      const iso = bumpIso;
+      apiPost('/api/training-maxes/save-period', {
+        routineId: activeRoutineId,
+        date: currentDate,
+        week: w,
+        year: y,
+        dayOfWeek: d,
+        dateISO: iso,
+        month: calendarMonth1FromDateISO(iso),
+        rms: newRms,
+        total: computeRoutineProgressTotal(newTms).value,
+        trainingMaxes: newTmsRecord,
+        progressKind: computeRoutineProgressTotal(newTms).kind,
+      }).catch(() => {});
+    }
+  };
+
+  /** TM de rutina vinculado, o TM interno inferido por nombre (peso / reps / segundos por separado en Mongo). */
+  const resolveEffectiveTM = (exercise: PlannedExercise): TrainingMax | undefined => {
+    const official = resolveTmForAutoBump(exercise, tms);
+    if (official) return official;
+    const im = internalExerciseMaxes.find(
+      m => normalizeExerciseNameKey(m.name) === normalizeExerciseNameKey(exercise.name)
+    );
+    if (!im) return undefined;
+    const val = getInternalValueForMode(im, exercise.mode);
+    if (val == null) return undefined;
+    return {
+      id: im.id,
+      name: im.name,
+      value: val,
+      mode: exercise.mode,
+      isInternal: true,
+    };
+  };
+
+  /**
+   * Fija a mano el TM interno de un ejercicio (variantes tipo «pause squat»: son sentadilla,
+   * pero con su propia referencia). A diferencia del upsert automático, aquí manda lo escrito.
+   */
+  const handleSetInternalMax = (name: string, mode: ExerciseMode, value: number) => {
+    const key = normalizeExerciseNameKey(name);
+    const field = mode === 'weight' ? 'valueWeight' : mode === 'reps' ? 'valueReps' : 'valueSeconds';
+    setInternalExerciseMaxes(prev => {
+      const idx = prev.findIndex(m => normalizeExerciseNameKey(m.name) === key);
+      if (idx < 0) return [...prev, { id: `pending-${key}`, name, [field]: value } as InternalExerciseMax];
+      const next = [...prev];
+      next[idx] = { ...next[idx], [field]: value };
+      return next;
+    });
+    if (!activeRoutineId || (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20)) return;
+    apiPost<any>('/api/internal-exercise-maxes/upsert', {
+      routineId: activeRoutineId,
+      name,
+      mode,
+      candidateValue: value,
+      overwrite: true,
+    })
+      .then((doc: any) => {
+        const id = String(doc._id || doc.id);
+        setInternalExerciseMaxes(prev =>
+          prev.map(m =>
+            normalizeExerciseNameKey(m.name) === key
+              ? {
+                  ...m,
+                  id,
+                  valueWeight: doc.valueWeight != null ? Number(doc.valueWeight) : m.valueWeight,
+                  valueReps: doc.valueReps != null ? Number(doc.valueReps) : m.valueReps,
+                  valueSeconds: doc.valueSeconds != null ? Number(doc.valueSeconds) : m.valueSeconds,
+                }
+              : m
+          )
+        );
+      })
+      .catch(() => {});
+  };
+
+  const handleUploadSetMedia = async (logId: string, setIdx: number, file: File) => {
+    const routine = routinesRef.current.find(r => r.id === activeRoutineId);
+    if (!routine?.id || routine.id.startsWith('routine-')) {
+      throw new Error('Guarda la rutina antes de adjuntar el vídeo');
+    }
+    const form = new FormData();
+    form.append('file', file);
+    const stored = await apiUpload<{ mediaKey: string; mediaType: 'image' | 'video' }>(
+      `/api/routines/${routine.id}/set-media`,
+      form
+    );
+    handleSetLogChange(logId, setIdx, { mediaKey: stored.mediaKey, mediaType: stored.mediaType });
+    return stored;
+  };
+
+  const handleSetLogChange = (logId: string, setIdx: number, updates: Partial<SetLog>) => {
+    type TmBumpPayload = {
+      newTms: TrainingMax[];
+      newRms: RMData;
+      prevTmsSnapshot: TrainingMax[];
+      prevRmsSnapshot: RMData;
+      w: number;
+      y: number;
+      /** Lunes=0 … Domingo=6 — mismo día en que subió el TM desde series. */
+      d: number;
+      currentDate: string;
+      newTmsRecord: Record<string, number>;
+      newTotal: number;
+    };
+    let tmBump: TmBumpPayload | null = null;
+    let pendingInternalUpserts: { name: string; mode: 'weight' | 'reps' | 'seconds'; candidateValue: number }[] = [];
+    markLogDirty(activeRoutineId, logId);
+    updateActiveRoutine((routine) => {
+      const log = resolveLogEntryForMerge(routine.logs, logId);
+      const currentSets = [...(log.sets || [])];
+      
+      while (currentSets.length <= setIdx) {
+        currentSets.push({ id: `${currentSets.length}`, weight: null, reps: null, completed: false });
+      }
+      
+      const merged = { ...currentSets[setIdx], ...updates };
+      if (merged.reps != null) {
+        const n = typeof merged.reps === 'number' ? merged.reps : parseInt(String(merged.reps), 10);
+        merged.reps = Number.isFinite(n) ? n : null;
+      }
+      if (merged.weight != null) {
+        const w = typeof merged.weight === 'number' ? merged.weight : parseFloat(String(merged.weight));
+        merged.weight = Number.isFinite(w) ? w : null;
+      }
+      currentSets[setIdx] = merged;
+      
+      const updatedLogs = {
+        ...stripLegacyLogKeysForCanonical(routine.logs, logId),
+        [logId]: { ...log, sets: currentSets },
+      };
+      const updatedRoutine = { ...routine, logs: updatedLogs };
+
+      if (user) {
+        const baseWeeks = getWeeksForTrainingMaxScanWithLog(routine, logId);
+        let didBump = false;
+        const newTms = tmsRef.current.map((tm) => ({ ...tm }));
+        baseWeeks.forEach((week: TrainingWeek) => {
+          week.days.forEach((day: TrainingDay) => {
+            day.exercises.forEach((ex: PlannedExercise) => {
+              const linkedTM = resolveTmForAutoBump(ex, newTms);
+              if (!linkedTM) return;
+              const idxTm = newTms.findIndex((t) => t.id === linkedTM.id);
+              if (idxTm < 0) return;
+              const lid = routineLogKeyFromIds(week, day, ex);
+              const l = resolveLogEntryForMerge(updatedLogs, lid);
+              if (!l?.sets) return;
+              l.sets.forEach((set: SetLog) => {
+                if (linkedTM.mode === 'weight') {
+                  const w = set.weight ?? 0;
+                  if (w <= 0) return;
+                  const candidate = roundTo25(w);
+                  if (candidate > newTms[idxTm].value) {
+                    newTms[idxTm] = { ...newTms[idxTm], value: candidate };
+                    didBump = true;
+                  }
+                } else if (linkedTM.mode === 'reps' || linkedTM.mode === 'seconds') {
+                  const val = set.reps ?? 0;
+                  if (val <= 0) return;
+                  const candidate = Math.round(val);
+                  if (candidate > newTms[idxTm].value) {
+                    newTms[idxTm] = { ...newTms[idxTm], value: candidate };
+                    didBump = true;
+                  }
+                }
+              });
+            });
+          });
+        });
+
+        // TM interno: sin linkedTo — peso = máximo kg apuntado en serie (tu «100 %»), no e1RM; reps/seg por campo en Mongo
+        const maxByKey = new Map<string, { name: string; mode: 'weight' | 'reps' | 'seconds'; candidateValue: number }>();
+        baseWeeks.forEach((week: TrainingWeek) => {
+          week.days.forEach((day: TrainingDay) => {
+            day.exercises.forEach((ex: PlannedExercise) => {
+              // Solo saltar si hay TM de rutina real; si linkedTo es huérfano, el TM interno aplica y debe actualizarse
+              if (resolveTmForAutoBump(ex, newTms)) return;
+              const lid = routineLogKeyFromIds(week, day, ex);
+              const l = resolveLogEntryForMerge(updatedLogs, lid);
+              if (!l?.sets?.length) return;
+              const nk = normalizeExerciseNameKey(ex.name);
+              if (ex.mode === 'weight') {
+                let best = 0;
+                l.sets.forEach((set: SetLog) => {
+                  const w = set.weight ?? 0;
+                  if (w <= 0) return;
+                  const cand = roundTo25(w);
+                  if (cand > best) best = cand;
+                });
+                if (best <= 0) return;
+                const key = `${nk}::weight`;
+                const prev = maxByKey.get(key);
+                if (!prev || best > prev.candidateValue) {
+                  maxByKey.set(key, { name: ex.name, mode: 'weight', candidateValue: best });
+                }
+              } else if (ex.mode === 'reps' || ex.mode === 'seconds') {
+                let best = 0;
+                l.sets.forEach((set: SetLog) => {
+                  const r = set.reps ?? 0;
+                  if (r <= 0) return;
+                  const cand = Math.round(r);
+                  if (cand > best) best = cand;
+                });
+                if (best <= 0) return;
+                const key = `${nk}::${ex.mode}`;
+                const prev = maxByKey.get(key);
+                if (!prev || best > prev.candidateValue) {
+                  maxByKey.set(key, { name: ex.name, mode: ex.mode, candidateValue: best });
+                }
+              }
+            });
+          });
+        });
+        pendingInternalUpserts = [];
+        maxByKey.forEach((v) => {
+          const im = internalExerciseMaxesRef.current.find(
+            m => normalizeExerciseNameKey(m.name) === normalizeExerciseNameKey(v.name)
+          );
+          const prevStored = im
+            ? v.mode === 'weight'
+              ? (im.valueWeight ?? im.value ?? 0)
+              : v.mode === 'reps'
+                ? (im.valueReps ?? 0)
+                : (im.valueSeconds ?? 0)
+            : 0;
+          if (v.candidateValue > prevStored) {
+            pendingInternalUpserts.push({ name: v.name, mode: v.mode, candidateValue: v.candidateValue });
+          }
+        });
+
+        if (didBump) {
+          const linked = newTms.filter(t => t.linkedExercise);
+          const newRms = { ...rmsRef.current };
+          linked.forEach(tm => { if (tm.linkedExercise) newRms[tm.linkedExercise] = tm.value; });
+          const resolvedCal =
+            resolveCalendarFromLogId(updatedRoutine, logId, viewAsOfWeek ?? currentWeekOfYear) ??
+            getYearWeekDay();
+          const { week: w, year: y, dayOfWeek: d } = resolvedCal;
+          const newTmsRecord = newTms.reduce((acc, tm) => ({ ...acc, [tm.id]: tm.value }), {} as Record<string, number>);
+          const newTotal = computeRoutineProgressTotal(newTms).value;
+          const currentDate = new Date().toLocaleDateString('es-ES', { month: 'short' });
+          const prevTmsSnap = tmsRef.current.map((tm) => ({ ...tm }));
+          const prevRmsSnap = { ...rmsRef.current };
+          tmBump = {
+            newTms,
+            newRms,
+            prevTmsSnapshot: prevTmsSnap,
+            prevRmsSnapshot: prevRmsSnap,
+            w,
+            y,
+            d,
+            currentDate,
+            newTmsRecord,
+            newTotal,
+          };
+          tmsRef.current = newTms;
+          rmsRef.current = newRms;
+        }
+
+        if (pendingInternalUpserts.length > 0) {
+          const next = [...internalExerciseMaxesRef.current];
+          pendingInternalUpserts.forEach(({ name, mode, candidateValue }) => {
+            const k = normalizeExerciseNameKey(name);
+            const idx = next.findIndex(m => normalizeExerciseNameKey(m.name) === k);
+            const field = mode === 'weight' ? 'valueWeight' : mode === 'reps' ? 'valueReps' : 'valueSeconds';
+            if (idx >= 0) {
+              const cur = next[idx];
+              const prevNum =
+                mode === 'weight'
+                  ? (cur.valueWeight ?? cur.value ?? 0)
+                  : mode === 'reps'
+                    ? (cur.valueReps ?? 0)
+                    : (cur.valueSeconds ?? 0);
+              if (candidateValue > prevNum) {
+                next[idx] = { ...cur, [field]: candidateValue };
+              }
+            } else {
+              next.push({
+                id: `pending-${k}`,
+                name,
+                ...(mode === 'weight'
+                  ? { valueWeight: candidateValue }
+                  : mode === 'reps'
+                    ? { valueReps: candidateValue }
+                    : { valueSeconds: candidateValue }),
+              });
+            }
+          });
+          internalExerciseMaxesRef.current = next;
+        }
+      }
+
+      return updatedRoutine;
+    });
+    if (pendingInternalUpserts.length > 0) {
+      queueMicrotask(() => {
+        setInternalExerciseMaxes(prev => {
+          const next = [...prev];
+          pendingInternalUpserts.forEach(({ name, mode, candidateValue }) => {
+            const k = normalizeExerciseNameKey(name);
+            const idx = next.findIndex(m => normalizeExerciseNameKey(m.name) === k);
+            const field = mode === 'weight' ? 'valueWeight' : mode === 'reps' ? 'valueReps' : 'valueSeconds';
+            if (idx >= 0) {
+              const cur = next[idx];
+              const prevNum =
+                mode === 'weight'
+                  ? (cur.valueWeight ?? cur.value ?? 0)
+                  : mode === 'reps'
+                    ? (cur.valueReps ?? 0)
+                    : (cur.valueSeconds ?? 0);
+              if (candidateValue > prevNum) {
+                next[idx] = { ...cur, [field]: candidateValue };
+              }
+            } else {
+              next.push({
+                id: `pending-${k}`,
+                name,
+                ...(mode === 'weight'
+                  ? { valueWeight: candidateValue }
+                  : mode === 'reps'
+                    ? { valueReps: candidateValue }
+                    : { valueSeconds: candidateValue }),
+              });
+            }
+          });
+          return next;
+        });
+        pendingInternalUpserts.forEach(({ name, mode, candidateValue }) => {
+          if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) return;
+          apiPost<any>('/api/internal-exercise-maxes/upsert', {
+            routineId: activeRoutineId,
+            name,
+            mode,
+            candidateValue,
+          })
+            .then((doc: any) => {
+              const id = String(doc._id || doc.id);
+              setInternalExerciseMaxes(prev =>
+                prev.map(m => {
+                  if (normalizeExerciseNameKey(m.name) !== normalizeExerciseNameKey(name)) return m;
+                  return {
+                    ...m,
+                    id,
+                    valueWeight: doc.valueWeight != null ? Number(doc.valueWeight) : m.valueWeight,
+                    valueReps: doc.valueReps != null ? Number(doc.valueReps) : m.valueReps,
+                    valueSeconds: doc.valueSeconds != null ? Number(doc.valueSeconds) : m.valueSeconds,
+                    value: doc.value != null ? Number(doc.value) : m.value,
+                  };
+                })
+              );
+            })
+            .catch(() => {});
+        });
+      });
+    }
+    if (tmBump) {
+      const b = tmBump;
+      const bumpedIds = b.newTms
+        .filter(t => t.value !== b.prevTmsSnapshot.find(ot => ot.id === t.id)?.value)
+        .map(t => t.id);
+      if (bumpedIds.length) {
+        if (tmHighlightTimerRef.current) clearTimeout(tmHighlightTimerRef.current);
+        setTmAutoHighlightIds(bumpedIds);
+        tmHighlightTimerRef.current = setTimeout(() => {
+          setTmAutoHighlightIds([]);
+          tmHighlightTimerRef.current = null;
+        }, 4000);
+      }
+      const tmActuallyChangedForHist = b.newTms.some(
+        (t) => b.prevTmsSnapshot.find((ot) => ot.id === t.id)?.value !== t.value
+      );
+      const hasBaselineNow = historyRef.current.some((e) => entryDateISO(e) === TM_BASELINE_DATE_ISO);
+      const needBaselineSave = tmActuallyChangedForHist && !hasBaselineNow;
+
+      setTms(b.newTms);
+      setRms(b.newRms);
+      setHistory((prev) => {
+        const samePeriodNew = (e: HistoryEntry) =>
+          e.year === b.y && e.week === b.w && (e.dayOfWeek ?? 0) === (b.d ?? 0);
+        const filtered = prev.filter((e) => !samePeriodNew(e));
+        const entries: HistoryEntry[] = [...filtered];
+        const hasBaseline = entries.some((e) => entryDateISO(e) === TM_BASELINE_DATE_ISO);
+        if (tmActuallyChangedForHist && !hasBaseline) {
+          const prevRmsSnap = buildRmsFromLinkedTms(b.prevTmsSnapshot, b.prevRmsSnapshot);
+          entries.push(
+            buildBaselineHistoryEntry(activeRoutineId, b.prevTmsSnapshot, prevRmsSnap, b.currentDate)
+          );
+        }
+        const newEntry: HistoryEntry = {
+          ...createHistoryEntry(b.currentDate, b.newTms, b.newRms, { week: b.w, year: b.y, dayOfWeek: b.d }),
+          routineId: activeRoutineId,
+        };
+        entries.push(newEntry);
+        return entries.sort((a, b) => {
+          const c = entryDateISO(a).localeCompare(entryDateISO(b));
+          if (c !== 0) return c;
+          return (a.createdAt || '').localeCompare(b.createdAt || '');
+        });
+      });
+      queueMicrotask(() => {
+        const bumpIsoLog = dateISOFromYearWeekDay(b.y, b.w, b.d ?? 0);
+        b.newTms.filter(t => t.value !== b.prevTmsSnapshot.find(ot => ot.id === t.id)?.value).forEach(tm => {
+          apiPut(`/api/training-maxes/${tm.id}`, {
+            value: tm.value,
+            routineId: activeRoutineId,
+            updatedAt: dateISOToUtcNoonISO(bumpIsoLog),
+          }).catch((e) => console.error('[TM] Error guardando subida automática:', e));
+        });
+        const isPersistedRoutine = !(activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20);
+        if (isPersistedRoutine) {
+          const saveNew = () => {
+            const iso = dateISOFromYearWeekDay(b.y, b.w, b.d ?? 0);
+            return apiPost('/api/training-maxes/save-period', {
+              routineId: activeRoutineId,
+              date: b.currentDate,
+              week: b.w,
+              year: b.y,
+              dayOfWeek: b.d,
+              dateISO: iso,
+              month: calendarMonth1FromDateISO(iso),
+              rms: b.newRms,
+              total: b.newTotal,
+              trainingMaxes: b.newTmsRecord,
+              progressKind: computeRoutineProgressTotal(b.newTms).kind,
+            });
+          };
+          const run = async () => {
+            if (needBaselineSave) {
+              const prevRmsSnap = buildRmsFromLinkedTms(b.prevTmsSnapshot, b.prevRmsSnapshot);
+              const prevProg = computeRoutineProgressTotal(b.prevTmsSnapshot);
+              const prevTmRec = b.prevTmsSnapshot.reduce(
+                (acc, tm) => ({ ...acc, [tm.id]: tm.value }),
+                {} as Record<string, number>
+              );
+              try {
+                await apiPost('/api/training-maxes/save-period', {
+                  routineId: activeRoutineId,
+                  date: b.currentDate,
+                  week: 1,
+                  year: 1970,
+                  dayOfWeek: 0,
+                  dateISO: TM_BASELINE_DATE_ISO,
+                  month: 1,
+                  rms: prevRmsSnap,
+                  total: prevProg.value,
+                  trainingMaxes: prevTmRec,
+                  progressKind: prevProg.kind,
+                });
+              } catch {
+                /* idempotente si ya existe */
+              }
+            }
+            await saveNew().catch(() => {});
+          };
+          void run();
+        }
+      });
+    }
+  };
+
+  const handleMarkCompleted = (logId: string, completed: boolean) => {
+    markLogDirty(activeRoutineId, logId);
+    updateActiveRoutine((routine) => {
+      const base = resolveLogEntryForMerge(routine.logs, logId);
+      const cleaned = stripLegacyLogKeysForCanonical(routine.logs, logId);
+      return {
+        ...routine,
+        logs: {
+          ...cleaned,
+          [logId]: { ...base, completed },
+        },
+      };
+    });
+  };
+
+  const handleLoginComplete = useCallback((userData: User) => {
+    void (async () => {
+      const prevId = user?.id;
+      const newId = userData.id;
+      if (prevId && prevId !== newId) {
+        const prevAcc = loadSavedAccounts().find((a) => a.id === prevId);
+        const expo =
+          typeof window !== 'undefined'
+            ? (window as unknown as { __EXPO_PUSH_TOKEN__?: string }).__EXPO_PUSH_TOKEN__
+            : undefined;
+        if (prevAcc?.token && expo?.trim()) {
+          try {
+            const base = getApiBaseUrl() || '';
+            await fetch(`${base}/api/auth/logout`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${prevAcc.token}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ token: expo.trim() }),
+            });
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    })();
+    const token = localStorage.getItem('auth_token');
+    if (token) {
+      upsertAccount({
+        id: userData.id,
+        token,
+        email: userData.email,
+        name: userData.name,
+        avatar: userData.avatar,
+      });
+      setActiveAccountId(userData.id);
+      setSavedAccountsState(loadSavedAccounts());
+    }
+    setUser(userData);
+  }, [user?.id]);
+
+  const switchToAccount = useCallback(
+    async (userId: string) => {
+      const accounts = loadSavedAccounts();
+      const acc = accounts.find((a) => a.id === userId);
+      if (!acc) {
+        return;
+      }
+      setIsSwitchingAccount(true);
+      const prevToken = localStorage.getItem('auth_token');
+      try {
+        const basePre = getApiBaseUrl() || '';
+        const expoPre =
+          typeof window !== 'undefined'
+            ? (window as unknown as { __EXPO_PUSH_TOKEN__?: string }).__EXPO_PUSH_TOKEN__
+            : undefined;
+        if (prevToken && expoPre?.trim()) {
+          try {
+            await fetch(`${basePre}/api/auth/logout`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${prevToken}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ token: expoPre.trim() }),
+            });
+          } catch {
+            /* ignore */
+          }
+        }
+        localStorage.setItem('auth_token', acc.token);
+        setActiveAccountId(userId);
+        const base = getApiBaseUrl() || '';
+        const res = await fetch(`${base}/api/auth/me`, {
+          headers: { Authorization: `Bearer ${acc.token}` },
+        });
+        if (!res.ok) {
+          localStorage.setItem('auth_token', prevToken || '');
+          removeAccount(userId);
+          setSavedAccountsState(loadSavedAccounts());
+          return;
+        }
+        const data = await res.json();
+        const u = mapUserFromMePayload(data);
+        upsertAccount({
+          id: u.id,
+          token: acc.token,
+          email: u.email,
+          name: u.name,
+          avatar: u.avatar,
+        });
+        setSavedAccountsState(loadSavedAccounts());
+        setRoutines([]);
+        setActiveRoutineId(null);
+        setHistory([]);
+        setTms([]);
+        setRms({ bench: 0, squat: 0, deadlift: 0 });
+        setInternalExerciseMaxes([]);
+        setCheckIns([]);
+        setChallenges([]);
+        setFriendsList([]);
+        setFriends([]);
+        setViewAsOfWeek(null);
+        setProgramScreen('plan');
+        setView('dashboard');
+        setUser(u);
+      } catch (e) {
+        console.error('[Account] Error al cambiar de cuenta:', e);
+      } finally {
+        setIsSwitchingAccount(false);
+      }
+    },
+    []
+  );
+
+  const handleLogout = useCallback(async () => {
+    const uid = user?.id;
+    if (!uid) return;
+    try {
+      const authToken = localStorage.getItem('auth_token');
+      const base = getApiBaseUrl() || '';
+      const expoPush =
+        typeof window !== 'undefined'
+          ? (window as unknown as { __EXPO_PUSH_TOKEN__?: string }).__EXPO_PUSH_TOKEN__
+          : undefined;
+      await fetch(`${base}/api/auth/logout`, {
+        method: 'POST',
+        headers: {
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(expoPush?.trim() ? { token: expoPush.trim() } : {}),
+      });
+    } catch {
+      /* ignore */
+    }
+    removeAccount(uid);
+    setSavedAccountsState(loadSavedAccounts());
+    const remaining = loadSavedAccounts();
+    if (remaining.length > 0) {
+      try {
+        await switchToAccount(remaining[0].id);
+      } catch {
+        localStorage.removeItem('auth_token');
+        setActiveAccountId(null);
+        localStorage.removeItem(AUTH_USER_STORAGE_KEY);
+        setUser(null);
+      }
+    } else {
+      localStorage.removeItem('auth_token');
+      setActiveAccountId(null);
+      localStorage.removeItem(AUTH_USER_STORAGE_KEY);
+      setUser(null);
+    }
+  }, [user?.id, switchToAccount]);
+
+  const handleRemoveSavedAccount = useCallback(
+    (userId: string) => {
+      if (userId === user?.id) {
+        void handleLogout();
+        return;
+      }
+      removeAccount(userId);
+      setSavedAccountsState(loadSavedAccounts());
+    },
+    [user?.id, handleLogout]
+  );
+
+  useEffect(() => {
+    const checkSession = async () => {
+      migrateLegacyIfNeeded();
+      setSavedAccountsState(loadSavedAccounts());
+      const cachedRaw = localStorage.getItem(AUTH_USER_STORAGE_KEY);
+      if (cachedRaw) {
+        try {
+          const cachedUser = JSON.parse(cachedRaw) as User;
+          if (cachedUser?.id) setUser(cachedUser);
+        } catch {
+          localStorage.removeItem(AUTH_USER_STORAGE_KEY);
+        }
+      }
+
+      try {
+        const token = localStorage.getItem('auth_token');
+        if (!token) {
+          localStorage.removeItem(AUTH_USER_STORAGE_KEY);
+          setUser(null);
+          setIsCheckingSession(false);
+          return;
+        }
+        
+        const ac = new AbortController();
+        const t = setTimeout(() => ac.abort(), 15000);
+        const res = await fetch('/api/auth/me', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          signal: ac.signal,
+        });
+        clearTimeout(t);
+        
+        if (res.ok) {
+          try {
+            const data = await res.json();
+            const u = mapUserFromMePayload(data);
+            setUser(u);
+            localStorage.setItem(AUTH_USER_STORAGE_KEY, JSON.stringify(u));
+            const t = localStorage.getItem('auth_token');
+            if (t) {
+              upsertAccount({
+                id: u.id,
+                token: t,
+                email: u.email,
+                name: u.name,
+                avatar: u.avatar,
+              });
+              setActiveAccountId(u.id);
+              setSavedAccountsState(loadSavedAccounts());
+            }
+          } catch (parseError) {
+            console.error('[SESSION] Error parseando respuesta — sesión local mantenida:', parseError);
+          }
+        } else {
+          // Server returned non-ok — keep session alive unless we're certain the user was deleted.
+          // Never force re-login due to transient server issues, token format changes, etc.
+          // Only an explicit handleLogout() should clear the token.
+          console.warn('[SESSION] /api/auth/me respondió', res.status, '— sesión local mantenida');
+        }
+      } catch (e: any) {
+        // Network error or server unavailable: keep local session alive until explicit logout.
+        console.error('[SESSION] Error verificando sesión:', e.message || e);
+      } finally {
+        setIsCheckingSession(false);
+      }
+    };
+    checkSession();
+  }, []);
+
+  useEffect(() => {
+    if (!user) {
+      localStorage.removeItem(AUTH_USER_STORAGE_KEY);
+      return;
+    }
+    localStorage.setItem(AUTH_USER_STORAGE_KEY, JSON.stringify(user));
+  }, [user]);
+
+  const exportToExcel = () => {
+    const data: any[] = [];
+    weeks.forEach(week => {
+      week.days.forEach(day => {
+        day.exercises.forEach(ex => {
+          const log = getLogEntryForExercise(logs, week, day, ex);
+          const linkedTM = tms.find(t => t.id === ex.linkedTo);
+          const getTargetWeight = (sIdx: number) => linkedTM ? Math.round(linkedTM.value * ((ex.pctPerSet?.[sIdx] ?? ex.pct ?? 75) / 100)) : (ex.weight || 0);
+
+          if (log.sets && log.sets.length > 0) {
+            log.sets.forEach((set, sIdx) => {
+              const targetWeight = getTargetWeight(sIdx);
+              data.push({
+                Semana: week.number,
+                Dia: day.name,
+                Ejercicio: ex.name,
+                Serie: sIdx + 1,
+                Objetivo: `${ex.sets}x${ex.reps} @ ${targetWeight}kg`,
+                Peso_Real: set.weight ?? targetWeight,
+                Reps_Real: set.reps ?? (parseInt(ex.reps.toString()) || 0),
+                RPE: log.rpe || '',
+                Notas: log.notes || ''
+              });
+            });
+          } else {
+            const targetWeight = getTargetWeight(0);
+            data.push({
+              Semana: week.number,
+              Dia: day.name,
+              Ejercicio: ex.name,
+              Serie: '—',
+              Objetivo: `${ex.sets}x${ex.reps} @ ${targetWeight}kg`,
+              Peso_Real: '—',
+              Reps_Real: '—',
+              RPE: log.rpe || '',
+              Notas: log.notes || ''
+            });
+          }
+        });
+      });
+    });
+
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Plan Entrenamiento");
+    XLSX.writeFile(wb, "Mi_Plan_Entrenamiento.xlsx");
+  };
+
+  // Función para guardar el período actual en el historial (local + DB)
+  const saveCurrentPeriod = async (
+    silent = false,
+    opts?: { syncCommit?: boolean }
+  ) => {
+    if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) return;
+    if (tmsLoadedForRoutineRef.current !== activeRoutineId) return;
+    if (!tms.length) return;
+    const now = new Date();
+    const currentDate = now.toLocaleDateString('es-ES', { month: 'short' });
+    const { week, year, dayOfWeek: d } = getYearWeekDay(now);
+    const entry = createHistoryEntry(currentDate, tms, rms, { week, year, dayOfWeek: d });
+    const entryWithRoutine: HistoryEntry = { ...entry, routineId: activeRoutineId };
+    const commitHistory = () =>
+      setHistory((prev) => {
+        const samePeriod = (e: HistoryEntry) =>
+          e.year === year && e.week === week && (e.dayOfWeek ?? 0) === d;
+        const filtered = prev.filter((e) => !samePeriod(e));
+        return [...filtered, entryWithRoutine].sort((a, b) => {
+          const c = entryDateISO(a).localeCompare(entryDateISO(b));
+          if (c !== 0) return c;
+          return (a.createdAt || '').localeCompare(b.createdAt || '');
+        });
+      });
+    if (opts?.syncCommit) {
+      flushSync(commitHistory);
+    } else {
+      commitHistory();
+    }
+    try {
+      await apiPost('/api/training-maxes/save-period', {
+        routineId: activeRoutineId,
+        date: entry.date,
+        week: entry.week,
+        year: entry.year,
+        dayOfWeek: d,
+        dateISO: entry.dateISO,
+        month: entry.month,
+        rms: entry.rms,
+        total: entry.total,
+        trainingMaxes: entry.trainingMaxes,
+        progressKind: entry.progressKind,
+      });
+      if (!silent) alert(`✅ Período guardado: ${currentDate}`);
+    } catch (e) {
+      console.error('[History] Error guardando período:', e);
+    }
+  };
+
+  const handleRoutineProgressCheckpoint = async () => {
+    if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) return;
+    if (tmsLoadedForRoutineRef.current !== activeRoutineId) return;
+    if (!tms.length) return;
+    setRoutineCheckpointSaving(true);
+    try {
+      await saveCurrentPeriod(true, { syncCommit: true });
+      const iso = new Date().toISOString();
+      const tmSnap: Record<string, number> = {};
+      tms.forEach((t) => { tmSnap[t.id] = t.value; });
+      await apiPut(`/api/routines/${activeRoutineId}`,
+        { progressCheckpointAt: iso, progressCheckpointTms: tmSnap });
+      updateActiveRoutine((r) => ({ ...r, progressCheckpointAt: iso, progressCheckpointTms: tmSnap }));
+    } catch (e) {
+      console.error('[Routine] Error checkpoint progreso:', e);
+    } finally {
+      setRoutineCheckpointSaving(false);
+    }
+  };
+
+  // Auto-guardar período en DB cuando cambian TMs, RMs o logs (debounce 500ms)
+  const periodSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!user) return;
+    periodSaveRef.current && clearTimeout(periodSaveRef.current);
+    periodSaveRef.current = setTimeout(() => {
+      saveCurrentPeriod(true);
+      periodSaveRef.current = null;
+    }, 500);
+    return () => {
+      if (periodSaveRef.current) clearTimeout(periodSaveRef.current);
+    };
+  }, [tms, rms, routines, activeRoutineId, user?.id]);
+
+  if (isCheckingSession) {
+    return (
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center">
+        <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginView onLogin={handleLoginComplete} />;
+  }
+
+  if (isLoadingData && routines.length === 0) {
+    return (
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col items-center justify-center gap-4">
+        <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+        <p className="text-sm font-bold text-slate-500 dark:text-slate-400 animate-pulse">Cargando tus datos…</p>
+      </div>
+    );
+  }
+
+  if (user && addAccountMode) {
+    return (
+      <LoginView
+        variant="addAccount"
+        onCancel={() => setAddAccountMode(false)}
+        onLogin={(userData) => {
+          handleLoginComplete(userData);
+          setAddAccountMode(false);
+          setView('settings');
+          setProfileOpenSettingsSignal((s) => s + 1);
+        }}
+      />
+    );
+  }
+
+  const handleToggleSameTemplateAllWeeks = () => {
+    const routine = routines.find((r) => r.id === activeRoutineId);
+    if (!routine) return;
+    const newVal = !routine.sameTemplateAllWeeks;
+    updateActiveRoutine((r) => ({ ...r, sameTemplateAllWeeks: newVal }));
+    // Persistir inmediatamente en DB
+    if (!routine.id.startsWith('routine-')) {
+      apiPut(`/api/routines/${routine.id}`, { sameTemplateAllWeeks: newVal })
+        .then(() => {
+          bumpRoutineDataRefresh();
+        })
+        .catch((e) => {
+          console.error('[Routine] Error guardando Mes/Sem:', e);
+        });
+    }
+  };
+
+  /** Lista única 1–53 (rutina lineal: semana civil). */
+  const normalizeSkippedWeeksLinear = (arr: number[]) =>
+    [...new Set(arr.map((w) => Math.round(Number(w))).filter((w) => Number.isFinite(w) && w >= 1 && w <= 53))].sort(
+      (a, b) => a - b
+    );
+
+  /** Rutina por bloque: índices 1…cycleLength dentro del mesociclo. */
+  const normalizeSkippedWeeksCycle = (arr: number[], cycleLength: number) => {
+    const cl = Math.max(1, Math.min(52, cycleLength));
+    return [...new Set(arr.map((w) => Math.round(Number(w))).filter((w) => Number.isFinite(w) && w >= 1 && w <= cl))].sort(
+      (a, b) => a - b
+    );
+  };
+
+  /**
+   * `weekNumber` en skip_only (lineal = semana civil; bloque = posición ciclo).
+   * En shift + bloque: `weekNumber` = semana civil (displayWeekNum) que se desplaza.
+   */
+  const handleSkipWeek = async (weekNumber: number, mode: 'shift' | 'skip_only') => {
+    const routine = routines.find((r) => r.id === activeRoutineId);
+    if (!routine || routine.id.startsWith('routine-')) return;
+    const isBlock = routine.sameTemplateAllWeeks === false;
+
+    if (mode === 'shift' && isBlock) {
+      const calWeek = weekNumber;
+      const current: number[] = routine.shiftedAtCalendarWeeks ?? [];
+      const next = current.includes(calWeek)
+        ? current.filter((w) => w !== calWeek)
+        : [...current, calWeek].sort((a, b) => a - b);
+      updateActiveRoutine((r) => ({ ...r, shiftedAtCalendarWeeks: next }));
+      try {
+        await apiPut(`/api/routines/${routine.id}`, { shiftedAtCalendarWeeks: next });
+        bumpRoutineDataRefresh();
+      } catch (e) {
+        console.error('[Routine] Error guardando shift de semana:', e);
+      }
+      return;
+    }
+
+    const current = routine.skippedWeeks || [];
+    const cl = routine.cycleLength ?? 4;
+    let next: number[];
+    next = current.includes(weekNumber) ? current.filter((w) => w !== weekNumber) : [...current, weekNumber];
+    next = isBlock ? normalizeSkippedWeeksCycle(next, cl) : normalizeSkippedWeeksLinear(next);
+    updateActiveRoutine((r) => ({ ...r, skippedWeeks: next }));
+    try {
+      await apiPut(`/api/routines/${routine.id}`, { skippedWeeks: next });
+      bumpRoutineDataRefresh();
+    } catch (e) {
+      console.error('[Routine] Error guardando semanas saltadas:', e);
+    }
+  };
+
+  const handleToggleHiddenRoutine = async (routineId: string) => {
+    const routine = routines.find((r) => r.id === routineId);
+    if (!routine) return;
+    const newHidden = !routine.hiddenFromSocial;
+    setRoutines((prev) =>
+      prev.map((r) => (r.id === routineId ? { ...r, hiddenFromSocial: newHidden } : r))
+    );
+    // Persistir inmediatamente en DB (cualquier rutina, no solo la activa)
+    if (!routineId.startsWith('routine-')) {
+      try {
+        await apiPut(`/api/routines/${routineId}`, { hiddenFromSocial: newHidden });
+        bumpSocialRefresh();
+      } catch (e) {
+        setRoutines((prev) =>
+          prev.map((r) => (r.id === routineId ? { ...r, hiddenFromSocial: routine.hiddenFromSocial } : r))
+        );
+      }
+    }
+  };
+
+  const handleUpdateDayType = (weekId: string, dayId: string, type: DayType) => {
+    const routine = routines.find(r => r.id === activeRoutineId);
+    const res0 = routine ? resolveWeekDayIndex(routine, weekId, dayId) : null;
+    const dbDayId = res0 ? routine!.weeks[res0.weekIdx]?.days[res0.dayIdx]?._dbId : undefined;
+
+    updateActiveRoutine((r) => {
+      const resolved = resolveWeekDayIndex(r, weekId, dayId);
+      if (!resolved) return r;
+      const { weekIdx, dayIdx } = resolved;
+      return applyRoutineChangeWithVersioning(r, weekIdx, dayIdx, (day) => ({ ...day, type }));
+    });
+
+    if (dbDayId && routine?.id && !routine.id.startsWith('routine-')) {
+      apiPatch(`/api/routines/${routine.id}/days/${dbDayId}`, { dayType: type })
+        .catch((e: any) => console.error('[Routine] Error updating day type:', e));
+    }
+    // Igual que al editar un ejercicio: el PATCH suelto no guarda la versión nueva.
+    if (routine?.id && !routine.id.startsWith('routine-')) {
+      schedulePlanBulkSync();
+    }
+  };
+
+  return (
+    // `reducedMotion="user"`: si el móvil tiene activado «reducir movimiento», motion
+    // deja solo las opacidades y se salta desplazamientos y escalados.
+    <MotionConfig reducedMotion="user">
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 font-sans selection:bg-indigo-100 selection:text-indigo-900 dark:selection:bg-indigo-950/80 dark:selection:text-indigo-200 overflow-hidden px-2 max-[400px]:px-2 sm:px-4 md:px-6 py-2 sm:py-4 relative">
+      {isSwitchingAccount && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/50 backdrop-blur-sm">
+          <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+        </div>
+      )}
+      <motion.div 
+        className="min-h-screen touch-pan-y bg-[var(--app-bg)]"
+      >
+        <AnimatePresence mode="wait">
+          {view === 'dashboard' && (
+            <DashboardView 
+              key={`dashboard-${activeRoutineId}`}
+              chartEnterKey={dashboardEnterKey}
+              user={user}
+              history={sortedHistory}
+              rms={rms}
+              trainingMaxes={tms}
+              activeRoutineName={activeRoutine?.name || 'Rutina activa'}
+              activeRoutineId={activeRoutineId}
+              progressCheckpointAt={activeRoutine?.progressCheckpointAt}
+              progressCheckpointTms={activeRoutine?.progressCheckpointTms}
+              routineCreatedAt={activeRoutine?.createdAt}
+              sameTemplateAllWeeks={activeRoutine?.sameTemplateAllWeeks !== false}
+              cycleLength={activeRoutine?.cycleLength ?? 4}
+              currentWeekOfYear={currentWeekOfYear}
+              routineWeeks={activeRoutine?.weeks}
+              routineLogs={activeRoutine?.logs}
+              challenges={challenges}
+              checkIns={checkIns}
+              onUpdateUser={handleUpdateUser}
+              onOpenProgram={openProgramPlan}
+              onOpenSocial={goToSocial}
+              onJoinFriendCheckIn={handleJoinFriendCheckIn}
+            />
+          )}
+          {view === 'program' && (
+            programScreen === 'routines' ? (
+              <RoutineManagerView
+                key="routine-manager"
+                routines={[...routines]
+                  .sort((a, b) => (a.id === activeRoutineId ? -1 : b.id === activeRoutineId ? 1 : 0))
+                  .map((routine) => ({
+                    id: routine.id,
+                    name: routine.name,
+                    isActive: routine.id === activeRoutineId,
+                    hiddenFromSocial: !!routine.hiddenFromSocial,
+                  }))}
+                onBack={() => setProgramScreen('plan')}
+                onActivateRoutine={handleSelectRoutine}
+                onCreateRoutine={handleCreateRoutine}
+                createRoutineLoading={routineCreateLoading}
+                deleteRoutineLoadingId={routineDeleteLoadingId}
+                activateRoutineLoadingId={routineSwitchingId}
+                onRenameRoutine={handleRenameRoutine}
+                onDeleteRoutine={handleDeleteRoutine}
+                onToggleHiddenRoutine={handleToggleHiddenRoutine}
+              />
+            ) : (
+              <TrainingPlanView 
+                key="program"
+                activeRoutineName={activeRoutine?.name || 'Rutina activa'}
+                sameTemplateAllWeeks={activeRoutine?.sameTemplateAllWeeks === true}
+                cycleLength={activeRoutine?.cycleLength ?? 4}
+                onToggleSameTemplateAllWeeks={handleToggleSameTemplateAllWeeks}
+                trainingMaxes={tms}
+                tmHistory={sortedHistory}
+                tmAutoHighlightIds={
+                  (viewAsOfWeek ?? currentWeekOfYear) === currentWeekOfYear ? tmAutoHighlightIds : []
+                }
+                internalExerciseMaxes={internalExerciseMaxes}
+                onSetInternalMax={handleSetInternalMax}
+                weeks={weeks}
+                logs={logs}
+                viewAsOfWeek={viewAsOfWeek}
+                currentWeekOfYear={currentWeekOfYear}
+                onViewAsOfWeekChange={setViewAsOfWeek}
+                isHistoryMode={isHistoryMode}
+                versionWeeks={activeRoutine?.versions?.map(v => v.effectiveFromWeek) ?? []}
+                onUpdateTM={handleUpdateTM}
+                onCreateTM={handleCreateTM}
+                planViewAnchorRef={planViewAnchorRef}
+                onRemoveTM={handleRemoveTM}
+                onAddExercise={isHistoryMode ? () => {} : handleAddExercise}
+                onRemoveExercise={isHistoryMode ? () => {} : handleRemoveExercise}
+                onUpdateExercise={isHistoryMode ? () => {} : handleUpdateExercise}
+                onRoutinePlanFlush={
+                  isHistoryMode
+                    ? undefined
+                    : async () => {
+                        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+                        const r = routineForSyncRef.current;
+                        if (!r || r.id !== activeRoutineId) return;
+                        rescanTmBumpsFromLogs(r);
+                        await syncDirtyLogsForRoutine(r);
+                      }
+                }
+                onUpdateDayType={isHistoryMode ? () => {} : handleUpdateDayType}
+                onLogChange={isHistoryMode ? () => {} : handleLogChange}
+                onSetLogChange={isHistoryMode ? () => {} : handleSetLogChange}
+                onUploadSetMedia={isHistoryMode ? undefined : handleUploadSetMedia}
+                onMarkCompleted={isHistoryMode ? () => {} : handleMarkCompleted}
+                onOpenRoutineManager={() => setProgramScreen('routines')}
+                onExport={exportToExcel}
+                onImportCoachPlan={handleImportCoachPlan}
+                openImportSignal={openImportAfterCreate}
+                lastCoachImport={lastCoachImport}
+                skippedWeeks={activeRoutine?.skippedWeeks ?? []}
+                shiftedAtCalendarWeeks={activeRoutine?.shiftedAtCalendarWeeks ?? []}
+                onSkipWeek={handleSkipWeek}
+                onRoutineProgressCheckpoint={
+                  activeRoutine &&
+                  !(activeRoutine.id.startsWith('routine-') && activeRoutine.id.length < 20) &&
+                  tms.length > 0
+                    ? handleRoutineProgressCheckpoint
+                    : undefined
+                }
+                routineProgressCheckpointLoading={routineCheckpointSaving}
+              />
+            )
+          )}
+          {view === 'social' && (
+            <SocialView 
+              key={user?.id ?? 'social'}
+              user={user}
+              friendsList={friendsList}
+              requests={friends}
+              challenges={challenges}
+              checkIns={checkIns}
+              initialTab={socialTab}
+              openCheckInModalSignal={openCheckInModalSignal}
+              openPublishSignal={openPublishSignal}
+              checkInIntent={checkInIntent}
+              onAccept={handleAcceptFriend}
+              onReject={handleRejectFriend}
+              onSendFriendRequest={handleSendFriendRequest}
+              onCreateChallenge={handleCreateChallenge}
+              onJoinChallenge={handleJoinChallenge}
+              onCheckIn={handleCheckIn}
+              onCheckInUpdate={handleCheckInUpdate}
+              onCheckInDelete={handleCheckInDelete}
+              onRefreshChallenges={refreshChallenges}
+              onCopyFriendRoutine={handleCopyFriendRoutine}
+              myRoutines={routines.map((r) => ({ id: r.id, name: r.name }))}
+              myExercises={activeRoutineExerciseNames}
+              activeRoutineId={activeRoutineId}
+              onGoToCopiedRoutine={(routineId) => {
+                setView('program');
+                void handleSelectRoutine(routineId);
+              }}
+              onUnfriend={handleUnfriend}
+              onGoToProfile={() => setView('settings')}
+              onGoToDashboard={() => setView('dashboard')}
+              socialBackTo={socialBackTo}
+            />
+          )}
+          {view === 'settings' && (
+            <ProfileView
+              key="profile"
+              user={user}
+              onUpdateUser={handleUpdateUser}
+              onLogout={handleLogout}
+              savedAccountSummaries={toSummaries(savedAccountsState)}
+              onSwitchAccount={(id) => void switchToAccount(id)}
+              onAddAccount={() => setAddAccountMode(true)}
+              onRemoveSavedAccount={handleRemoveSavedAccount}
+              onGoToFeed={() => goToSocial('feed')}
+              onGoToFriends={() => goToSocial('friends', { from: 'profile' })}
+              onGoToChallenges={() => goToSocial('challenges', { from: 'profile' })}
+              pendingFriendCount={friends.filter((r) => r.status === 'pending').length}
+              openSettingsSignal={profileOpenSettingsSignal}
+            />
+          )}
+        </AnimatePresence>
+      </motion.div>
+      
+      {/* Floating Bottom Navigation */}
+      <nav className="fixed bottom-1 max-[360px]:bottom-1 sm:bottom-6 left-1 right-1 max-[360px]:left-1 max-[360px]:right-1 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 max-w-md sm:max-w-none mx-auto bg-white/25 dark:bg-slate-950/70 backdrop-blur-[32px] sm:backdrop-blur-[48px] border border-white/15 dark:border-slate-800/50 shadow-2xl shadow-black/5 dark:shadow-black/50 rounded-xl max-[360px]:rounded-lg sm:rounded-2xl md:rounded-[2rem] px-1.5 max-[360px]:px-1 sm:px-6 py-1.5 max-[360px]:py-1 sm:py-3 flex items-center justify-between sm:gap-6 gap-0.5 max-[360px]:gap-0 z-50">
+        <button 
+          onClick={() => setView('dashboard')} 
+          className={cn(
+            "flex flex-col items-center gap-0.5 sm:gap-1 transition-all duration-300 min-w-0 flex-1 min-h-[44px] justify-center py-1",
+            view === 'dashboard' ? "text-indigo-600 dark:text-indigo-400" : "text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-200"
+          )}
+        >
+          <LayoutDashboard className="size-5 max-[360px]:size-4 sm:size-5" strokeWidth={view === 'dashboard' ? 2.5 : 2} />
+          <span className="text-[11px] max-[360px]:text-[10px] sm:text-xs font-semibold truncate w-full text-center">Progreso</span>
+        </button>
+        <button 
+          onClick={() => {
+            setProgramScreen('plan');
+            setView('program');
+          }} 
+          className={cn(
+            "flex flex-col items-center gap-0.5 sm:gap-1 transition-all duration-300 min-w-0 flex-1 min-h-[44px] justify-center py-1",
+            view === 'program' ? "text-indigo-600 dark:text-indigo-400" : "text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-200"
+          )}
+        >
+          <Dumbbell className="size-5 max-[360px]:size-4 sm:size-5" strokeWidth={view === 'program' ? 2.5 : 2} />
+          <span className="text-[11px] max-[360px]:text-[10px] sm:text-xs font-semibold truncate w-full text-center">Rutina</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setComposeOpen(true)}
+          className="flex min-h-[44px] min-w-0 flex-1 flex-col items-center justify-center gap-0.5 py-1 sm:gap-1"
+          aria-label="Publicar o avisar"
+        >
+          <span className="flex size-9 items-center justify-center rounded-full bg-indigo-600 text-white shadow-md shadow-indigo-500/30 dark:bg-indigo-500">
+            <Plus className="size-5" strokeWidth={2.5} />
+          </span>
+        </button>
+        <button 
+          type="button"
+          onClick={() => goToSocial('feed')}
+          aria-label="Inicio" 
+          className={cn(
+            "flex flex-col items-center gap-0.5 sm:gap-1 transition-all duration-300 min-w-0 flex-1 min-h-[44px] justify-center py-1",
+            view === 'social' ? "text-indigo-600 dark:text-indigo-400" : "text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-200"
+          )}
+        >
+          <Users className="size-5 max-[360px]:size-4 sm:size-5" strokeWidth={view === 'social' ? 2.5 : 2} />
+          <span className="text-[11px] max-[360px]:text-[10px] sm:text-xs font-semibold truncate w-full text-center">Inicio</span>
+        </button>
+        <button 
+          onClick={() => setView('settings')} 
+          className={cn(
+            "flex flex-col items-center gap-0.5 sm:gap-1 transition-all duration-300 min-w-0 flex-1 min-h-[44px] justify-center py-1",
+            view === 'settings' ? "text-indigo-600 dark:text-indigo-400" : "text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-200"
+          )}
+        >
+          <UserRound className="size-5 max-[360px]:size-4 sm:size-5" strokeWidth={view === 'settings' ? 2.5 : 2} />
+          <span className="text-[11px] max-[360px]:text-[10px] sm:text-xs font-semibold truncate w-full text-center">Perfil</span>
+        </button>
+      </nav>
+      <ComposeSheet
+        open={composeOpen}
+        onClose={() => setComposeOpen(false)}
+        onPublish={() => {
+          setComposeOpen(false);
+          goToSocial('feed', { openPublish: true });
+        }}
+        onGymNow={() => {
+          setComposeOpen(false);
+          goToSocial('checkins', { gymNow: true });
+        }}
+        onGymLater={() => {
+          setComposeOpen(false);
+          goToSocial('checkins', { openCheckInModal: true });
+        }}
+      />
+    </div>
+    </MotionConfig>
+  );
+}
+

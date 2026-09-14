@@ -1,0 +1,500 @@
+import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { motion } from 'motion/react';
+import { AlertCircle, CheckCircle2, FileUp, Loader2, X } from 'lucide-react';
+import { Button } from '@/src/components/ui/Button';
+import { cn } from '@/src/lib/utils';
+import { countPlanExercises, parseCoachPlan, type ParsedPlan } from '@/src/lib/coachPlan/parseCoachPlan';
+import { readPlanFile } from '@/src/lib/coachPlan/readPlanFile';
+import { firstWeekOfYearStartingInMonth, weekStartDateForWeekOfYear } from '@/src/lib/mesocycleWeek';
+
+export interface ImportCoachPlanResult {
+  plan: ParsedPlan;
+  startWeekNumber: number;
+  /** `false` = solo estas semanas; las siguientes quedan vacías hasta el próximo plan. */
+  repeatAfterPlan: boolean;
+  /** Cada cuántas semanas vuelve a empezar el plan (1 = todas las semanas igual). Solo si se repite. */
+  cycleLength: number;
+  clearUntouchedDays: boolean;
+  importMaxes: boolean;
+  /** Es el mismo plan ampliado: las semanas ya vividas se dejan como están. */
+  continuesPreviousPlan: boolean;
+}
+
+export interface LastCoachImport {
+  startWeekNumber: number;
+  /** Semanas que traía el documento anterior. */
+  weeks: number;
+}
+
+interface ImportCoachPlanModalProps {
+  currentWeekNumber: number;
+  /** Año del calendario del plan, para traducir número de semana a fechas. */
+  planYear?: number;
+  /** Última importación de esta rutina: permite continuar el mismo plan al recibir el documento ampliado. */
+  lastImport?: LastCoachImport | null;
+  /** Nombre de la rutina sobre la que se va a volcar. */
+  routineName: string;
+  onClose: () => void;
+  onConfirm: (result: ImportCoachPlanResult) => void | Promise<void>;
+}
+
+const ACCEPT = '.docx,.xlsx,.xls,.csv,.pdf,.txt,.md';
+
+/** «3–9 ago»: las fechas se entienden mejor que el número de semana civil. */
+function formatWeekRange(weekNumber: number, year: number): string {
+  const start = weekStartDateForWeekOfYear(weekNumber, year);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  const sameMonth = start.getMonth() === end.getMonth();
+  const startTxt = start.toLocaleDateString('es-ES', sameMonth ? { day: 'numeric' } : { day: 'numeric', month: 'short' });
+  const endTxt = end.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+  return `${startTxt}–${endTxt}`;
+}
+
+export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
+  currentWeekNumber,
+  planYear = new Date().getFullYear(),
+  lastImport,
+  routineName,
+  onClose,
+  onConfirm,
+}) => {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [reading, setReading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [plan, setPlan] = useState<ParsedPlan | null>(null);
+  const [startWeekNumber, setStartWeekNumber] = useState(currentWeekNumber);
+  /** El número de semana solo se enseña si el usuario pide elegirla a mano. */
+  const [customStartWeek, setCustomStartWeek] = useState(false);
+  /** Un ciclo de varias semanas (tipo power) se repite; un doc de 1 semana suele ser “esta semana y ya”. */
+  const [repeatAfterPlan, setRepeatAfterPlan] = useState(true);
+  /** 0 mientras el usuario borra el campo; al confirmar se usan las semanas del documento. */
+  const [cycleLength, setCycleLength] = useState(0);
+  const [clearUntouchedDays, setClearUntouchedDays] = useState(true);
+  const [importMaxes, setImportMaxes] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const totalExercises = useMemo(() => (plan ? countPlanExercises(plan) : 0), [plan]);
+
+  /** Mismo plan ampliado: se respeta lo ya entrenado y el documento solo manda de esta semana en adelante. */
+  const continuingPlan = !customStartWeek && !!lastImport && startWeekNumber === lastImport.startWeekNumber;
+
+  /** Atajos habituales; el número de semana civil no le dice nada a nadie. */
+  const startOptions = useMemo(() => {
+    const monthOfCurrent = weekStartDateForWeekOfYear(currentWeekNumber, planYear).getMonth();
+    const nextMonthWeek =
+      monthOfCurrent < 11 ? firstWeekOfYearStartingInMonth(planYear, monthOfCurrent + 1) : null;
+    const raw = [
+      ...(lastImport
+        ? [{ id: 'continue', label: 'Continuar el plan', week: lastImport.startWeekNumber }]
+        : []),
+      { id: 'prev', label: 'La anterior', week: currentWeekNumber - 1 },
+      { id: 'this', label: 'Esta semana', week: currentWeekNumber },
+      { id: 'next', label: 'La que viene', week: currentWeekNumber + 1 },
+      { id: 'month', label: 'El mes que viene', week: nextMonthWeek },
+    ];
+    const seen = new Set<number>();
+    return raw.filter(o => {
+      if (o.week === null || o.week < 1 || o.week > 52 || seen.has(o.week)) return false;
+      seen.add(o.week);
+      return true;
+    }) as { id: string; label: string; week: number }[];
+  }, [currentWeekNumber, planYear, lastImport]);
+
+  /** Explica qué pasará con las semanas siguientes según lo elegido. */
+  const cyclePreview = useMemo(() => {
+    if (!plan) return '';
+    const lastPlanWeek = startWeekNumber + plan.weeks.length - 1;
+    if (!repeatAfterPlan) {
+      if (lastPlanWeek >= 52) return 'El plan llega hasta el final del año.';
+      const nextStart = weekStartDateForWeekOfYear(lastPlanWeek + 1, planYear);
+      return `Desde el ${nextStart.toLocaleDateString('es-ES', { day: 'numeric', month: 'long' })} los días quedan vacíos hasta que importes el siguiente.`;
+    }
+    const n = Math.max(plan.weeks.length, cycleLength || plan.weeks.length);
+    if (n === 1) return 'Todas las semanas serán iguales (solo cambian los pesos cuando reimportes).';
+    return `Estas ${n} semanas se repetirán en bucle hasta que importes otro plan.`;
+  }, [plan, cycleLength, startWeekNumber, repeatAfterPlan, planYear]);
+
+  const handleFile = useCallback(async (file: File) => {
+    setReading(true);
+    setError(null);
+    setPlan(null);
+    setFileName(file.name);
+    try {
+      const { text } = await readPlanFile(file);
+      const parsed = parseCoachPlan(text);
+      if (parsed.weeks.length === 0) {
+        setError(
+          'No se ha reconocido ninguna semana. El documento debe indicar "Semana 1", "Semana 2"… y los días ("Lunes:", "Martes:").'
+        );
+        return;
+      }
+      setPlan(parsed);
+      setCycleLength(parsed.weeks.length);
+      setRepeatAfterPlan(parsed.weeks.length > 1);
+      /**
+       * Documento con al menos las mismas semanas que el anterior: casi siempre es el mismo plan con
+       * semanas nuevas al final, así que se propone continuar donde empezó para no descolocarlo.
+       */
+      if (lastImport && parsed.weeks.length >= lastImport.weeks) {
+        setCustomStartWeek(false);
+        setStartWeekNumber(lastImport.startWeekNumber);
+      }
+    } catch (e: any) {
+      setError(e?.message || 'No se ha podido leer el archivo.');
+    } finally {
+      setReading(false);
+    }
+  }, [lastImport]);
+
+  const handleConfirm = async () => {
+    if (!plan) return;
+    setSaving(true);
+    try {
+      await onConfirm({
+        plan,
+        startWeekNumber,
+        repeatAfterPlan,
+        cycleLength: repeatAfterPlan
+          ? Math.max(plan.weeks.length, cycleLength || plan.weeks.length)
+          : plan.weeks.length,
+        clearUntouchedDays,
+        importMaxes,
+        continuesPreviousPlan: continuingPlan,
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (typeof document === 'undefined') return null;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[100001] overflow-y-auto">
+      <div className="flex min-h-[100dvh] items-start justify-center p-3 sm:items-center sm:p-5">
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          onClick={onClose}
+          className="fixed inset-0 bg-black/75 backdrop-blur-sm"
+        />
+        <motion.div
+          initial={{ opacity: 0, scale: 0.96, y: 16 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          onClick={e => e.stopPropagation()}
+          className="relative z-10 flex w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900 max-h-[92dvh]"
+        >
+          <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4 dark:border-slate-700">
+            <div className="min-w-0">
+              <h2 className="text-lg font-black uppercase tracking-tight text-slate-900 dark:text-slate-100">
+                Importar plan
+              </h2>
+              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                Word, Excel, PDF o texto. El archivo se lee en tu dispositivo, no se sube a ningún sitio.
+              </p>
+            </div>
+            <button
+              onClick={onClose}
+              className="rounded-full bg-slate-50 p-2 text-slate-400 transition-colors hover:text-rose-500 dark:bg-slate-800"
+              aria-label="Cerrar"
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={ACCEPT}
+              className="hidden"
+              onChange={e => {
+                const f = e.target.files?.[0];
+                if (f) void handleFile(f);
+                e.target.value = '';
+              }}
+            />
+
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={reading}
+              className="flex w-full flex-col items-center gap-2 rounded-2xl border-2 border-dashed border-indigo-300 bg-indigo-50/60 px-4 py-6 text-indigo-700 transition-all hover:bg-indigo-100 active:scale-[0.99] disabled:opacity-60 dark:border-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-300"
+            >
+              {reading ? <Loader2 size={26} className="animate-spin" /> : <FileUp size={26} />}
+              <span className="text-sm font-black uppercase tracking-wider">
+                {reading ? 'Leyendo…' : fileName ? 'Elegir otro archivo' : 'Elegir archivo'}
+              </span>
+              {fileName && !reading && (
+                <span className="max-w-full truncate text-xs font-medium text-indigo-500 dark:text-indigo-400">
+                  {fileName}
+                </span>
+              )}
+            </button>
+
+            {error && (
+              <div className="mt-4 flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 dark:border-rose-900/60 dark:bg-rose-950/40">
+                <AlertCircle size={18} className="mt-0.5 shrink-0 text-rose-500" />
+                <p className="text-sm font-medium text-rose-700 dark:text-rose-300">{error}</p>
+              </div>
+            )}
+
+            {plan && (
+              <div className="mt-5 space-y-4">
+                <div className="flex items-center gap-2 rounded-xl bg-emerald-50 px-4 py-3 dark:bg-emerald-950/30">
+                  <CheckCircle2 size={18} className="shrink-0 text-emerald-600 dark:text-emerald-400" />
+                  <p className="text-sm font-bold text-emerald-800 dark:text-emerald-200">
+                    {plan.weeks.length} {plan.weeks.length === 1 ? 'semana' : 'semanas'} · {totalExercises} ejercicios
+                    {plan.maxes.length > 0 && ` · ${plan.maxes.length} maximales`}
+                  </p>
+                </div>
+
+                {/* Ajustes del volcado */}
+                <div className="space-y-3 rounded-xl border border-slate-200 p-4 dark:border-slate-700">
+                  <div className="space-y-2">
+                    <p className="text-sm font-bold text-slate-800 dark:text-slate-100">¿Cuándo empieza el plan?</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {startOptions.map(opt => {
+                        const active = !customStartWeek && startWeekNumber === opt.week;
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => {
+                              setCustomStartWeek(false);
+                              setStartWeekNumber(opt.week);
+                            }}
+                            className={cn(
+                              'rounded-xl border-2 px-3 py-2 text-left transition-colors',
+                              opt.id === 'continue' && 'col-span-2',
+                              active
+                                ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40'
+                                : 'border-slate-200 dark:border-slate-600'
+                            )}
+                          >
+                            <span className={cn(
+                              'block text-xs font-black uppercase tracking-wider',
+                              active ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-600 dark:text-slate-300'
+                            )}>
+                              {opt.label}
+                            </span>
+                            <span className="block text-[11px] font-medium text-slate-400">
+                              {opt.id === 'continue'
+                                ? `Sigue donde estaba: la semana 1 del documento vuelve al ${formatWeekRange(opt.week, planYear)}`
+                                : formatWeekRange(opt.week, planYear)}
+                            </span>
+                          </button>
+                        );
+                      })}
+                      <button
+                        type="button"
+                        onClick={() => setCustomStartWeek(true)}
+                        className={cn(
+                          'rounded-xl border-2 px-3 py-2 text-left transition-colors',
+                          customStartWeek
+                            ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40'
+                            : 'border-slate-200 dark:border-slate-600'
+                        )}
+                      >
+                        <span className={cn(
+                          'block text-xs font-black uppercase tracking-wider',
+                          customStartWeek ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-600 dark:text-slate-300'
+                        )}>
+                          Otra semana
+                        </span>
+                        <span className="block text-[11px] font-medium text-slate-400">Elegir a mano</span>
+                      </button>
+                    </div>
+
+                    {customStartWeek && (
+                      <div className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2 dark:bg-slate-800/60">
+                        <span className="text-xs text-slate-600 dark:text-slate-300">
+                          Semana {startWeekNumber || '—'} del año
+                          {startWeekNumber ? ` · ${formatWeekRange(startWeekNumber, planYear)}` : ''}
+                        </span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          autoFocus
+                          value={startWeekNumber === 0 ? '' : startWeekNumber}
+                          onChange={e => {
+                            const raw = e.target.value.replace(/\D/g, '');
+                            setStartWeekNumber(raw === '' ? 0 : Math.min(52, parseInt(raw, 10)));
+                          }}
+                          onBlur={() => {
+                            if (!startWeekNumber) setStartWeekNumber(currentWeekNumber);
+                          }}
+                          className="h-10 w-16 shrink-0 rounded-xl border-2 border-slate-200 text-center text-base font-black text-slate-900 focus:border-indigo-500 focus:outline-none dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+                        />
+                      </div>
+                    )}
+
+                    {continuingPlan && startWeekNumber < currentWeekNumber && (
+                      <p className="rounded-xl bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200">
+                        Lo que ya entrenaste se queda como está: el documento solo cambia de esta semana
+                        ({formatWeekRange(currentWeekNumber, planYear)}) en adelante.
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="space-y-2 border-t border-slate-100 pt-3 dark:border-slate-700">
+                    <p className="text-sm font-bold text-slate-800 dark:text-slate-100">Al acabar el plan</p>
+                    <div className="flex gap-2">
+                      {([
+                        { value: false, label: 'No repetir' },
+                        { value: true, label: 'Repetir en bucle' },
+                      ] as const).map(opt => (
+                        <button
+                          key={String(opt.value)}
+                          type="button"
+                          onClick={() => setRepeatAfterPlan(opt.value)}
+                          className={cn(
+                            'flex-1 rounded-xl border-2 px-3 py-2 text-xs font-black uppercase tracking-wider transition-colors',
+                            repeatAfterPlan === opt.value
+                              ? 'border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300'
+                              : 'border-slate-200 text-slate-500 dark:border-slate-600 dark:text-slate-400'
+                          )}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                    {repeatAfterPlan && (
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-xs text-slate-600 dark:text-slate-300">Se repite cada</span>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            value={cycleLength === 0 ? '' : cycleLength}
+                            onChange={e => {
+                              const raw = e.target.value.replace(/\D/g, '');
+                              setCycleLength(raw === '' ? 0 : Math.min(52, parseInt(raw, 10)));
+                            }}
+                            onBlur={() => {
+                              if (cycleLength < plan.weeks.length) setCycleLength(plan.weeks.length);
+                            }}
+                            className="h-11 w-16 rounded-xl border-2 border-slate-200 text-center text-lg font-black text-slate-900 focus:border-indigo-500 focus:outline-none dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+                          />
+                          <span className="text-xs font-bold uppercase tracking-wider text-slate-400">sem.</span>
+                        </div>
+                      </div>
+                    )}
+                    <p className="text-xs text-slate-500 dark:text-slate-400">{cyclePreview}</p>
+                  </div>
+
+                  <label className="flex cursor-pointer items-start gap-3">
+                    <input
+                      type="checkbox"
+                      checked={clearUntouchedDays}
+                      onChange={e => setClearUntouchedDays(e.target.checked)}
+                      className="mt-0.5 h-5 w-5 shrink-0 accent-indigo-600"
+                    />
+                    <span className="text-xs text-slate-600 dark:text-slate-300">
+                      Vaciar los días que el plan no menciona. Desactívalo si quieres conservar lo que ya tenías
+                      en esos días.
+                    </span>
+                  </label>
+
+                  {plan.maxes.length > 0 && (
+                    <label className="flex cursor-pointer items-start gap-3">
+                      <input
+                        type="checkbox"
+                        checked={importMaxes}
+                        onChange={e => setImportMaxes(e.target.checked)}
+                        className="mt-0.5 h-5 w-5 shrink-0 accent-indigo-600"
+                      />
+                      <span className="text-xs text-slate-600 dark:text-slate-300">
+                        Crear los maximales que faltan:{' '}
+                        <span className="font-semibold">
+                          {plan.maxes.map(m => `${m.name} ${m.value}`).join(', ')}
+                        </span>
+                      </span>
+                    </label>
+                  )}
+                </div>
+
+                {/* Previsualización */}
+                <div className="space-y-3">
+                  {plan.weeks.map((w, i) => (
+                    <div key={`${w.number}-${i}`} className="rounded-xl border border-slate-200 dark:border-slate-700">
+                      <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-4 py-2.5 dark:border-slate-700">
+                        <p className="text-sm font-black uppercase tracking-tight text-slate-800 dark:text-slate-100">
+                          {w.label}
+                        </p>
+                        <p className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400">
+                          → {formatWeekRange(startWeekNumber + i, planYear)}
+                        </p>
+                      </div>
+                      <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                        {w.days.map(d => (
+                          <div key={d.dayIndex} className="px-4 py-2.5">
+                            <p className="mb-1.5 text-[11px] font-black uppercase tracking-wider text-slate-400">
+                              {d.name} · {d.exercises.length}
+                            </p>
+                            <ul className="space-y-1">
+                              {d.exercises.map((e, k) => (
+                                <li key={k} className="flex items-baseline justify-between gap-3 text-xs">
+                                  <span className="min-w-0 flex-1 truncate text-slate-700 dark:text-slate-200">
+                                    {e.name}
+                                    {e.note && (
+                                      <span className="ml-1 text-slate-400 dark:text-slate-500">· {e.note}</span>
+                                    )}
+                                  </span>
+                                  <span className="shrink-0 font-bold text-slate-500 dark:text-slate-400">
+                                    {e.sets}×{e.reps}
+                                    {e.mode === 'seconds' ? '"' : ''}
+                                    {e.weight !== undefined && ` · ${e.weight} kg`}
+                                    {e.rpe && ` · RPE ${e.rpe}`}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {(plan.warnings.length > 0 || plan.unparsedLines.length > 0) && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-800/50 dark:bg-amber-950/30">
+                    <p className="mb-1.5 text-xs font-black uppercase tracking-wider text-amber-700 dark:text-amber-300">
+                      Revisa esto
+                    </p>
+                    <ul className="space-y-1 text-xs text-amber-800 dark:text-amber-200">
+                      {plan.warnings.map((w, i) => (
+                        <li key={`w${i}`}>· {w}</li>
+                      ))}
+                      {plan.unparsedLines.slice(0, 6).map((l, i) => (
+                        <li key={`u${i}`}>· No se ha entendido: «{l}»</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="flex gap-3 border-t border-slate-100 px-5 py-4 dark:border-slate-700">
+            <Button variant="outline" className="flex-1" onClick={onClose} disabled={saving}>
+              Cancelar
+            </Button>
+            <Button
+              variant="primary"
+              className={cn('flex-1', !plan && 'opacity-50')}
+              disabled={!plan || saving || !startWeekNumber}
+              onClick={handleConfirm}
+            >
+              {saving ? <Loader2 size={16} className="mr-2 animate-spin" /> : null}
+              {saving ? 'Aplicando…' : 'Aplicar al plan'}
+            </Button>
+          </div>
+        </motion.div>
+      </div>
+    </div>,
+    document.body
+  );
+};
