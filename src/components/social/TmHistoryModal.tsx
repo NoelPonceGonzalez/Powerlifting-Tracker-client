@@ -91,7 +91,8 @@ export const TmHistoryModal: React.FC<TmHistoryModalProps> = ({ userId, tm, onCl
   return createPortal(
     <AnimatePresence>
       <motion.div
-        className="fixed inset-0 z-[90] flex items-end justify-center bg-slate-950/50 p-0 sm:items-center sm:p-4"
+        // Igual que el editor de plan: se abre sobre el perfil, que va a 99000.
+        className="fixed inset-0 z-[99100] flex items-end justify-center bg-slate-950/50 p-0 sm:items-center sm:p-4"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}

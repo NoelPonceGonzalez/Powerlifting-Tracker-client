@@ -254,7 +254,10 @@ export const CoachAthletePlan: React.FC<CoachAthletePlanProps> = ({ athleteId, a
   const week = template[weekIdx] || template[0];
 
   return createPortal(
-    <div className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/50 p-0 sm:items-center sm:p-4">
+    // Se abre desde el perfil del atleta, que se pinta a 99000 (ver Social.tsx y Profile.tsx).
+    // Con un z-index menor el panel se monta pero queda tapado: el entrenador pulsa
+    // «Editar su plan» y no ve nada.
+    <div className="fixed inset-0 z-[99100] flex items-end justify-center bg-slate-950/50 p-0 sm:items-center sm:p-4">
       <div className="flex max-h-[96vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl dark:bg-slate-900 sm:rounded-3xl">
         <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3 dark:border-slate-800">
           <div className="min-w-0 flex-1">
