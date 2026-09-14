@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Trophy, Mail, Lock, User, ArrowLeft } from 'lucide-react';
+import { Trophy, Mail, Lock, User, ArrowLeft, Eye, EyeOff } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { Card } from '@/src/components/ui/Card';
@@ -12,6 +12,42 @@ function serverUnreachableHint(): string {
   return isLocalDevApiBase()
     ? 'Verifica que el servidor esté en marcha (en local, puerto 3000).'
     : 'Comprueba la conexión y que la URL del API sea la correcta (HTTPS en producción).';
+}
+
+/**
+ * Traduce el fallo a algo que el usuario pueda entender y accionar. Antes se enseñaba el
+ * mensaje crudo del servidor ("El servidor respondió con un formato inválido", rutas, JSON),
+ * que no le dice nada a quien solo quiere entrar a entrenar.
+ */
+function friendlyAuthError(status: number, serverMessage?: string): string {
+  const raw = (serverMessage || '').toLowerCase();
+
+  // 503: la API está viva pero sin base de datos. Es temporal y se arregla solo.
+  if (status === 503 || raw.includes('base de datos no está conectada')) {
+    return 'Estamos reconectando con el servidor. Prueba otra vez en unos segundos.';
+  }
+  if (status === 429) return 'Demasiados intentos. Espera un minuto y vuelve a probarlo.';
+  if (raw.includes('email no verificado')) {
+    return 'Tu correo aún no está verificado. Crea la cuenta otra vez para recibir un código nuevo.';
+  }
+  if (raw.includes('cuenta incompleta')) {
+    return 'Te faltó terminar el registro. Entra en «Crear cuenta» para completarlo.';
+  }
+  if (status === 401 || status === 400 || raw.includes('credenciales')) {
+    return 'Usuario o contraseña incorrectos.';
+  }
+  if (status >= 500) {
+    return 'El servidor ha fallado. Inténtalo de nuevo en un momento.';
+  }
+  return 'No se ha podido iniciar sesión. Inténtalo de nuevo.';
+}
+
+/** Fallos de red o de conexión, antes de que el servidor llegue a responder. */
+function friendlyNetworkError(err: { name?: string; message?: string }): string {
+  if (err?.name === 'AbortError') {
+    return 'El servidor está tardando demasiado. Comprueba tu conexión e inténtalo otra vez.';
+  }
+  return `No hay conexión con el servidor. ${serverUnreachableHint()}`;
 }
 
 interface LoginProps {
@@ -36,6 +72,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
   const [pendingVerificationEmail, setPendingVerificationEmail] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
   // Limpiar errores al montar el componente
   React.useEffect(() => {
@@ -99,9 +136,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
       const baseUrl = getApiBaseUrl();
       const url = `${baseUrl}/api/auth/login`;
       const bodyData = { username: username.trim(), password };
-      
-      console.log('[CLIENT-LOGIN] Enviando login a:', url);
-      
+
       const loginController = new AbortController();
       const loginTimeout = setTimeout(() => loginController.abort(), 15000); // Aumentado a 15 segundos
       
@@ -117,76 +152,22 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
       } catch (fetchError: any) {
         clearTimeout(loginTimeout);
         console.error('[CLIENT-LOGIN] Error en fetch:', fetchError);
-        if (fetchError.name === 'AbortError') {
-          throw new Error('El servidor tardó demasiado en responder. Verifica que esté corriendo y accesible desde el emulador.');
-        }
-        throw fetchError;
+        setError(friendlyNetworkError(fetchError));
+        setIsLoading(false);
+        return;
       }
-      
-      // Verificar si la respuesta es JSON antes de parsear
-      const contentType = res.headers.get('content-type');
-      let data;
-      
-      if (contentType && contentType.includes('application/json')) {
-        try {
-          data = await res.json();
-        } catch (parseError) {
-          console.error('[CLIENT-LOGIN] Error parseando JSON:', parseError);
-          throw new Error('El servidor respondió con un formato inválido. Verifica que el servidor esté corriendo correctamente.');
-        }
-      } else {
-        // Si no es JSON, puede ser HTML (página de error) o texto plano
-        const textResponse = await res.text();
-        console.error('[CLIENT-LOGIN] Respuesta no JSON recibida:', textResponse.substring(0, 200));
-        throw new Error(`El servidor no respondió correctamente. ${serverUnreachableHint()}`);
+
+      // Si no responde JSON, la petición no llegó al API (proxy, HTML de error, 502…).
+      const contentType = res.headers.get('content-type') || '';
+      let data: any = null;
+      if (contentType.includes('application/json')) {
+        data = await res.json().catch(() => null);
       }
-      
-      if (!res.ok) {
-        let errorMsg = data?.error || data?.message || 'No se pudo iniciar sesión';
-        
-        // Filtrar mensajes de autenticación genéricos
-        if (errorMsg.toLowerCase().includes('not authenticated') || 
-            errorMsg.toLowerCase().includes('no autenticado') ||
-            (errorMsg.toLowerCase().includes('token') && !errorMsg.toLowerCase().includes('inválido'))) {
-          errorMsg = 'Credenciales inválidas. Verifica tu usuario y contraseña.';
-        }
-        
-        // Mensajes específicos según el tipo de error
-        if (res.status === 400) {
-          setError(errorMsg || 'Datos inválidos');
-        } else if (res.status === 401) {
-          if (errorMsg.includes('Email no verificado')) {
-            setError('Email no verificado');
-          } else if (errorMsg.includes('Credenciales inválidas')) {
-            setError('Credenciales inválidas');
-          } else if (errorMsg.includes('Cuenta incompleta')) {
-            setError('Cuenta incompleta');
-          } else {
-            setError(errorMsg);
-          }
-        } else if (res.status >= 500) {
-          // Mostrar mensaje de error específico si está disponible
-          const specificError = data?.error || 'Error del servidor';
-          const errorDetails = data?.details || '';
-          const errorType = data?.type || '';
-          
-          let displayMessage = specificError;
-          if (errorDetails && errorDetails !== specificError) {
-            displayMessage = `${specificError}: ${errorDetails}`;
-          }
-          
-          console.error('[CLIENT-LOGIN] Error del servidor:', {
-            status: res.status,
-            error: specificError,
-            details: errorDetails,
-            type: errorType
-          });
-          
-          setError(displayMessage);
-        } else {
-          setError(errorMsg);
-        }
-        
+
+      if (!res.ok || !data) {
+        const serverMessage = data?.error || data?.message;
+        console.error('[CLIENT-LOGIN] Login rechazado:', res.status, serverMessage);
+        setError(friendlyAuthError(res.status, serverMessage));
         setIsLoading(false);
         return;
       }
@@ -210,25 +191,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
       });
     } catch (err: any) {
       console.error('[CLIENT-LOGIN] Error completo:', err);
-      
-      let errorMsg = 'Error al iniciar sesión';
-      
-      if (err.name === 'AbortError' || err.message?.includes('timeout')) {
-        errorMsg = 'El servidor tardó demasiado en responder. Verifica que esté corriendo y accesible.';
-      } else if (err.message) {
-        errorMsg = err.message;
-        // Filtrar mensajes de autenticación
-        if (errorMsg.toLowerCase().includes('not authenticated') || 
-            errorMsg.toLowerCase().includes('no autenticado')) {
-          errorMsg = `No se pudo conectar al servidor. ${serverUnreachableHint()}`;
-        }
-      } else if (err.name === 'TypeError' && (err.message?.includes('fetch') || err.message?.includes('Failed to fetch'))) {
-        errorMsg = `No se pudo conectar al servidor. ${serverUnreachableHint()}`;
-      } else if (err.name === 'NetworkError' || err.message?.includes('Failed to fetch')) {
-        errorMsg = 'Error de red. Verifica tu conexión y que el servidor esté corriendo.';
-      }
-      
-      setError(errorMsg);
+      setError(friendlyNetworkError(err));
     } finally {
       setIsLoading(false);
     }
@@ -548,25 +511,46 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
                   placeholder="juanperez o tu@email.com"
                   type="text"
                   required
+                  autoFocus
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   autoCapitalize="none"
                   autoCorrect="off"
+                  autoComplete="username"
                   spellCheck={false}
                   icon={<User size={18} />}
                 />
                 <Input
                   label="Contraseña"
                   placeholder="••••••••"
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
                   icon={<Lock size={18} />}
+                  trailing={
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((v) => !v)}
+                      className="rounded-xl p-2 text-slate-400 transition-colors hover:text-indigo-600 dark:hover:text-indigo-400"
+                      aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                      title={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                    >
+                      {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                    </button>
+                  }
                 />
-                {error && <p className="text-xs font-bold text-rose-500 dark:text-rose-400 uppercase tracking-wider">{error}</p>}
+                {error && (
+                  <p
+                    role="alert"
+                    className="rounded-xl bg-rose-50 px-3 py-2.5 text-sm font-medium text-rose-700 dark:bg-rose-950/40 dark:text-rose-300"
+                  >
+                    {error}
+                  </p>
+                )}
                 <Button type="submit" className="w-full" size="lg" disabled={isLoading}>
-                  {isLoading ? 'Iniciando sesión...' : 'Iniciar Sesión'}
+                  {isLoading ? 'Entrando…' : 'Entrar'}
                 </Button>
               </form>
             ) : mode === 'register' ? (

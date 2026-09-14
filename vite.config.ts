@@ -17,7 +17,10 @@ export default defineConfig(() => {
     },
     server: {
       host: true,
-      port: 5173,
+      // 5173 es el puerto por defecto de Vite y lo ocupan otros proyectos de la máquina.
+      // `strictPort` evita que arranque en otro sin avisar y acabes mirando otra app.
+      port: 5180,
+      strictPort: true,
       // La UI corre en :5173 y la API en :3000; sin proxy el login pega a /health aquí y devuelve 404.
       proxy: {
         '/api': { target: 'http://127.0.0.1:3000', changeOrigin: true },
