@@ -401,6 +401,16 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
       }
 
       localStorage.setItem('auth_token', data.token);
+      if (avatar) {
+        await fetch(`${baseUrl}/api/auth/me`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${data.token}`,
+          },
+          body: JSON.stringify({ avatar }),
+        }).catch(() => {});
+      }
       onLogin({
         id: String(data.user.id),
         name: data.user.name || 'Atleta',
