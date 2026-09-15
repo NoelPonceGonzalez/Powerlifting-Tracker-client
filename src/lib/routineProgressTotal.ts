@@ -80,6 +80,27 @@ export function computeRoutineProgressTotal(tms: TrainingMax[]): RoutineProgress
 }
 
 /**
+ * Primer valor con el que existió cada TM (alta en la rutina).
+ * Añadir sentadilla a 170 kg es el origen, no una subida desde 0.
+ */
+export function firstKnownTmValues(
+  history: Array<{ trainingMaxes?: Record<string, number> }>,
+  tms: TrainingMax[]
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const h of history) {
+    if (!h.trainingMaxes) continue;
+    for (const [id, val] of Object.entries(h.trainingMaxes)) {
+      if (val != null && Number.isFinite(val) && val > 0 && out[id] == null) out[id] = val;
+    }
+  }
+  for (const tm of tms) {
+    if (out[tm.id] == null) out[tm.id] = tm.value;
+  }
+  return out;
+}
+
+/**
  * IDs de TM presentes en el primer y último snapshot: la ganancia agregada solo debe
  * medirse sobre estos (añadir un TM nuevo no debe inflar +% vs la base).
  */
@@ -108,7 +129,7 @@ export function commonTmIdsForProgressDelta(
 export function progressValueFromHistoryEntry(
   entry: { total: number; trainingMaxes?: Record<string, number> },
   templateTms: TrainingMax[],
-  options?: { onlyIds?: Set<string> }
+  options?: { onlyIds?: Set<string>; missingTmFallback?: Record<string, number> }
 ): number {
   const onlyIds = options?.onlyIds;
   const subset =
@@ -132,7 +153,10 @@ export function progressValueFromHistoryEntry(
   }
   const tms = subset.map((tm) => ({
     ...tm,
-    value: entry.trainingMaxes![tm.id] ?? 0,
+    value:
+      entry.trainingMaxes![tm.id] ??
+      options?.missingTmFallback?.[tm.id] ??
+      tm.value,
   }));
   return computeRoutineProgressTotal(tms).value;
 }

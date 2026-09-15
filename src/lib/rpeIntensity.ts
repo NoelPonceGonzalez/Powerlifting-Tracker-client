@@ -48,6 +48,8 @@ interface PctSource {
   pctPerSet?: number[];
   targetRpe?: number | string;
   reps?: number | string;
+  rpePerSet?: string[];
+  repsPerSet?: string[];
 }
 
 /**
@@ -57,8 +59,10 @@ interface PctSource {
 export function pctForSet(ex: PctSource, setIndex = 0): number {
   const explicit = ex.pctPerSet?.[setIndex] ?? ex.pct;
   if (explicit != null) return explicit;
-  if (ex.targetRpe) {
-    const estimated = pctFromRpe(ex.reps, ex.targetRpe);
+  const rpe = ex.rpePerSet?.[setIndex] || (!String(ex.targetRpe ?? '').match(/[·/,]/) ? ex.targetRpe : undefined);
+  const reps = ex.repsPerSet?.[setIndex] ?? ex.reps;
+  if (rpe) {
+    const estimated = pctFromRpe(reps, rpe);
     if (estimated != null) return estimated;
   }
   return 75;
@@ -76,5 +80,5 @@ export function tmFromWorkingLoad(load: number, pct: number, mode: 'weight' | 'r
 
 /** `true` si el % no lo puso el plan sino la tabla RPE (se marca en la interfaz). */
 export function isPctEstimated(ex: PctSource, setIndex = 0): boolean {
-  return (ex.pctPerSet?.[setIndex] ?? ex.pct) == null && !!ex.targetRpe;
+  return (ex.pctPerSet?.[setIndex] ?? ex.pct) == null && !!(ex.rpePerSet?.[setIndex] || ex.targetRpe);
 }

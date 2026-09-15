@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { flushSync } from 'react-dom';
 import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import * as XLSX from 'xlsx';
-import { LayoutDashboard, Dumbbell, Users, UserRound, Plus } from 'lucide-react';
+import { LayoutDashboard, Dumbbell, Users, UserRound, Plus, MessageCircle, Trophy } from 'lucide-react';
 import { ComposeSheet } from '@/src/components/ComposeSheet';
 
 // Views
@@ -79,6 +79,7 @@ import {
 } from '@/src/lib/cloneFriendRoutine';
 import { buildPlanPatchPayload } from '@/src/lib/planSyncPayload';
 import { mergeCoachImportIntoRoutine } from '@/src/lib/coachPlan/applyCoachPlan';
+import { upsertDayShift, type CalendarDayShift } from '@/src/lib/calendarDayShift';
 import type { ImportCoachPlanResult, LastCoachImport } from '@/src/components/ImportCoachPlanModal';
 import { usePushNotifications } from '@/src/hooks/usePushNotifications';
 import {
@@ -119,7 +120,7 @@ const INITIAL_USER: User = {
   id: 'u-1',
   name: 'Noel Ponce',
   email: 'noel.ponce.gonzalez@gmail.com',
-  avatar: 'https://picsum.photos/seed/noel/200/200',
+  avatar: '',
   bodyWeight: 80,
   theme: 'light'
 };
@@ -252,6 +253,7 @@ interface RoutinePlan {
   cycleLength?: number;
   skippedWeeks?: number[];
   shiftedAtCalendarWeeks?: number[];
+  calendarDayShifts?: CalendarDayShift[];
   /** ISO del servidor: inicio de la rutina (gráficos en 0 antes de esta fecha). */
   createdAt?: string;
   /** ISO: referencia para % en gráficos (sin cambiar TM). */
@@ -442,6 +444,11 @@ function exercisePatchBodyFromUpdates(updates: Partial<PlannedExercise>): Record
   if (updates.weight !== undefined) out.weight = updates.weight;
   if (updates.mode !== undefined) out.mode = updates.mode;
   if (updates.linkedTo !== undefined) out.linkedTo = updates.linkedTo;
+  if (updates.targetRpe !== undefined) out.targetRpe = updates.targetRpe;
+  if (updates.coachNote !== undefined) out.coachNote = updates.coachNote;
+  if (updates.setScheme !== undefined) out.setScheme = updates.setScheme;
+  if (updates.repsPerSet !== undefined) out.repsPerSet = updates.repsPerSet;
+  if (updates.rpePerSet !== undefined) out.rpePerSet = updates.rpePerSet;
   return out;
 }
 
@@ -577,7 +584,7 @@ export default function App() {
       id: String(u._id || u.id),
       name: u.name || 'Atleta',
       email: u.email,
-      avatar: u.avatar || 'https://picsum.photos/seed/user/200/200',
+      avatar: u.avatar || '',
       bodyWeight: u.bodyWeight ?? 80,
       theme: (u.theme ||
         (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
@@ -613,6 +620,12 @@ export default function App() {
   const [composeOpen, setComposeOpen] = useState(false);
   const [checkInIntent, setCheckInIntent] = useState<'now' | 'later' | null>(null);
   const [socialBackTo, setSocialBackTo] = useState<'feed' | 'profile' | 'dashboard'>('feed');
+  const [socialNavTick, setSocialNavTick] = useState(0);
+  const [chatConversationOpen, setChatConversationOpen] = useState(false);
+
+  useEffect(() => {
+    if (view !== 'social') setChatConversationOpen(false);
+  }, [view]);
 
   const goToSocial = useCallback(
     (
@@ -626,12 +639,13 @@ export default function App() {
     ) => {
       const next = tab ?? 'feed';
       setSocialTab(next);
+      setSocialNavTick(t => t + 1);
       setView('social');
       if (opts?.from) {
         setSocialBackTo(opts.from);
       } else if (next === 'friends') {
         setSocialBackTo('profile');
-      } else if (next === 'challenges' || next === 'checkins') {
+      } else if (next === 'challenges' || next === 'checkins' || next === 'chat') {
         setSocialBackTo(view === 'settings' ? 'profile' : view === 'dashboard' ? 'dashboard' : 'feed');
       } else {
         setSocialBackTo('feed');
@@ -694,6 +708,80 @@ export default function App() {
       createdAt: nowIso,
       updatedAt: nowIso,
     };
+  };
+
+  /**
+   * Guarda un punto del historial para que Progreso pueda dibujar el escalón del RM.
+   * Sin esto, el PUT del maximal cambia el número actual y el gráfico se queda plano.
+   */
+  const persistHistorySnapshot = async (entry: HistoryEntry) => {
+    if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) return;
+    try {
+      await apiPost('/api/training-maxes/save-period', {
+        routineId: activeRoutineId,
+        date: entry.date,
+        week: entry.week,
+        year: entry.year,
+        dayOfWeek: entry.dayOfWeek ?? 0,
+        dateISO: entry.dateISO,
+        month: entry.month,
+        rms: entry.rms,
+        total: entry.total,
+        trainingMaxes: entry.trainingMaxes,
+        progressKind: entry.progressKind,
+      });
+    } catch (e) {
+      console.error('[History] Error guardando snapshot de RM:', e);
+    }
+  };
+
+  /**
+   * Al crear o batir un RM: deja el valor viejo como origen (si aún no existe) y
+   * escribe el de hoy. Así la línea de Progreso sube en el punto actual, no en todo.
+   */
+  const recordTmInHistory = (
+    updatedTms: TrainingMax[],
+    updatedRms: RMData,
+    previousTms: TrainingMax[],
+    previousRms: RMData
+  ) => {
+    const anchor = planViewAnchorRef.current;
+    const today = {
+      ...createHistoryEntry(monthLabelFromDateISO(anchor.dateISO), updatedTms, updatedRms, {
+        week: anchor.week,
+        year: anchor.year,
+        dayOfWeek: anchor.dayOfWeek,
+      }),
+      routineId: activeRoutineId,
+    };
+    const needsOrigin = !historyRef.current.some(h => entryDateISO(h) === TM_BASELINE_DATE_ISO);
+    const origin = needsOrigin && previousTms.length
+      ? buildBaselineHistoryEntry(activeRoutineId, previousTms, previousRms, 'Origen')
+      : null;
+
+    setHistory(prev => {
+      let next = [...prev];
+      if (origin && !next.some(h => entryDateISO(h) === TM_BASELINE_DATE_ISO)) {
+        next = [origin, ...next];
+      }
+      const sameDay = (e: HistoryEntry) =>
+        entryDateISO(e) !== TM_BASELINE_DATE_ISO &&
+        e.year === anchor.year &&
+        e.week === anchor.week &&
+        (e.dayOfWeek ?? 0) === anchor.dayOfWeek;
+      next = next.filter(e => !sameDay(e));
+      next.push(today);
+      return next.sort((a, b) => {
+        const c = entryDateISO(a).localeCompare(entryDateISO(b));
+        if (c !== 0) return c;
+        return (a.createdAt || '').localeCompare(b.createdAt || '');
+      });
+    });
+
+    void (async () => {
+      if (origin) await persistHistorySnapshot(origin);
+      await persistHistorySnapshot(today);
+    })();
   };
 
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -909,10 +997,16 @@ export default function App() {
         baselineHydratedForRoutineRef.current = activeRoutineId;
         return prev;
       }
+      // El origen tiene que ser el primer valor guardado, no el RM de hoy:
+      // si usamos los TM actuales, un PR reescribe el pasado y el gráfico sale plano.
+      const firstSnap = prev.find(h => h.trainingMaxes && Object.keys(h.trainingMaxes).length > 0);
+      const originTms = firstSnap
+        ? tms.map(tm => ({ ...tm, value: firstSnap.trainingMaxes![tm.id] ?? tm.value }))
+        : tms;
       const baseline = buildBaselineHistoryEntry(
         activeRoutineId,
-        tms,
-        buildRmsFromLinkedTms(tms, rms),
+        originTms,
+        buildRmsFromLinkedTms(originTms, rms),
         'Origen'
       );
       baselineHydratedForRoutineRef.current = activeRoutineId;
@@ -1076,6 +1170,7 @@ export default function App() {
               cycleLength: created.cycleLength,
               skippedWeeks: created.skippedWeeks,
               shiftedAtCalendarWeeks: created.shiftedAtCalendarWeeks,
+              calendarDayShifts: created.calendarDayShifts,
               weeks: created.weeks,
               versions: created.versions,
               baseTemplate: created.baseTemplate,
@@ -1103,6 +1198,7 @@ export default function App() {
               cycleLength: r.cycleLength,
               skippedWeeks: r.skippedWeeks,
               shiftedAtCalendarWeeks: r.shiftedAtCalendarWeeks,
+              calendarDayShifts: r.calendarDayShifts,
               weeks: r.weeks,
               versions: r.versions,
               baseTemplate: r.baseTemplate,
@@ -1795,29 +1891,13 @@ export default function App() {
         sharedToSocial: !!created.sharedToSocial,
       };
       setTms((prev) => [...prev, newTm]);
-      const currentDate = monthLabelFromDateISO(anchor.dateISO);
-      setHistory((prev) => {
-        if (prev.length === 0) return prev;
-        const last = prev[prev.length - 1];
-        const newTmsRecord = { ...last.trainingMaxes, [newTm.id]: newTm.value };
-        const updatedTmsList = [...tms, newTm];
-        const progNew = computeRoutineProgressTotal(updatedTmsList);
-        const newTotal = progNew.value;
-        const newKind = progNew.kind;
-        const samePeriod =
-          last.year === anchor.year &&
-          last.week === anchor.week &&
-          (last.dayOfWeek ?? 0) === anchor.dayOfWeek;
-        if (samePeriod) {
-          return [...prev.slice(0, -1), { ...last, trainingMaxes: newTmsRecord, total: newTotal, progressKind: newKind }];
-        }
-        const entry = createHistoryEntry(currentDate, updatedTmsList, rms, {
-          week: anchor.week,
-          year: anchor.year,
-          dayOfWeek: anchor.dayOfWeek,
-        });
-        return [...prev, entry];
-      });
+      const updatedTmsList = [...tms, newTm];
+      const linked = newTm.linkedExercise;
+      const updatedRms =
+        linked === 'bench' || linked === 'squat' || linked === 'deadlift'
+          ? { ...rms, [linked]: newTm.value }
+          : rms;
+      recordTmInHistory(updatedTmsList, updatedRms, tms, rms);
       bumpRoutineDataRefresh();
     } catch (e) {
       console.error('[TM] Error creando:', e);
@@ -1867,7 +1947,23 @@ export default function App() {
     }
   };
 
-  const handleUpdateTM = (id: string, updates: Partial<TrainingMax>) => {
+  /**
+   * `kind` decide qué le pasa al historial, y con él a los gráficos de Progreso:
+   *
+   * - `'record'` (marca nueva): el pasado no se toca. El gráfico coge el valor nuevo solo
+   *   en el punto de hoy, así que la línea escalona y se ve la mejora. Además el servidor
+   *   avisa a los amigos del PR.
+   * - `'correction'` (estaba mal apuntado): se reescribe el RM en todo el historial, porque
+   *   el valor viejo nunca fue real.
+   *
+   * Antes toda edición era corrección: subir un RM reescribía el pasado y la gráfica salía
+   * plana, como si nunca hubieras progresado.
+   */
+  const handleUpdateTM = (
+    id: string,
+    updates: Partial<TrainingMax>,
+    kind: 'record' | 'correction' = 'record'
+  ) => {
     const prevTms = tms;
     const prevRms = rms;
     setTms(prev => prev.map(tm => tm.id === id ? { ...tm, ...updates } : tm));
@@ -1875,41 +1971,35 @@ export default function App() {
     if (currentTm?.linkedExercise && updates.value !== undefined) {
       setRms(prev => ({ ...prev, [currentTm.linkedExercise!]: updates.value! }));
     }
-    // Actualizar historial para que Progreso refleje el cambio al instante
     if (updates.value !== undefined) {
-      const anchor = planViewAnchorRef.current;
-      const currentDate = monthLabelFromDateISO(anchor.dateISO);
-      const { week, year, dayOfWeek: d } = anchor;
       const linked = currentTm?.linkedExercise;
-      setHistory(prev => {
-        if (prev.length === 0) return prev;
-        const last = prev[prev.length - 1];
-        const newTms = { ...last.trainingMaxes, [id]: updates.value! };
-        const newRms = linked ? { ...rms, [linked]: updates.value! } : rms;
-        const updatedTmsList = tms.map(t => t.id === id ? { ...t, value: updates.value! } : t);
-        const progUp = computeRoutineProgressTotal(updatedTmsList);
-        const newTotal = progUp.value;
-        const newKind = progUp.kind;
-        const samePeriod =
-          last.year === year && last.week === week && (last.dayOfWeek ?? 0) === d;
-        if (samePeriod) {
-          const iso = anchor.dateISO;
-          return [
-            ...prev.slice(0, -1),
-            {
-              ...last,
-              trainingMaxes: newTms,
-              rms: newRms,
-              total: newTotal,
-              progressKind: newKind,
-              dateISO: iso,
-              month: calendarMonth1FromDateISO(iso),
-            },
-          ];
-        }
-        const entry = createHistoryEntry(currentDate, updatedTmsList, newRms, { week, year, dayOfWeek: d });
-        return [...prev, { ...entry, routineId: activeRoutineId }];
-      });
+      const newRms =
+        linked === 'bench' || linked === 'squat' || linked === 'deadlift'
+          ? { ...rms, [linked]: updates.value! }
+          : rms;
+      const updatedTmsList = tms.map(t => (t.id === id ? { ...t, ...updates, value: updates.value! } : t));
+      if (kind === 'record') {
+        recordTmInHistory(updatedTmsList, newRms, prevTms, prevRms);
+      } else {
+        setHistory(prev => {
+          if (prev.length === 0) return prev;
+          return prev.map((entry) => {
+            const nextTm = { ...(entry.trainingMaxes || {}), [id]: updates.value! };
+            const snapshotTms = updatedTmsList.map((t) => ({
+              ...t,
+              value: t.id === id ? updates.value! : (nextTm[t.id] ?? t.value),
+            }));
+            const prog = computeRoutineProgressTotal(snapshotTms);
+            return {
+              ...entry,
+              trainingMaxes: nextTm,
+              rms: linked && entry.rms ? { ...entry.rms, [linked]: updates.value! } : newRms,
+              total: prog.value,
+              progressKind: prog.kind,
+            };
+          });
+        });
+      }
     }
     (async () => {
       if (!/^[a-f0-9]{24}$/i.test(id)) return;
@@ -1917,6 +2007,7 @@ export default function App() {
       try {
         await apiPut(`/api/training-maxes/${id}`, {
           ...updates,
+          correction: updates.value !== undefined && kind === 'correction' ? true : undefined,
           routineId: activeRoutineId,
           updatedAt: dateISOToUtcNoonISO(planViewAnchorRef.current.dateISO),
         });
@@ -1965,6 +2056,7 @@ export default function App() {
         cycleLength: created.cycleLength,
         skippedWeeks: created.skippedWeeks,
         shiftedAtCalendarWeeks: created.shiftedAtCalendarWeeks,
+        calendarDayShifts: created.calendarDayShifts,
         weeks: created.weeks,
         versions: created.versions,
         baseTemplate: created.baseTemplate,
@@ -2079,6 +2171,7 @@ export default function App() {
         cycleLength: created.cycleLength,
         skippedWeeks: created.skippedWeeks,
         shiftedAtCalendarWeeks: created.shiftedAtCalendarWeeks,
+        calendarDayShifts: created.calendarDayShifts,
         weeks: created.weeks,
         versions: created.versions,
         baseTemplate: created.baseTemplate,
@@ -2145,6 +2238,7 @@ export default function App() {
           cycleLength: created.cycleLength,
           skippedWeeks: created.skippedWeeks,
           shiftedAtCalendarWeeks: created.shiftedAtCalendarWeeks,
+          calendarDayShifts: created.calendarDayShifts,
           weeks: created.weeks,
           versions: created.versions,
           baseTemplate: created.baseTemplate,
@@ -3510,6 +3604,38 @@ export default function App() {
     }
   };
 
+  /** Esta semana civil: no voy un día y se corren las sesiones que quedan. La siguiente semana no se toca. */
+  const handleSkipDay = async (dayIdx: number, year: number, week: number) => {
+    const routine = routines.find((r) => r.id === activeRoutineId);
+    if (!routine || routine.id.startsWith('routine-')) return;
+    const current = routine.calendarDayShifts ?? [];
+    const row = current.find((s) => s.year === year && s.week === week);
+    const skipped = row?.skippedDays ?? [];
+    const nextSkipped = skipped.includes(dayIdx)
+      ? skipped.filter((d) => d !== dayIdx)
+      : [...skipped, dayIdx];
+    const next = upsertDayShift(current, year, week, nextSkipped);
+    updateActiveRoutine((r) => ({ ...r, calendarDayShifts: next }));
+    try {
+      await apiPut(`/api/routines/${routine.id}`, { calendarDayShifts: next });
+    } catch (e) {
+      console.error('[Routine] Error guardando salto de día:', e);
+    }
+  };
+
+  /** Un toque: esta semana vuelve a L-M-J-V. Quien no pulse, la que viene ya es así sola. */
+  const handleResetDayShifts = async (year: number, week: number) => {
+    const routine = routines.find((r) => r.id === activeRoutineId);
+    if (!routine || routine.id.startsWith('routine-')) return;
+    const next = upsertDayShift(routine.calendarDayShifts ?? [], year, week, []);
+    updateActiveRoutine((r) => ({ ...r, calendarDayShifts: next }));
+    try {
+      await apiPut(`/api/routines/${routine.id}`, { calendarDayShifts: next });
+    } catch (e) {
+      console.error('[Routine] Error restaurando días del plan:', e);
+    }
+  };
+
   const handleToggleHiddenRoutine = async (routineId: string) => {
     const routine = routines.find((r) => r.id === routineId);
     if (!routine) return;
@@ -3556,14 +3682,14 @@ export default function App() {
     // `reducedMotion="user"`: si el móvil tiene activado «reducir movimiento», motion
     // deja solo las opacidades y se salta desplazamientos y escalados.
     <MotionConfig reducedMotion="user">
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 font-sans selection:bg-indigo-100 selection:text-indigo-900 dark:selection:bg-indigo-950/80 dark:selection:text-indigo-200 overflow-hidden px-2 max-[400px]:px-2 sm:px-4 md:px-6 py-2 sm:py-4 relative">
+    <div className="relative h-dvh max-h-dvh overflow-hidden bg-[var(--app-bg)] font-sans selection:bg-indigo-100 selection:text-indigo-900 dark:selection:bg-indigo-950/80 dark:selection:text-indigo-200">
       {isSwitchingAccount && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/50 backdrop-blur-sm">
           <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
         </div>
       )}
-      <motion.div 
-        className="min-h-screen touch-pan-y bg-[var(--app-bg)]"
+      <motion.div
+        className="app-scroll h-full overflow-y-auto overflow-x-hidden overscroll-y-contain touch-pan-y bg-[var(--app-bg)]"
       >
         <AnimatePresence mode="wait">
           {view === 'dashboard' && (
@@ -3665,7 +3791,10 @@ export default function App() {
                 lastCoachImport={lastCoachImport}
                 skippedWeeks={activeRoutine?.skippedWeeks ?? []}
                 shiftedAtCalendarWeeks={activeRoutine?.shiftedAtCalendarWeeks ?? []}
+                calendarDayShifts={activeRoutine?.calendarDayShifts ?? []}
                 onSkipWeek={handleSkipWeek}
+                onSkipDay={handleSkipDay}
+                onResetDayShifts={handleResetDayShifts}
                 onRoutineProgressCheckpoint={
                   activeRoutine &&
                   !(activeRoutine.id.startsWith('routine-') && activeRoutine.id.length < 20) &&
@@ -3686,6 +3815,7 @@ export default function App() {
               challenges={challenges}
               checkIns={checkIns}
               initialTab={socialTab}
+              socialNavTick={socialNavTick}
               openCheckInModalSignal={openCheckInModalSignal}
               openPublishSignal={openPublishSignal}
               checkInIntent={checkInIntent}
@@ -3710,6 +3840,7 @@ export default function App() {
               onGoToProfile={() => setView('settings')}
               onGoToDashboard={() => setView('dashboard')}
               socialBackTo={socialBackTo}
+              onChatConversationChange={setChatConversationOpen}
             />
           )}
           {view === 'settings' && (
@@ -3732,64 +3863,106 @@ export default function App() {
         </AnimatePresence>
       </motion.div>
       
-      {/* Floating Bottom Navigation */}
-      <nav className="fixed bottom-1 max-[360px]:bottom-1 sm:bottom-6 left-1 right-1 max-[360px]:left-1 max-[360px]:right-1 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 max-w-md sm:max-w-none mx-auto bg-white/25 dark:bg-slate-950/70 backdrop-blur-[32px] sm:backdrop-blur-[48px] border border-white/15 dark:border-slate-800/50 shadow-2xl shadow-black/5 dark:shadow-black/50 rounded-xl max-[360px]:rounded-lg sm:rounded-2xl md:rounded-[2rem] px-1.5 max-[360px]:px-1 sm:px-6 py-1.5 max-[360px]:py-1 sm:py-3 flex items-center justify-between sm:gap-6 gap-0.5 max-[360px]:gap-0 z-50">
-        <button 
-          onClick={() => setView('dashboard')} 
-          className={cn(
-            "flex flex-col items-center gap-0.5 sm:gap-1 transition-all duration-300 min-w-0 flex-1 min-h-[44px] justify-center py-1",
-            view === 'dashboard' ? "text-indigo-600 dark:text-indigo-400" : "text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-200"
-          )}
-        >
-          <LayoutDashboard className="size-5 max-[360px]:size-4 sm:size-5" strokeWidth={view === 'dashboard' ? 2.5 : 2} />
-          <span className="text-[11px] max-[360px]:text-[10px] sm:text-xs font-semibold truncate w-full text-center">Progreso</span>
-        </button>
-        <button 
-          onClick={() => {
-            setProgramScreen('plan');
-            setView('program');
-          }} 
-          className={cn(
-            "flex flex-col items-center gap-0.5 sm:gap-1 transition-all duration-300 min-w-0 flex-1 min-h-[44px] justify-center py-1",
-            view === 'program' ? "text-indigo-600 dark:text-indigo-400" : "text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-200"
-          )}
-        >
-          <Dumbbell className="size-5 max-[360px]:size-4 sm:size-5" strokeWidth={view === 'program' ? 2.5 : 2} />
-          <span className="text-[11px] max-[360px]:text-[10px] sm:text-xs font-semibold truncate w-full text-center">Rutina</span>
-        </button>
+      {!chatConversationOpen && <nav
+        className="app-tabbar fixed bottom-4 left-3 right-3 z-50 mx-auto flex max-w-lg items-center gap-0.5 px-1.5 py-1 sm:bottom-6"
+        style={{ WebkitTapHighlightColor: 'transparent' }}
+      >
+        <div className="grid min-w-0 flex-1 grid-cols-3">
+          <button
+            type="button"
+            onClick={() => setView('dashboard')}
+            className={cn(
+              "flex min-h-[46px] flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
+              view === 'dashboard'
+                ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
+                : "text-slate-400 dark:text-slate-500"
+            )}
+          >
+            <LayoutDashboard className="size-[17px]" strokeWidth={view === 'dashboard' ? 2.35 : 1.9} />
+            <span>Progreso</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setProgramScreen('plan');
+              setView('program');
+            }}
+            className={cn(
+              "flex min-h-[46px] flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
+              view === 'program'
+                ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
+                : "text-slate-400 dark:text-slate-500"
+            )}
+          >
+            <Dumbbell className="size-[17px]" strokeWidth={view === 'program' ? 2.35 : 1.9} />
+            <span>Rutina</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => goToSocial('feed')}
+            className={cn(
+              "flex min-h-[46px] flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
+              view === 'social' && socialTab === 'feed'
+                ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
+                : "text-slate-400 dark:text-slate-500"
+            )}
+          >
+            <Users className="size-[17px]" strokeWidth={view === 'social' && socialTab === 'feed' ? 2.35 : 1.9} />
+            <span>Inicio</span>
+          </button>
+        </div>
+
         <button
           type="button"
           onClick={() => setComposeOpen(true)}
-          className="flex min-h-[44px] min-w-0 flex-1 flex-col items-center justify-center gap-0.5 py-1 sm:gap-1"
+          className="mx-0.5 mb-px flex size-12 shrink-0 items-center justify-center rounded-full border border-white/55 bg-indigo-500/90 text-white shadow-[0_10px_28px_rgba(79,70,229,0.28)] outline-none backdrop-blur-xl focus:outline-none focus-visible:outline-none dark:border-white/15 dark:bg-indigo-500/80"
           aria-label="Publicar o avisar"
         >
-          <span className="flex size-9 items-center justify-center rounded-full bg-indigo-600 text-white shadow-md shadow-indigo-500/30 dark:bg-indigo-500">
-            <Plus className="size-5" strokeWidth={2.5} />
-          </span>
+          <Plus className="size-5" strokeWidth={2.4} />
         </button>
-        <button 
-          type="button"
-          onClick={() => goToSocial('feed')}
-          aria-label="Inicio" 
-          className={cn(
-            "flex flex-col items-center gap-0.5 sm:gap-1 transition-all duration-300 min-w-0 flex-1 min-h-[44px] justify-center py-1",
-            view === 'social' ? "text-indigo-600 dark:text-indigo-400" : "text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-200"
-          )}
-        >
-          <Users className="size-5 max-[360px]:size-4 sm:size-5" strokeWidth={view === 'social' ? 2.5 : 2} />
-          <span className="text-[11px] max-[360px]:text-[10px] sm:text-xs font-semibold truncate w-full text-center">Inicio</span>
-        </button>
-        <button 
-          onClick={() => setView('settings')} 
-          className={cn(
-            "flex flex-col items-center gap-0.5 sm:gap-1 transition-all duration-300 min-w-0 flex-1 min-h-[44px] justify-center py-1",
-            view === 'settings' ? "text-indigo-600 dark:text-indigo-400" : "text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-200"
-          )}
-        >
-          <UserRound className="size-5 max-[360px]:size-4 sm:size-5" strokeWidth={view === 'settings' ? 2.5 : 2} />
-          <span className="text-[11px] max-[360px]:text-[10px] sm:text-xs font-semibold truncate w-full text-center">Perfil</span>
-        </button>
-      </nav>
+
+        <div className="grid min-w-0 flex-1 grid-cols-3">
+          <button
+            type="button"
+            onClick={() => goToSocial('chat')}
+            className={cn(
+              "flex min-h-[46px] flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
+              view === 'social' && socialTab === 'chat'
+                ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
+                : "text-slate-400 dark:text-slate-500"
+            )}
+          >
+            <MessageCircle className="size-[17px]" strokeWidth={view === 'social' && socialTab === 'chat' ? 2.35 : 1.9} />
+            <span>Chat</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => goToSocial('challenges')}
+            className={cn(
+              "flex min-h-[46px] flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
+              view === 'social' && socialTab === 'challenges'
+                ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
+                : "text-slate-400 dark:text-slate-500"
+            )}
+          >
+            <Trophy className="size-[17px]" strokeWidth={view === 'social' && socialTab === 'challenges' ? 2.35 : 1.9} />
+            <span>Torneos</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setView('settings')}
+            className={cn(
+              "flex min-h-[46px] flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
+              view === 'settings'
+                ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
+                : "text-slate-400 dark:text-slate-500"
+            )}
+          >
+            <UserRound className="size-[17px]" strokeWidth={view === 'settings' ? 2.35 : 1.9} />
+            <span>Perfil</span>
+          </button>
+        </div>
+      </nav>}
       <ComposeSheet
         open={composeOpen}
         onClose={() => setComposeOpen(false)}

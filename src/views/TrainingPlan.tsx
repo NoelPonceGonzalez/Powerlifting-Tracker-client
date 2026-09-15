@@ -2,23 +2,19 @@ import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallba
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
-  Calendar, 
   Activity, 
   CheckCircle2, 
   Download, 
   Plus,
   Trash2,
-  Settings2,
   ChevronLeft,
   ChevronRight,
   Link as LinkIcon,
-  ChevronDown,
   Target,
   Gauge,
   Clock,
   MessageSquare,
   X,
-  Lightbulb,
   SkipForward,
   Loader2,
   CornerLeftDown,
@@ -32,13 +28,26 @@ import { LogEntry, TrainingMax, TrainingWeek, TrainingDay, PlannedExercise, Exer
 import { cn } from '@/src/lib/utils';
 import { mediaUrl } from '@/src/lib/api';
 import { SCREEN_TRANSITION, VIEW_TRANSITION } from '@/src/lib/motionPresets';
+import { GlassModal } from '@/src/components/ui/GlassModal';
+import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
+import { useEscapeClose } from '@/src/lib/useEscapeClose';
+import { applyDaySkips, shiftsForCalendarWeek, type CalendarDayShift } from '@/src/lib/calendarDayShift';
 import { firstWeekOfYearStartingInMonth } from '@/src/lib/mesocycleWeek';
 import { normalizeExerciseNameKey } from '@/src/lib/normalizeExerciseName';
 import { getTMsForView } from '@/src/lib/historyTm';
 import { dateISOFromYearWeekDay, weekOfYearFromDate } from '@/src/lib/calendarWeekDate';
 import { getLogEntryForExercise, routineLogKeyFromExerciseId, routineLogKeyFromIds } from '@/src/lib/routineLogKey';
 import { resolveTmForAutoBump } from '@/src/lib/trainingMaxResolve';
-import { isPctEstimated, pctForSet as planPctForSet, tmFromWorkingLoad } from '@/src/lib/rpeIntensity';
+import { pctForSet as planPctForSet } from '@/src/lib/rpeIntensity';
+import {
+  blocksFromPlanned,
+  exerciseRpeLabel,
+  exerciseSchemeLabel,
+  isMultiBlock,
+  mergeAdjacentSameExercises,
+  plannedRepsForSet,
+  plannedRpeForSet,
+} from '@/src/lib/exerciseScheme';
 import type { ImportCoachPlanResult, LastCoachImport } from '@/src/components/ImportCoachPlanModal';
 
 /** Los lectores de Word/Excel/PDF solo se descargan si el usuario abre el importador. */
@@ -66,6 +75,33 @@ interface DayTypeBadgeProps {
   onClick?: () => void;
 }
 
+/** Un chip por bloque del plan: 1×2 @8.5, 3×4 @6.5… así no se junta todo en 1×2+3×4+… */
+const PlanBlockChips = ({
+  exercise,
+  className,
+}: {
+  exercise: PlannedExercise;
+  className?: string;
+}) => {
+  const blocks = blocksFromPlanned(exercise);
+  if (blocks.length < 2) return null;
+  return (
+    <div className={cn('flex flex-wrap gap-1.5', className)}>
+      {blocks.map((b, i) => (
+        <span
+          key={`${b.sets}-${b.reps}-${b.rpe ?? ''}-${i}`}
+          className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-bold text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
+        >
+          {b.sets}×{b.reps}
+          {b.rpe ? (
+            <span className="font-black text-amber-600 dark:text-amber-400">@{b.rpe}</span>
+          ) : null}
+        </span>
+      ))}
+    </div>
+  );
+};
+
 const DayTypeBadge = ({ type, onClick }: DayTypeBadgeProps) => {
   const config = {
     workout: { label: 'Entrenamiento', color: 'bg-indigo-100 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400' },
@@ -76,7 +112,7 @@ const DayTypeBadge = ({ type, onClick }: DayTypeBadgeProps) => {
     <button 
       onClick={onClick}
       className={cn(
-        "px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest transition-all",
+        "px-2.5 py-1 rounded-full text-[11px] font-medium transition-all",
         config[type].color,
         onClick && "hover:scale-105 active:scale-95"
       )}
@@ -108,7 +144,11 @@ interface TrainingPlanViewProps {
   onViewAsOfWeekChange?: (week: number | null) => void;
   isHistoryMode?: boolean;
   versionWeeks?: number[];
-  onUpdateTM: (id: string, updates: Partial<TrainingMax>) => void;
+  /**
+   * `kind` distingue batir la marca de corregir un dato mal apuntado: la primera deja el
+   * historial intacto para que el gráfico de Progreso escalone, la segunda lo reescribe.
+   */
+  onUpdateTM: (id: string, updates: Partial<TrainingMax>, kind?: 'record' | 'correction') => void;
   /** Crea TM en servidor solo al confirmar el modal (nombre + valor por el usuario). */
   onCreateTM: (payload: {
     name: string;
@@ -140,6 +180,9 @@ interface TrainingPlanViewProps {
   /** Semanas civiles donde «Saltar la semana» desplazó el ciclo (solo block mode). */
   shiftedAtCalendarWeeks?: number[];
   onSkipWeek?: (weekNumber: number, mode: 'shift' | 'skip_only') => void;
+  calendarDayShifts?: CalendarDayShift[];
+  onSkipDay?: (dayIdx: number, year: number, week: number) => void;
+  onResetDayShifts?: (year: number, week: number) => void;
   /** Reinicia la referencia de % en gráficos (no modifica TM). */
   onRoutineProgressCheckpoint?: () => void | Promise<void>;
   routineProgressCheckpointLoading?: boolean;
@@ -189,7 +232,10 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   lastCoachImport,
   skippedWeeks = [],
   shiftedAtCalendarWeeks = [],
+  calendarDayShifts = [],
   onSkipWeek,
+  onSkipDay,
+  onResetDayShifts,
   onRoutineProgressCheckpoint,
   routineProgressCheckpointLoading = false,
   planViewAnchorRef
@@ -204,10 +250,10 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   const [viewMode, setViewMode] = useState<'daily' | 'weekly'>('daily');
   const [showMonthSelector, setShowMonthSelector] = useState(false);
   const [expandedExerciseId, setExpandedExerciseId] = useState<string | null>(null);
-  const [showDayTypeDropdown, setShowDayTypeDropdown] = useState(false);
   const [showSkipDropdown, setShowSkipDropdown] = useState(false);
   const [rmListOpen, setRmListOpen] = useState(false);
   const [logExtrasOpen, setLogExtrasOpen] = useState(false);
+  const [logSetExtrasOpen, setLogSetExtrasOpen] = useState(false);
   const [savingSession, setSavingSession] = useState(false);
   
   // Add Exercise Modal State
@@ -215,6 +261,10 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   const [editingTM, setEditingTM] = useState<TrainingMax | null>(null);
   const [tmModalError, setTmModalError] = useState('');
   const [newExModalError, setNewExModalError] = useState('');
+  useEscapeClose(showAddModal, () => {
+    setNewExModalError('');
+    setShowAddModal(false);
+  });
   const [loggingExercise, setLoggingExercise] = useState<{ weekId: string, dayId: string, exercise: PlannedExercise } | null>(null);
   const [setMediaViewer, setSetMediaViewer] = useState<{
     title: string;
@@ -227,10 +277,27 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   const setMediaInputRef = useRef<HTMLInputElement>(null);
   const pendingSetMedia = useRef<{ logId: string; setIdx: number } | null>(null);
 
+  /**
+   * Al cambiar el valor de un RM hace falta saber qué ha pasado: si has batido la marca
+   * el historial se deja intacto y el gráfico de Progreso escalona; si estaba mal apuntado
+   * se reescribe el pasado. Se propone lo más probable según si el número sube o baja.
+   */
+  const [tmChangeKind, setTmChangeKind] = useState<'record' | 'correction' | null>(null);
+
   const closeTmModal = () => {
     setEditingTM(null);
     setTmModalError('');
+    setTmChangeKind(null);
   };
+
+  const storedTmValue =
+    editingTM && editingTM.id !== NEW_TM_DRAFT_ID
+      ? trainingMaxes.find(t => t.id === editingTM.id)?.value ?? null
+      : null;
+  const tmValueChanged =
+    storedTmValue !== null && !!editingTM && editingTM.value > 0 && editingTM.value !== storedTmValue;
+  const tmChangeKindEffective: 'record' | 'correction' =
+    tmChangeKind ?? (storedTmValue !== null && editingTM && editingTM.value > storedTmValue ? 'record' : 'correction');
 
   // Bloquear scroll del body cuando el modal de ejercicio está abierto
   useEffect(() => {
@@ -253,13 +320,9 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
 
   /** Borrador local para poder vaciar el campo al editar (evita 3→32 al no poder borrar). Se confirma en onBlur. */
   const [showImportModal, setShowImportModal] = useState(false);
-  const lastOpenImportSignal = useRef(0);
-  useEffect(() => {
-    if (openImportSignal > 0 && openImportSignal !== lastOpenImportSignal.current && onImportCoachPlan) {
-      lastOpenImportSignal.current = openImportSignal;
-      setShowImportModal(true);
-    }
-  }, [openImportSignal, onImportCoachPlan]);
+  useIncrementSignal('import-plan', openImportSignal, () => {
+    if (onImportCoachPlan) setShowImportModal(true);
+  });
   const [setsInputDraft, setSetsInputDraft] = useState<Record<string, string>>({});
   const [repsInputDraft, setRepsInputDraft] = useState<Record<string, string>>({});
   const [pctInputDraft, setPctInputDraft] = useState<Record<string, string>>({});
@@ -289,7 +352,20 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   };
   const getMonthForWeek = (weekNum: number): string => months[getDateForWeekOfYear(weekNum).getMonth()];
   const currentWeek = weeks[activeWeekIdx];
-  const currentDay = currentWeek?.days[activeDayIdx];
+  const skippedDaysThisWeek = useMemo(
+    () => shiftsForCalendarWeek(calendarDayShifts, displayPlanYear, displayWeekNum),
+    [calendarDayShifts, displayPlanYear, displayWeekNum]
+  );
+  const displayDays = useMemo(
+    () => (currentWeek ? applyDaySkips(currentWeek.days, skippedDaysThisWeek) : []),
+    [currentWeek, skippedDaysThisWeek]
+  );
+  const templateDay = currentWeek?.days[activeDayIdx];
+  const currentDay = displayDays[activeDayIdx] ?? templateDay;
+  const dayExercises = useMemo(
+    () => mergeAdjacentSameExercises(currentDay?.exercises ?? []),
+    [currentDay]
+  );
   const currentMonth = getMonthForWeek(displayWeekNum);
   /** Cuántas semanas se han desplazado por «Saltar la semana» antes de la semana actual (block mode). */
   const weekShift = useMemo(() => {
@@ -370,8 +446,8 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     if (!loggingExercise) return null;
     const w = weeks.find(x => x.id === loggingExercise.weekId);
     const d = w?.days.find(x => x.id === loggingExercise.dayId);
-    const list = d?.exercises ?? [];
-    const idx = list.findIndex(e => e.id === loggingExercise.exercise.id);
+    const list = mergeAdjacentSameExercises(d?.exercises ?? []);
+    const idx = list.findIndex(e => e.id === loggingExercise.exercise.id || e.mergedFromIds?.includes(loggingExercise.exercise.id));
     if (idx < 0) return null;
     return { list, idx, next: list[idx + 1] };
   }, [loggingExercise, weeks]);
@@ -383,6 +459,19 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     if (w && d) return routineLogKeyFromIds(w, d, loggingExercise.exercise);
     return routineLogKeyFromExerciseId(loggingExercise.exercise.id) ?? `${loggingExercise.weekId}-${loggingExercise.dayId}-${loggingExercise.exercise.id}`;
   }, [loggingExercise, weeks]);
+
+  useEffect(() => {
+    if (!loggingExercise || !modalLogKey) return;
+    const ex = loggingExercise.exercise;
+    const n = Math.max(1, ex.sets || 1);
+    for (let i = 0; i < n; i++) {
+      const planned = plannedRepsForSet(ex, i);
+      if (planned <= 0) continue;
+      if (logs[modalLogKey]?.sets?.[i]?.reps == null) {
+        onSetLogChange(modalLogKey, i, { reps: planned });
+      }
+    }
+  }, [loggingExercise, modalLogKey]);
 
   /**
    * Solo el día civil de “hoy” en esta misma semana del plan usa TM vivos (`trainingMaxes`).
@@ -567,14 +656,19 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     }
   };
 
-  /** Una serie cuenta como registrada cuando tiene reps y, si es de peso, también kg. */
-  const isSetLogged = (exercise: PlannedExercise, setLog?: SetLog) =>
-    !!setLog && setLog.reps !== null && (exercise.mode !== 'weight' || setLog.weight !== null);
+  /** Una serie cuenta como registrada cuando tiene reps y, si el plan pide kilos, también kg. */
+  const isSetLogged = (exercise: PlannedExercise, setLog?: SetLog) => {
+    if (!setLog || setLog.reps === null) return false;
+    if (exercise.mode !== 'weight') return true;
+    if (setLog.weight != null && setLog.weight > 0) return true;
+    const hasPlannedLoad = !!resolveEffectiveTM(exercise) || (exercise.weight || 0) > 0;
+    return !!setLog.completed && !hasPlannedLoad;
+  };
 
   /** Lo que el plan pide para cada serie: la base de los atajos «según el plan». */
   const plannedSetsFor = (exercise: PlannedExercise) => {
     const tm = resolveEffectiveTM(exercise);
-    const plannedReps = parseInt(String(exercise.reps), 10) || 0;
+    const plannedReps = plannedRepsForSet(exercise, 0);
     const setCount = Math.max(1, exercise.sets || 1);
     const weightForSet = (idx: number) => {
       const pct = planPctForSet(exercise, idx);
@@ -585,7 +679,10 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
       }
       return exercise.mode === 'weight' ? (exercise.weight || 0) : 0;
     };
-    return { tm, plannedReps, setCount, weightForSet, canFill: plannedReps > 0 || weightForSet(0) > 0 };
+    const canFill = Array.from({ length: setCount }, (_, i) =>
+      plannedRepsForSet(exercise, i) > 0 || weightForSet(i) > 0
+    ).some(Boolean);
+    return { tm, plannedReps, setCount, weightForSet, canFill };
   };
 
   /** Cuántas series lleva registradas un ejercicio. */
@@ -607,8 +704,8 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
       if (isSetLogged(exercise, sets[i])) continue;
       onSetLogChange(logKey, i, {
         // En modo reps/segundos el objetivo sale del TM si está vinculado.
-        reps: exercise.mode === 'weight' ? plannedReps : (tm ? weightForSet(i) : plannedReps),
-        weight: exercise.mode === 'weight' ? weightForSet(i) : null,
+        reps: exercise.mode === 'weight' ? plannedRepsForSet(exercise, i) : (tm ? weightForSet(i) : plannedRepsForSet(exercise, i)),
+        weight: exercise.mode === 'weight' && weightForSet(i) > 0 ? weightForSet(i) : null,
         completed: true,
         inputMode: 'kg',
       });
@@ -617,9 +714,16 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     return filled;
   };
 
+  const removeExerciseRow = (weekId: string, dayId: string, ex: PlannedExercise) => {
+    onRemoveExercise(weekId, dayId, ex.id);
+    for (const extraId of ex.mergedFromIds ?? []) {
+      if (extraId !== ex.id) onRemoveExercise(weekId, dayId, extraId);
+    }
+  };
+
   /** Resumen del día para la cabecera: ejercicios hechos y series que quedan por rellenar. */
   const dayProgress = useMemo(() => {
-    const exercises = currentDay?.exercises ?? [];
+    const exercises = dayExercises;
     let doneExercises = 0;
     let fillableSets = 0;
     for (const ex of exercises) {
@@ -631,7 +735,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     }
     return { doneExercises, totalExercises: exercises.length, fillableSets };
     // `logs` entra en las dependencias porque el recuento se recalcula al registrar series.
-  }, [currentWeek, currentDay, logs, effectiveTms, internalExerciseMaxes]);
+  }, [currentWeek, currentDay, dayExercises, logs, effectiveTms, internalExerciseMaxes]);
 
   return (
     <motion.div 
@@ -641,7 +745,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
       transition={VIEW_TRANSITION}
       className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-28 sm:pb-32 flex flex-col"
     >
-      <header className="order-0 mb-4 flex flex-col gap-3">
+      <header className="order-0 mb-6 flex flex-col gap-3">
         <div className="flex items-center justify-between gap-3">
           <button
             onClick={onOpenRoutineManager}
@@ -679,7 +783,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
       </header>
 
       {/* RM siempre visibles, en una sola fila; toca la barra para el listado. */}
-      <section className="mb-4">
+      <section className="mb-6">
         <button
           type="button"
           onClick={() => setRmListOpen(true)}
@@ -743,33 +847,28 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
 
       {/* Plan Content — primero: entrenar hoy */}
       <section className="relative">
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-4 sm:mb-6">
-          <div className="flex items-center gap-2 sm:gap-3">
-            <div className="bg-slate-900 p-1.5 sm:p-2 rounded-xl">
-              <Calendar className="text-white" size={18} />
-            </div>
-            <div>
-              <h2 className="text-base sm:text-xl font-black text-slate-800 dark:text-white uppercase tracking-tight">
-                Semana {cycleWeek}{!sameTemplateAllWeeks ? ` / ${cycleLength}` : ''} {viewMode === 'daily' && <span className="hidden sm:inline">— {currentDay.name}</span>}
-              </h2>
-              {viewMode === 'daily' && (
-                <span className="text-sm sm:hidden text-slate-500 font-medium">{currentDay.name}</span>
-              )}
-              {!isHistoryMode && (
-                <p className="mt-1 text-[10px] sm:text-xs font-semibold text-indigo-600 dark:text-indigo-400">
-                  {sameTemplateAllWeeks || cycleLength <= 1
-                    ? 'Misma sesión cada semana. Si cambias un ejercicio, cambia en todas.'
-                    : `Semana ${cycleWeek} de ${cycleLength}. Kilos y RPE pueden ser distintos cada semana; al acabar el bloque se puede repetir o importar el siguiente.`}
-                </p>
-              )}
-            </div>
+        <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-slate-400">
+              Semana {cycleWeek}{!sameTemplateAllWeeks ? ` de ${cycleLength}` : ''}
+            </p>
+            <h2 className="mt-1 text-lg font-semibold tracking-tight text-slate-900 dark:text-white sm:text-xl">
+              {viewMode === 'daily' ? currentDay?.name || 'Hoy' : 'Vista semanal'}
+            </h2>
+            {!isHistoryMode && (
+              <p className="mt-1.5 max-w-lg text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                {sameTemplateAllWeeks || cycleLength <= 1
+                  ? 'Misma sesión cada semana. Si cambias un ejercicio, cambia en todas.'
+                  : `Semana ${cycleWeek} de ${cycleLength}. Kilos y RPE pueden ser distintos cada semana; al acabar el bloque se puede repetir o importar el siguiente.`}
+              </p>
+            )}
           </div>
           
-          <div className="flex items-center gap-2 sm:gap-4 w-full sm:w-auto">
-            <div className="relative flex-1 sm:flex-none">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative">
               <button 
                 onClick={() => setShowMonthSelector(!showMonthSelector)}
-                className="w-full sm:w-auto flex items-center justify-center gap-2 bg-white dark:bg-slate-900 border-2 border-slate-100 dark:border-slate-700 px-3 sm:px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest text-slate-600 dark:text-white hover:border-indigo-200 dark:hover:border-indigo-500 transition-all"
+                className="flex items-center justify-center gap-2 rounded-2xl bg-white px-3.5 py-2 text-sm font-medium text-slate-700 shadow-sm dark:bg-slate-900 dark:text-slate-100"
               >
                 {currentMonth}
               </button>
@@ -791,7 +890,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                           setShowMonthSelector(false);
                         }}
                         className={cn(
-                          "px-2 py-2 rounded-lg text-[10px] font-black uppercase tracking-tight transition-all",
+                          "px-2 py-2 rounded-lg text-xs font-medium transition-all",
                           currentMonth === m ? "bg-indigo-600 text-white" : "hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-400 dark:text-slate-300"
                         )}
                       >
@@ -803,23 +902,35 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
               </AnimatePresence>
             </div>
 
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={() => {
-                if (displayWeekNum > 1) {
-                  const newWeek = displayWeekNum - 1;
-                  onViewAsOfWeekChange?.(newWeek === currentWeekOfYear ? null : newWeek);
-                }
-              }} disabled={displayWeekNum <= 1} className="px-3 py-2">
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  if (displayWeekNum > 1) {
+                    const newWeek = displayWeekNum - 1;
+                    onViewAsOfWeekChange?.(newWeek === currentWeekOfYear ? null : newWeek);
+                  }
+                }}
+                disabled={displayWeekNum <= 1}
+                className="flex h-9 w-9 items-center justify-center rounded-2xl bg-white text-slate-600 shadow-sm disabled:opacity-40 dark:bg-slate-900 dark:text-slate-200"
+                aria-label="Semana anterior"
+              >
                 <ChevronLeft size={18} />
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => {
-                if (displayWeekNum < 52) {
-                  const newWeek = displayWeekNum + 1;
-                  onViewAsOfWeekChange?.(newWeek === currentWeekOfYear ? null : newWeek);
-                }
-              }} disabled={displayWeekNum >= 52} className="px-3 py-2">
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (displayWeekNum < 52) {
+                    const newWeek = displayWeekNum + 1;
+                    onViewAsOfWeekChange?.(newWeek === currentWeekOfYear ? null : newWeek);
+                  }
+                }}
+                disabled={displayWeekNum >= 52}
+                className="flex h-9 w-9 items-center justify-center rounded-2xl bg-white text-slate-600 shadow-sm disabled:opacity-40 dark:bg-slate-900 dark:text-slate-200"
+                aria-label="Semana siguiente"
+              >
                 <ChevronRight size={18} />
-              </Button>
+              </button>
             </div>
 
             {!isHistoryMode && onSkipWeek && sameTemplateAllWeeks !== true && (
@@ -832,10 +943,10 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                       : 'Marcar semana como saltada'
                   }
                   className={cn(
-                    "flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-bold border-2 transition-all",
+                    "flex items-center gap-1.5 rounded-2xl px-3 py-2 text-xs font-medium shadow-sm transition-all",
                     calendarWeekSkipped
-                      ? "border-amber-400 bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400"
-                      : "border-slate-200 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:border-slate-300"
+                      ? "bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
+                      : "bg-white text-slate-500 dark:bg-slate-900 dark:text-slate-400"
                   )}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -899,7 +1010,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
               className="w-full"
             >
               <div 
-                className="flex gap-2 mb-4 overflow-x-auto pb-2 scrollbar-hide -mx-3 sm:mx-0 px-3 sm:px-0"
+                className="mb-5 flex gap-2.5 overflow-x-auto pb-1 scrollbar-hide -mx-1 px-1 sm:mx-0 sm:px-0"
                 onTouchStart={(e) => e.stopPropagation()}
                 onTouchMove={(e) => e.stopPropagation()}
                 onTouchEnd={(e) => e.stopPropagation()}
@@ -908,7 +1019,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 onMouseUp={(e) => e.stopPropagation()}
                 style={{ touchAction: 'pan-x' }}
               >
-                {currentWeek.days.map((day, idx) => {
+                {(displayDays.length ? displayDays : currentWeek.days).map((day, idx) => {
                   const isActive = activeDayIdx === idx;
                   const dayTypeDot = {
                     workout: "bg-indigo-500",
@@ -925,10 +1036,10 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     key={day.id}
                     onClick={() => setActiveDayIdx(idx)}
                     className={cn(
-                        "px-3 sm:px-4 py-2.5 rounded-xl text-[11px] sm:text-[10px] font-black uppercase tracking-widest transition-all whitespace-nowrap min-w-[78px] sm:min-w-0 border flex items-center justify-center gap-2 flex-shrink-0",
+                        "flex min-w-[4.75rem] flex-shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-2xl px-4 py-2.5 text-sm font-medium transition-all",
                         isActive
-                          ? "bg-indigo-600 text-white border-indigo-600 shadow-lg shadow-indigo-200 dark:shadow-indigo-900/50"
-                          : "bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-600 hover:border-indigo-300 dark:hover:border-indigo-500 hover:text-indigo-600 dark:hover:text-indigo-400"
+                          ? "bg-indigo-600 text-white shadow-sm"
+                          : "bg-white text-slate-500 shadow-sm dark:bg-slate-800 dark:text-slate-400"
                       )}
                     >
                       <motion.span
@@ -960,19 +1071,18 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 exit={{ opacity: 0, x: -12 }}
                 transition={SCREEN_TRANSITION}
               >
-              <Card padding="md" rounded="xl" className="shadow-xl shadow-slate-200/50 dark:shadow-black/40 sm:rounded-2xl sm:p-8">
+              <Card padding="md" rounded="md" className="shadow-sm sm:p-8">
                 {calendarWeekSkipped && (
-                  <div className="mb-4 rounded-xl border-2 border-amber-200 bg-amber-50 px-3 py-2.5 text-xs font-bold text-amber-900 dark:border-amber-800 dark:bg-amber-950/35 dark:text-amber-100">
-                    Semana saltada: los días de entreno o descarga se muestran como descanso. El plan guardado no cambia; al pulsar «Saltada» vuelve todo como estaba (incluido el bloque por semanas).
+                  <div className="mb-5 rounded-2xl bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-900 dark:bg-amber-950/35 dark:text-amber-100">
+                    Semana saltada: los días de entreno o descarga se muestran como descanso. El plan guardado no cambia; al pulsar «Saltada» vuelve todo como estaba.
                   </div>
                 )}
-                <div className="flex flex-col gap-4 mb-6">
-                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <div className="min-w-0">
-                      <h3 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-slate-100">{currentDay.name}</h3>
+                      <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 sm:text-xl">{currentDay.name}</h3>
                       {dayProgress.totalExercises > 0 &&
                         (effectiveCurrentDayType === 'workout' || effectiveCurrentDayType === 'deload') && (
-                          <div className="mt-2 flex items-center gap-2">
+                          <div className="mt-2.5 flex items-center gap-2.5">
                             <div className="h-1.5 w-24 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
                               <motion.div
                                 className="h-full rounded-full bg-emerald-500"
@@ -983,111 +1093,80 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                 transition={SCREEN_TRANSITION}
                               />
                             </div>
-                            <span className="text-[11px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                            <span className="text-xs text-slate-500 dark:text-slate-400">
                               {dayProgress.doneExercises} de {dayProgress.totalExercises} hechos
                             </span>
                           </div>
                         )}
                     </div>
-                    <div className={cn("w-full sm:w-auto sm:min-w-[200px] relative", isHistoryMode && "opacity-75 pointer-events-none")}>
-                      <label className="text-[10px] font-black uppercase tracking-wider text-slate-400 dark:text-slate-500 mb-2 block">
-                        Tipo de día
-                      </label>
-                      {calendarWeekSkipped ? (
-                        <div
-                          title="Quita el salto de semana con el botón «Saltada» para editar el tipo de día real del plan."
-                          className={cn(
-                            'w-full rounded-xl border-2 px-4 py-3 text-xs font-black uppercase tracking-wider flex items-center justify-between opacity-90',
-                            effectiveCurrentDayType === 'workout'
-                              ? 'border-indigo-500 text-indigo-700 bg-indigo-50 dark:border-indigo-500 dark:text-indigo-300 dark:bg-indigo-950/40'
-                              : effectiveCurrentDayType === 'deload'
-                                ? 'border-amber-500 text-amber-700 bg-amber-50 dark:border-amber-500 dark:text-amber-300 dark:bg-amber-950/30'
-                                : 'border-slate-300 text-slate-600 bg-slate-50 dark:border-slate-600 dark:text-slate-400 dark:bg-slate-800'
-                          )}
-                        >
-                          <span>
-                            {effectiveCurrentDayType === 'workout'
-                              ? 'Entrenamiento'
-                              : effectiveCurrentDayType === 'deload'
-                                ? 'Descarga'
-                                : 'Descanso'}
-                          </span>
-                          <span className="text-[10px] font-bold normal-case text-slate-500 dark:text-slate-400">(vista)</span>
-                        </div>
-                      ) : (
-                      <div className="relative">
-                        <button
-                          type="button"
-                          onClick={() => !isHistoryMode && setShowDayTypeDropdown(!showDayTypeDropdown)}
-                          className={cn(
-                            "w-full rounded-xl border-2 bg-white px-4 py-3 pr-10 text-xs font-black uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-offset-2 transition-all flex items-center justify-between",
-                            currentDay.type === 'workout' ? "border-indigo-500 dark:border-indigo-500 text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/40 focus:ring-indigo-500" :
-                            currentDay.type === 'deload' ? "border-amber-500 dark:border-amber-500 text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/30 focus:ring-amber-500" :
-                            "border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 bg-slate-50 dark:bg-slate-800 focus:ring-slate-500"
-                          )}
-                        >
-                          <span>
-                            {currentDay.type === 'workout' ? 'Entrenamiento' :
-                             currentDay.type === 'deload' ? 'Descarga' : 'Descanso'}
-                          </span>
-                          <ChevronDown className={cn("w-4 h-4 transition-transform", showDayTypeDropdown && "rotate-180")} />
-                        </button>
-                        
-                        {showDayTypeDropdown && (
-                          <>
-                            <div 
-                              className="fixed inset-0 z-40" 
-                              onClick={() => setShowDayTypeDropdown(false)}
-                            />
-                            <div className="absolute top-full left-0 right-0 mt-2 z-50 bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-600 rounded-xl shadow-2xl overflow-hidden">
-                              {(['workout', 'rest', 'deload'] as DayType[]).map((type) => (
-                                <button
-                                  key={type}
-                                  type="button"
-                                  onClick={() => {
-                                    onUpdateDayType(currentWeek.id, currentDay.id, type);
-                                    setShowDayTypeDropdown(false);
-                                  }}
-                                  className={cn(
-                                    "w-full px-4 py-3 text-left text-xs font-black uppercase tracking-wider transition-all flex items-center gap-2",
-                                    currentDay.type === type
-                                      ? type === 'workout' ? "bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border-l-4 border-indigo-500" :
-                                        type === 'deload' ? "bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 border-l-4 border-amber-500" :
-                                        "bg-slate-50 dark:bg-slate-700 text-slate-700 dark:text-slate-300 border-l-4 border-slate-400 dark:border-slate-500"
-                                      : "hover:bg-slate-50 dark:hover:bg-slate-700/50 text-slate-600 dark:text-slate-400"
-                                  )}
-                                >
-                                  <span className={cn(
-                                    "w-2 h-2 rounded-full",
-                                    type === 'workout' ? "bg-indigo-500" :
-                                    type === 'deload' ? "bg-amber-500" :
-                                    "bg-slate-400"
-                                  )} />
-                                  {type === 'workout' ? 'Entrenamiento' :
-                                   type === 'deload' ? 'Descarga' : 'Descanso'}
-                                  {currentDay.type === type && (
-                                    <CheckCircle2 className="w-4 h-4 ml-auto" />
-                                  )}
-                                </button>
-                      ))}
+                    <div className={cn("w-full sm:w-auto", isHistoryMode && "opacity-75 pointer-events-none")}>
+                      <p className="mb-2 text-xs font-medium text-slate-400">Tipo de día</p>
+                      <div className="flex rounded-2xl bg-slate-100 p-1 dark:bg-slate-800">
+                        {([
+                          { id: 'workout' as DayType, label: 'Entreno' },
+                          { id: 'rest' as DayType, label: 'Descanso' },
+                          { id: 'deload' as DayType, label: 'Descarga' },
+                        ]).map(opt => {
+                          const selected = (calendarWeekSkipped ? effectiveCurrentDayType : currentDay.type) === opt.id;
+                          return (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              disabled={isHistoryMode || calendarWeekSkipped}
+                              title={calendarWeekSkipped ? 'Quita el salto de semana para editar el tipo de día.' : undefined}
+                              onClick={() => onUpdateDayType(currentWeek.id, templateDay?.id ?? currentDay.id, opt.id)}
+                              className={cn(
+                                'flex-1 rounded-xl px-3 py-2 text-xs font-medium transition-colors sm:flex-none',
+                                selected
+                                  ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white'
+                                  : 'text-slate-500'
+                              )}
+                            >
+                              {opt.label}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-                          </>
-                        )}
-                  </div>
-                      )}
-                    </div>
-                  </div>
                 </div>
+
+                {!isHistoryMode && (onSkipDay || onResetDayShifts) && (
+                  <div className="mb-5 flex flex-wrap items-center gap-2">
+                    {onSkipDay && skippedDaysThisWeek.includes(activeDayIdx) ? (
+                      <button
+                        type="button"
+                        onClick={() => onSkipDay(activeDayIdx, displayPlanYear, displayWeekNum)}
+                        className="rounded-full bg-amber-50 px-3 py-1.5 text-[12px] font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
+                      >
+                        Hoy sí
+                      </button>
+                    ) : onSkipDay && (effectiveCurrentDayType === 'workout' || effectiveCurrentDayType === 'deload') ? (
+                      <button
+                        type="button"
+                        onClick={() => onSkipDay(activeDayIdx, displayPlanYear, displayWeekNum)}
+                        className="rounded-full bg-slate-100 px-3 py-1.5 text-[12px] font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+                      >
+                        Hoy no voy
+                      </button>
+                    ) : null}
+                    {skippedDaysThisWeek.length > 0 && onResetDayShifts && (
+                      <button
+                        type="button"
+                        onClick={() => onResetDayShifts(displayPlanYear, displayWeekNum)}
+                        className="rounded-full px-3 py-1.5 text-[12px] font-medium text-indigo-600 dark:text-indigo-300"
+                      >
+                        Mis días
+                      </button>
+                    )}
+                  </div>
+                )}
 
                 {effectiveCurrentDayType === 'workout' || effectiveCurrentDayType === 'deload' ? (
                   <div className="space-y-3">
                     {/* Table Header - Solo desktop. % RM solo si alguno tiene TM vinculado */}
                     <div className="hidden md:grid grid-cols-12 gap-4 px-4 py-3 bg-gradient-to-r from-slate-50 to-indigo-50/30 dark:from-slate-800 dark:to-indigo-950/30 rounded-xl text-[10px] font-black uppercase tracking-wider text-slate-600 dark:text-slate-400 border border-slate-100 dark:border-slate-700">
-                      <div className="col-span-4">Ejercicio</div>
-                      <div className="col-span-2 text-center">Series × Reps</div>
-                      <div className="col-span-5 text-center">
-                        {currentDay.exercises.some(e => !!resolveEffectiveTM(e)) ? '% RM · Peso' : 'Peso / Reps / Tiempo'}
-                      </div>
+                      <div className="col-span-7">Ejercicio</div>
+                      <div className="col-span-4 text-center">Series × Reps</div>
                       <div className="col-span-1 text-center">Acción</div>
                     </div>
 
@@ -1098,7 +1177,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                         whileTap={{ scale: 0.985 }}
                         disabled={savingSession}
                         onClick={async () => {
-                          for (const ex of currentDay.exercises) {
+                          for (const ex of dayExercises) {
                             fillExerciseFromPlan(ex, routineLogKeyFromIds(currentWeek, currentDay, ex));
                           }
                           setSavingSession(true);
@@ -1126,38 +1205,15 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
 
                     {/* Ejercicios */}
                     <div className="space-y-3">
-                      {currentDay.exercises.map((ex) => {
+                      {dayExercises.map((ex) => {
                         const logId = routineLogKeyFromIds(currentWeek, currentDay, ex);
                         const log = getLogEntryForExercise(logs, currentWeek, currentDay, ex);
                         const effectiveTM = resolveEffectiveTM(ex);
                         const k = fieldKey(currentWeek, currentDay, ex);
                         const setsShown = setsInputDraft[k] !== undefined ? setsInputDraft[k] : String(Math.max(1, ex.sets || 1));
                         const repsShown = repsInputDraft[k] !== undefined ? repsInputDraft[k] : String(ex.reps ?? '');
-
-                        const getPctForSet = (idx: number) => planPctForSet(ex, idx);
-                        const getTargetForSet = (idx: number) => {
-                          if (!effectiveTM) {
-                            if (ex.mode === 'weight') return ex.weight || 0;
-                            return parseInt(String(ex.reps), 10) || 0;
-                          }
-                          const raw = effectiveTM.value * (getPctForSet(idx) / 100);
-                          if (ex.mode === 'weight') return roundTo25(raw);
-                          return Math.max(1, Math.round(raw));
-                        };
-                        const targetWeight = getTargetForSet(0);
-                        const updatePctForSet = (setIdx: number, newPct: number) => {
-                          const n = Math.max(ex.sets || 1, 1);
-                          const base = ex.pct ?? 75;
-                          const arr = (ex.pctPerSet ?? Array(n).fill(base)).slice(0, n);
-                          while (arr.length < n) arr.push(base);
-                          arr[setIdx] = newPct;
-                          onUpdateExercise(currentWeek.id, currentDay.id, ex.id, { pctPerSet: arr, pct: arr[0] });
-                        };
-                        const updateTargetFromAbsolute = (setIdx: number, newVal: number) => {
-                          if (!effectiveTM) return;
-                          const newPct = Math.round((newVal / effectiveTM.value) * 100);
-                          updatePctForSet(setIdx, newPct);
-                        };
+                        const schemeLabel = exerciseSchemeLabel(ex);
+                        const rpeLabel = exerciseRpeLabel(ex);
 
                         /** Estado de un vistazo: así no hay que abrir el modal para saber qué falta. */
                         const exProgress = setsLoggedCount(ex, logId);
@@ -1207,17 +1263,24 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                         </span>
                                       )}
                                     </div>
-                                    {(ex.targetRpe || ex.coachNote) && (
+                                    {isMultiBlock(ex) ? (
+                                      <div className="mb-1 space-y-1">
+                                        <PlanBlockChips exercise={ex} />
+                                        {ex.coachNote && (
+                                          <p className="text-xs text-slate-500 dark:text-slate-400">{ex.coachNote}</p>
+                                        )}
+                                      </div>
+                                    ) : (rpeLabel || ex.coachNote) ? (
                                       <p className="mb-1 text-xs text-slate-500 dark:text-slate-400">
-                                        {ex.targetRpe && (
+                                        {rpeLabel && (
                                           <span className="font-bold text-amber-600 dark:text-amber-400">
-                                            RPE {ex.targetRpe}
+                                            RPE {rpeLabel}
                                           </span>
                                         )}
-                                        {ex.targetRpe && ex.coachNote && ' · '}
+                                        {rpeLabel && ex.coachNote && ' · '}
                                         {ex.coachNote}
                                       </p>
-                                    )}
+                                    ) : null}
                                     {effectiveTM && (
                                       <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider inline-block bg-indigo-50 dark:bg-indigo-950/40 px-2 py-0.5 rounded-md">
                                         {effectiveTM.isInternal ? 'RM' : effectiveTM.name}
@@ -1229,7 +1292,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                     <button 
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        onRemoveExercise(currentWeek.id, currentDay.id, ex.id);
+                                        removeExerciseRow(currentWeek.id, currentDay.id, ex);
                                       }}
                                       className="p-2 text-slate-400 dark:text-slate-500 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-all flex-shrink-0"
                                     >
@@ -1241,6 +1304,8 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                 
                                 {/* Series × Reps - solo esto en la tarjeta; %/kg se edita dentro del modal */}
                                 <div onClick={(e) => e.stopPropagation()}>
+                                  {schemeLabel ? null : (
+                                  <>
                                   <label className="mb-1.5 block text-center text-[11px] font-medium text-slate-400">Series × reps</label>
                                   <div className="flex items-center justify-center rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-2.5 transition-all focus-within:border-indigo-300 focus-within:bg-white dark:border-slate-600 dark:bg-slate-800/80 dark:focus-within:border-indigo-500">
                                     <input 
@@ -1301,124 +1366,9 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                       placeholder="10"
                                     />
                                   </div>
+                                  </>
+                                  )}
                                 </div>
-
-                                {/* % del TM: en móvil no había forma de editarlo, solo en la tabla de escritorio. */}
-                                {effectiveTM && !isHistoryMode && (() => {
-                                  const pctKey = `${k}-all`;
-                                  const setsCount = Math.max(1, ex.sets || 1);
-                                  const pcts = Array.from({ length: setsCount }, (_, i) => getPctForSet(i));
-                                  const uniform = pcts.every(p => p === pcts[0]);
-                                  const shownPct = pctInputDraft[pctKey] !== undefined
-                                    ? pctInputDraft[pctKey]
-                                    : (uniform ? String(pcts[0]) : '');
-                                  const commitPct = (value: number) => {
-                                    const n = Math.min(150, Math.max(1, value));
-                                    onUpdateExercise(currentWeek.id, currentDay.id, ex.id, {
-                                      pct: n,
-                                      pctPerSet: Array(setsCount).fill(n),
-                                    });
-                                  };
-                                  return (
-                                    <div onClick={(e) => e.stopPropagation()}>
-                                      <label className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-2 block text-center">
-                                        % del TM
-                                        {uniform && (
-                                          <span className="text-indigo-600 dark:text-indigo-400 ml-1.5">
-                                            ≈ {getTargetForSet(0)}{ex.mode === 'weight' ? ' kg' : ex.mode === 'seconds' ? ' s' : ' reps'}
-                                          </span>
-                                        )}
-                                      </label>
-                                      <div className="flex items-center gap-2">
-                                        <div className="flex items-center bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-600 rounded-xl px-3 py-2.5 shadow-sm focus-within:border-indigo-400 dark:focus-within:border-indigo-500 transition-all">
-                                          <input
-                                            type="text"
-                                            inputMode="numeric"
-                                            autoComplete="off"
-                                            pattern="[0-9]*"
-                                            value={shownPct}
-                                            placeholder={uniform ? '75' : 'Varía'}
-                                            onChange={(e) => {
-                                              const raw = e.target.value.replace(/\D/g, '');
-                                              setPctInputDraft(prev => ({ ...prev, [pctKey]: raw }));
-                                            }}
-                                            onBlur={() => {
-                                              const raw = pctInputDraftRef.current[pctKey];
-                                              setPctInputDraft(prev => {
-                                                const next = { ...prev };
-                                                delete next[pctKey];
-                                                return next;
-                                              });
-                                              if (raw === undefined || raw === '') return;
-                                              commitPct(parseInt(raw, 10) || 75);
-                                            }}
-                                            className="w-12 text-center font-black text-lg bg-transparent focus:outline-none text-slate-900 dark:text-slate-100"
-                                          />
-                                          <span className="text-lg font-black text-slate-400">%</span>
-                                        </div>
-                                        <div className="flex gap-1.5 flex-1 justify-end">
-                                          {[70, 75, 80, 85, 90].map(p => (
-                                            <button
-                                              key={p}
-                                              onClick={() => commitPct(p)}
-                                              className={cn(
-                                                "flex-1 h-10 rounded-lg text-xs font-black transition-all border-2",
-                                                uniform && pcts[0] === p
-                                                  ? "bg-indigo-600 border-indigo-600 text-white"
-                                                  : "bg-slate-50 dark:bg-slate-800 border-transparent text-slate-500 dark:text-slate-400 active:scale-95"
-                                              )}
-                                            >
-                                              {p}
-                                            </button>
-                                          ))}
-                                        </div>
-                                      </div>
-                                      {!uniform && (
-                                        <p className="text-[10px] text-slate-400 mt-1.5 text-center">
-                                          Cada serie tiene su %. Al elegir uno se aplica a todas.
-                                        </p>
-                                      )}
-                                    </div>
-                                  );
-                                })()}
-
-                                {/* Sin TM todavía: se siembra escribiendo el peso de trabajo */}
-                                {!effectiveTM && !isHistoryMode && onSetInternalMax && (() => {
-                                  const seedKey = `${k}-seed-tm`;
-                                  const unit = ex.mode === 'weight' ? 'kg' : ex.mode === 'reps' ? 'reps' : 's';
-                                  return (
-                                    <div onClick={(e) => e.stopPropagation()}>
-                                      <label className="text-xs font-bold text-slate-500 dark:text-slate-400 mb-2 block text-center">
-                                        Peso de hoy
-                                      </label>
-                                      <div className="flex items-center justify-center rounded-xl border-2 border-dashed border-indigo-300 bg-white px-3 py-2.5 dark:border-indigo-500/40 dark:bg-slate-800">
-                                        <input
-                                          type="text"
-                                          inputMode="decimal"
-                                          autoComplete="off"
-                                          placeholder="—"
-                                          value={targetInputDraft[seedKey] ?? ''}
-                                          onChange={(e) => {
-                                            const raw = e.target.value.replace(/[^\d.]/g, '');
-                                            setTargetInputDraft(prev => ({ ...prev, [seedKey]: raw }));
-                                          }}
-                                          onBlur={() => {
-                                            const raw = targetInputDraft[seedKey];
-                                            setTargetInputDraft(prev => { const n = { ...prev }; delete n[seedKey]; return n; });
-                                            const v = parseFloat(raw ?? '');
-                                            if (!Number.isFinite(v) || v <= 0) return;
-                                            onSetInternalMax(ex.name, ex.mode, tmFromWorkingLoad(v, getPctForSet(0), ex.mode));
-                                          }}
-                                          className="w-20 bg-transparent text-center text-lg font-black text-slate-900 focus:outline-none dark:text-slate-100"
-                                        />
-                                        <span className="text-lg font-black text-slate-400">{unit}</span>
-                                      </div>
-                                      <p className="mt-1.5 text-center text-[10px] text-slate-400">
-                                        Con el peso se guarda el RM de este ejercicio y el resto de semanas salen solas.
-                                      </p>
-                                    </div>
-                                  );
-                                })()}
 
                                 {/* TM de rutina o TM interno inferido */}
                                 {effectiveTM && (
@@ -1434,22 +1384,29 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                               {/* Desktop Table Layout */}
                               <div className="hidden md:grid md:grid-cols-12 gap-4 items-center py-4 px-4 border-b border-slate-100 last:border-0">
                               {/* Exercise Info */}
-                                <div className="col-span-4 flex items-center gap-3">
+                                <div className="col-span-7 flex items-center gap-3">
                                 <div className="flex flex-col">
                                   <span className="text-sm font-black text-slate-900 dark:text-slate-100 uppercase tracking-tight">
                                     {ex.name}
                                   </span>
-                                  {(ex.targetRpe || ex.coachNote) && (
+                                  {isMultiBlock(ex) ? (
+                                    <div className="mt-1.5 space-y-1">
+                                      <PlanBlockChips exercise={ex} />
+                                      {ex.coachNote && (
+                                        <span className="text-xs text-slate-500 dark:text-slate-400">{ex.coachNote}</span>
+                                      )}
+                                    </div>
+                                  ) : (rpeLabel || ex.coachNote) ? (
                                     <span className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                                      {ex.targetRpe && (
+                                      {rpeLabel && (
                                         <span className="font-bold text-amber-600 dark:text-amber-400">
-                                          RPE {ex.targetRpe}
+                                          RPE {rpeLabel}
                                         </span>
                                       )}
-                                      {ex.targetRpe && ex.coachNote && ' · '}
+                                      {rpeLabel && ex.coachNote && ' · '}
                                       {ex.coachNote}
                                     </span>
-                                  )}
+                                  ) : null}
                                   {effectiveTM && (
                                       <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider mt-0.5">{effectiveTM.isInternal ? 'RM' : effectiveTM.name}</span>
                                   )}
@@ -1457,7 +1414,12 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                               </div>
 
                               {/* Sets x Reps */}
-                                <div className="col-span-2 flex items-center justify-center">
+                                <div className="col-span-4 flex items-center justify-center">
+                                  {schemeLabel ? (
+                                  <span className="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+                                    {ex.sets} series
+                                  </span>
+                                  ) : (
                                   <div className="flex items-center bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-600 rounded-xl px-3 py-2 shadow-sm dark:shadow-md dark:shadow-slate-900/50 focus-within:border-indigo-400 dark:focus-within:border-indigo-500 transition-all" onClick={(e) => e.stopPropagation()}>
                                   <input 
                                     type="text"
@@ -1515,124 +1477,8 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                     className="w-12 text-center font-black text-sm bg-transparent focus:outline-none text-slate-900 dark:text-slate-100 disabled:opacity-50"
                                   />
                                 </div>
+                                  )}
                               </div>
-
-                              {/* Intensidad y objetivo: un solo par para todo el ejercicio (el detalle por serie está en el registro) */}
-                                {effectiveTM && effectiveTM.mode === ex.mode ? (() => {
-                                  const setCount = Math.max(ex.sets || 1, 1);
-                                  const pcts = Array.from({ length: setCount }, (_, i) => getPctForSet(i));
-                                  const uniform = pcts.every(p => p === pcts[0]);
-                                  const unit = ex.mode === 'weight' ? 'kg' : ex.mode === 'reps' ? 'rep' : 's';
-                                  const estimated = isPctEstimated(ex);
-
-                                  if (!uniform) {
-                                    const targets = Array.from({ length: setCount }, (_, i) => getTargetForSet(i));
-                                    return (
-                                      <div className="col-span-5 flex flex-col items-center justify-center gap-0.5">
-                                        <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-black text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-300">
-                                          {Math.min(...pcts)}–{Math.max(...pcts)} % · {Math.min(...targets)}–{Math.max(...targets)} {unit}
-                                        </div>
-                                        <span className="text-[10px] text-slate-400">Cada serie con su carga</span>
-                                      </div>
-                                    );
-                                  }
-
-                                  const pctDraftKey = `${k}-pct-all`;
-                                  const targetDraftKey = `${k}-target-all`;
-                                  const pctShown = pctInputDraft[pctDraftKey] !== undefined ? pctInputDraft[pctDraftKey] : String(pcts[0]);
-                                  const targetShown = targetInputDraft[targetDraftKey] !== undefined ? targetInputDraft[targetDraftKey] : String(getTargetForSet(0));
-                                  const commitPctAll = (value: number) => {
-                                    const n = Math.max(0, Math.min(150, value));
-                                    onUpdateExercise(currentWeek.id, currentDay.id, ex.id, { pct: n, pctPerSet: Array(setCount).fill(n) });
-                                  };
-                                  return (
-                                    <div className="col-span-5 flex flex-col items-center justify-center gap-0.5">
-                                      {/* Solo los campos paran el clic: el resto de la celda abre el registro. */}
-                                      <div className="flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1.5 dark:border-indigo-800 dark:bg-indigo-950/40" onClick={(e) => e.stopPropagation()}>
-                                        <input
-                                          type="text"
-                                          inputMode="numeric"
-                                          value={pctShown}
-                                          onChange={(e) => {
-                                            const raw = e.target.value.replace(/[^\d.]/g, '');
-                                            setPctInputDraft(prev => ({ ...prev, [pctDraftKey]: raw }));
-                                          }}
-                                          onBlur={() => {
-                                            const raw = pctInputDraftRef.current[pctDraftKey];
-                                            setPctInputDraft(prev => { const n = { ...prev }; delete n[pctDraftKey]; return n; });
-                                            if (raw !== undefined) {
-                                              const v = parseFloat(raw);
-                                              commitPctAll(Number.isFinite(v) ? v : pcts[0]);
-                                            }
-                                          }}
-                                          className="w-9 bg-transparent text-center font-black text-indigo-700 dark:text-indigo-300 text-xs focus:outline-none"
-                                        />
-                                        <span className="text-[10px] opacity-80">%</span>
-                                        <input
-                                          type="text"
-                                          inputMode="decimal"
-                                          value={targetShown}
-                                          onChange={(e) => {
-                                            const raw = e.target.value.replace(/[^\d.]/g, '');
-                                            setTargetInputDraft(prev => ({ ...prev, [targetDraftKey]: raw }));
-                                          }}
-                                          onBlur={() => {
-                                            const raw = targetInputDraft[targetDraftKey];
-                                            setTargetInputDraft(prev => { const n = { ...prev }; delete n[targetDraftKey]; return n; });
-                                            if (raw !== undefined) {
-                                              const v = parseFloat(raw);
-                                              if (Number.isFinite(v) && effectiveTM.value > 0) commitPctAll(Math.round((v / effectiveTM.value) * 100));
-                                            }
-                                          }}
-                                          className="w-12 rounded bg-indigo-600 text-center font-black text-xs text-white focus:outline-none dark:bg-indigo-700"
-                                        />
-                                        <span className="text-[10px] opacity-80">{unit}</span>
-                                      </div>
-                                      {estimated && (
-                                        <span className="text-[10px] text-amber-600 dark:text-amber-400">
-                                          Estimado desde RPE {ex.targetRpe}
-                                        </span>
-                                      )}
-                                    </div>
-                                  );
-                                })() : !effectiveTM && (ex.mode === 'weight' || ex.mode === 'reps' || ex.mode === 'seconds') ? (
-                                <div className="col-span-5 flex flex-col items-center justify-center gap-0.5">
-                                  {isHistoryMode || !onSetInternalMax ? (
-                                    <span className="text-[11px] text-slate-400">Sin TM</span>
-                                  ) : (() => {
-                                    const seedKey = `${k}-seed-tm`;
-                                    const unit = ex.mode === 'weight' ? 'kg' : ex.mode === 'reps' ? 'rep' : 's';
-                                    return (
-                                      <>
-                                        <div className="flex items-center gap-1 rounded-lg border border-dashed border-indigo-300 px-2 py-1.5 dark:border-indigo-500/40" onClick={(e) => e.stopPropagation()}>
-                                          <input
-                                            type="text"
-                                            inputMode="decimal"
-                                            placeholder="—"
-                                            value={targetInputDraft[seedKey] ?? ''}
-                                            onChange={(e) => {
-                                              const raw = e.target.value.replace(/[^\d.]/g, '');
-                                              setTargetInputDraft(prev => ({ ...prev, [seedKey]: raw }));
-                                            }}
-                                            onBlur={() => {
-                                              const raw = targetInputDraft[seedKey];
-                                              setTargetInputDraft(prev => { const n = { ...prev }; delete n[seedKey]; return n; });
-                                              const v = parseFloat(raw ?? '');
-                                              if (!Number.isFinite(v) || v <= 0) return;
-                                              onSetInternalMax(ex.name, ex.mode, tmFromWorkingLoad(v, getPctForSet(0), ex.mode));
-                                            }}
-                                            className="w-14 bg-transparent text-center text-sm font-black text-indigo-700 focus:outline-none dark:text-indigo-300"
-                                          />
-                                          <span className="text-[10px] opacity-80">{unit}</span>
-                                        </div>
-                                        <span className="text-[10px] text-slate-400">
-                                          Pon el peso de hoy y se calcula su TM
-                                        </span>
-                                      </>
-                                    );
-                                  })()}
-                                </div>
-                                ) : null}
 
                                 {/* Actions */}
                                 <div className="col-span-1 flex items-center justify-center gap-1" onClick={(e) => e.stopPropagation()}>
@@ -1640,7 +1486,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                 <button 
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    onRemoveExercise(currentWeek.id, currentDay.id, ex.id);
+                                    removeExerciseRow(currentWeek.id, currentDay.id, ex);
                                   }}
                                     className="p-2 text-slate-400 dark:text-slate-500 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-all"
                                 >
@@ -1713,7 +1559,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
+              className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
             >
               {currentWeek.days.map((day, dayIdx) => {
                 const effType = effectiveDayType(day);
@@ -1732,7 +1578,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   )}
                 >
                   <div className="flex items-center justify-between mb-4">
-                    <h3 className="font-black text-slate-900 dark:text-slate-100 uppercase text-xs tracking-widest">{day.name}</h3>
+                    <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{day.name}</h3>
                     <DayTypeBadge type={effType} />
                   </div>
 
@@ -1741,10 +1587,12 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                       {day.exercises.length === 0 ? (
                         <p className="text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase">Sin ejercicios</p>
                       ) : (
-                        day.exercises.map(ex => (
+                        mergeAdjacentSameExercises(day.exercises).map(ex => (
                           <div key={ex.id} className="flex items-center justify-between p-2 bg-slate-50 dark:bg-slate-700/50 rounded-lg">
                             <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300 truncate max-w-[100px]">{ex.name}</span>
-                            <span className="text-[10px] font-black text-indigo-600 dark:text-indigo-400">{ex.sets}×{ex.reps}</span>
+                            <span className="text-[10px] font-black text-indigo-600 dark:text-indigo-400">
+                              {isMultiBlock(ex) ? `${ex.sets} series` : `${ex.sets}×${ex.reps}`}
+                            </span>
                           </div>
                         ))
                       )}
@@ -1783,6 +1631,8 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
             planYear={displayPlanYear}
             lastImport={lastCoachImport}
             routineName={activeRoutineName}
+            routineCycleLength={cycleLength}
+            sameTemplateAllWeeks={sameTemplateAllWeeks}
             onClose={() => setShowImportModal(false)}
             onConfirm={async (result) => {
               await onImportCoachPlan(result);
@@ -1792,31 +1642,63 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
         </React.Suspense>
       )}
 
-      {loggingExercise && typeof document !== 'undefined' && createPortal(
-        <AnimatePresence>
-          <div 
-            className="fixed inset-0 z-[100000] overflow-y-auto overflow-x-hidden overscroll-y-contain overscroll-x-none [touch-action:pan-y]"
-            style={{ WebkitOverflowScrolling: 'touch' as const }}
-          >
-            <div className="flex min-h-[100dvh] w-full max-w-[100vw] min-w-0 flex-col items-stretch justify-start px-1.5 pt-10 pb-6 sm:items-center sm:justify-center sm:px-4 sm:py-5 box-border">
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => { setLoggingExercise(null); setLogInputDraft({}); }}
-              className="fixed inset-0 min-h-[100dvh] bg-black/75 backdrop-blur-sm"
-            />
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              onClick={(e) => e.stopPropagation()}
-              className="relative z-10 mx-auto flex min-h-0 w-full min-w-0 max-w-[min(calc(100vw-0.75rem),42rem)] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900 max-h-[min(92dvh,calc(100dvh-2.75rem))] sm:max-h-[min(90vh,calc(100dvh-2.5rem))]"
+      <GlassModal
+        open={!!loggingExercise}
+        onClose={() => { setLoggingExercise(null); setLogInputDraft({}); setLogSetExtrasOpen(false); }}
+        wide
+        persist={savingSession}
+        footer={loggingExercise ? (
+          <div className="flex flex-col gap-2">
+            <Button
+              variant="primary"
+              disabled={savingSession}
+              className="h-11 w-full rounded-xl text-sm font-semibold"
+              onClick={async () => {
+                const next = modalDayContext?.next;
+                if (!isHistoryMode && loggingExercise) {
+                  setSavingSession(true);
+                  try {
+                    await onRoutinePlanFlush?.();
+                  } finally {
+                    setSavingSession(false);
+                  }
+                }
+                setLogInputDraft({});
+                if (next && loggingExercise) {
+                  setLoggingExercise({ ...loggingExercise, exercise: next });
+                  return;
+                }
+                setLoggingExercise(null);
+                setLogSetExtrasOpen(false);
+              }}
             >
-              <div
-                className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden overscroll-y-contain overscroll-x-none p-4 sm:p-5 [touch-action:pan-y]"
-                style={{ WebkitOverflowScrolling: 'touch' as const }}
+              {savingSession ? (
+                <><Loader2 size={16} className="mr-2 animate-spin" /> Guardando…</>
+              ) : modalDayContext?.next ? (
+                <>Guardar y siguiente <ChevronRight size={16} className="ml-1" /></>
+              ) : (
+                'Guardar'
+              )}
+            </Button>
+            {logSetExtrasOpen && !isHistoryMode && (
+              <button
+                type="button"
+                className="text-center text-[11px] font-medium text-rose-500"
+                onClick={() => {
+                  removeExerciseRow(loggingExercise.weekId, loggingExercise.dayId, loggingExercise.exercise);
+                  setLoggingExercise(null);
+                  setLogInputDraft({});
+                  setLogSetExtrasOpen(false);
+                }}
               >
+                Eliminar ejercicio del plan
+              </button>
+            )}
+          </div>
+        ) : null}
+      >
+        {loggingExercise && (
+              <div className="min-w-0">
                 <div className="flex items-center justify-between mb-4 sm:mb-5">
                   <div className="flex-1 mr-3 min-w-0">
                     {modalDayContext && modalDayContext.list.length > 1 && (
@@ -1827,8 +1709,21 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     <input 
                       value={loggingExercise.exercise.name}
                       onChange={(e) => onUpdateExercise(loggingExercise.weekId, loggingExercise.dayId, loggingExercise.exercise.id, { name: e.target.value })}
-                      className="text-lg sm:text-2xl font-black text-slate-900 dark:text-slate-100 uppercase tracking-tight bg-transparent focus:outline-none w-full border-b-2 border-transparent focus:border-indigo-200 dark:focus:border-indigo-500"
+                      className="w-full border-b-2 border-transparent bg-transparent text-lg font-semibold tracking-tight text-slate-900 focus:border-indigo-200 focus:outline-none dark:text-slate-100 dark:focus:border-indigo-500 sm:text-xl"
                     />
+                    {isMultiBlock(loggingExercise.exercise) ? (
+                      <div className="mt-2 space-y-1">
+                        <PlanBlockChips exercise={loggingExercise.exercise} />
+                        <p className="text-[10px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-400">
+                          {(() => {
+                            const ex = loggingExercise.exercise;
+                            const eff = resolveEffectiveTM(ex);
+                            if (!eff) return 'Escribe el peso de hoy';
+                            return eff.isInternal ? 'Marca guardada' : 'Vinculado a tu RM';
+                          })()}
+                        </p>
+                      </div>
+                    ) : (
                     <p className="text-indigo-600 dark:text-indigo-400 font-black text-[10px] sm:text-xs uppercase tracking-widest mt-1">
                       {loggingExercise.exercise.sets} × {loggingExercise.exercise.reps} •{' '}
                       {(() => {
@@ -1837,10 +1732,11 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                         if (!eff) return 'Libre';
                         return eff.isInternal ? 'Marca guardada' : 'Vinculado a tu RM';
                       })()}
-                      {loggingExercise.exercise.targetRpe && (
-                        <span className="text-amber-600 dark:text-amber-400"> • RPE {loggingExercise.exercise.targetRpe}</span>
+                      {exerciseRpeLabel(loggingExercise.exercise) && (
+                        <span className="text-amber-600 dark:text-amber-400"> • RPE {exerciseRpeLabel(loggingExercise.exercise)}</span>
                       )}
                     </p>
+                    )}
                     {loggingExercise.exercise.coachNote && (
                       <p className="mt-1.5 rounded-lg bg-amber-50 px-2.5 py-1.5 text-xs font-medium text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
                         {loggingExercise.exercise.coachNote}
@@ -1862,6 +1758,13 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     className="text-xs font-semibold text-slate-500 hover:text-indigo-600"
                   >
                     {logExtrasOpen ? 'Ocultar nota y RPE' : 'Nota y esfuerzo (RPE)'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLogSetExtrasOpen(o => !o)}
+                    className="ml-4 text-xs font-semibold text-slate-500 hover:text-indigo-600"
+                  >
+                    {logSetExtrasOpen ? 'Ocultar vídeo y borrar' : 'Vídeo y borrar'}
                   </button>
                   {logExtrasOpen && (
                     <>
@@ -1921,8 +1824,21 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                         </button>
                       );
                     })()}
-                    <div className="min-w-0 space-y-2 overflow-x-hidden overscroll-x-none">
-                      {Array.from({ length: loggingExercise.exercise.sets }).map((_, idx) => {
+                    <div className="min-w-0 space-y-4 overflow-x-hidden overscroll-x-none">
+                      {blocksFromPlanned(loggingExercise.exercise).map((block, bi, allBlocks) => {
+                        const start = allBlocks.slice(0, bi).reduce((n, b) => n + b.sets, 0);
+                        return (
+                          <div key={`blk-${bi}`} className="space-y-2">
+                            {allBlocks.length > 1 && (
+                              <p className="px-0.5 text-[11px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                {block.sets}×{block.reps}
+                                {block.rpe ? (
+                                  <span className="text-amber-600 dark:text-amber-400"> @{block.rpe}</span>
+                                ) : null}
+                              </p>
+                            )}
+                      {Array.from({ length: block.sets }).map((_, j) => {
+                        const idx = start + j;
                         const logId = modalLogKey;
                         const setLog = logs[logId]?.sets?.[idx] || { id: `${idx}`, weight: null, reps: null, completed: false };
                         const effectiveMode = (setLog.inputMode ?? 'kg') as 'kg' | 'pct';
@@ -1934,7 +1850,9 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                               ? roundTo25(effectiveTM.value * (pctForSet / 100))
                               : Math.max(1, Math.round(effectiveTM.value * (pctForSet / 100))))
                           : (exerciseMode === 'weight' ? (loggingExercise.exercise.weight || 0) : 0);
-                        const targetReps = parseInt(loggingExercise.exercise.reps.toString()) || 0;
+                        const targetReps = plannedRepsForSet(loggingExercise.exercise, idx);
+                        const setRpe = plannedRpeForSet(loggingExercise.exercise, idx);
+                        const repsLocked = targetReps > 0;
                         const unitLabel = exerciseMode === 'seconds' ? 'SEG' : 'REPS';
                         
                         const isCompleted = setLog.completed || (exerciseMode === 'weight' ? (setLog.weight !== null && setLog.reps !== null && setLog.reps >= targetReps) : (setLog.reps !== null && setLog.reps >= targetReps));
@@ -1955,6 +1873,17 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
 
                         const inputClass =
                           'h-11 w-full min-h-[44px] rounded-lg border-2 border-slate-200 bg-white px-2 text-center text-sm font-black text-slate-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-200 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 dark:focus:border-indigo-400 dark:focus:ring-indigo-900/40';
+                        const plannedRepsBox = (
+                          <div
+                            className={cn(
+                              inputClass,
+                              'flex cursor-default items-center justify-center bg-slate-100 dark:bg-slate-800'
+                            )}
+                            title="Reps del plan; no se pueden cambiar"
+                          >
+                            {targetReps}
+                          </div>
+                        );
 
                         const prevSet = idx > 0 ? logs[logId]?.sets?.[idx - 1] : undefined;
                         const canRepeatPrev =
@@ -1965,7 +1894,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
 
                         const setHasMedia = !!setLog.mediaKey;
                         const setUploading = uploadingSetKey === `${logId}-${idx}`;
-                        const setActionButtons = (
+                        const setActionButtons = logSetExtrasOpen ? (
                           <div className="absolute right-2 top-2 z-10 flex gap-0.5" role="group" aria-label="Acciones de la serie">
                             <button
                               type="button"
@@ -2054,6 +1983,20 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                               <CheckCircle2 size={17} className={setLog.completed ? 'fill-current' : ''} />
                             </button>
                           </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => onSetLogChange(logId, idx, { completed: !setLog.completed })}
+                            className={cn(
+                              'absolute right-2 top-2 z-10 flex h-9 w-9 items-center justify-center rounded-full border-2',
+                              setLog.completed
+                                ? 'border-emerald-600 bg-emerald-600 text-white'
+                                : 'border-slate-200 bg-white text-slate-400 dark:border-slate-600 dark:bg-slate-800'
+                            )}
+                            aria-label={setLog.completed ? 'Marcar incompleto' : 'Marcar hecho'}
+                          >
+                            <CheckCircle2 size={17} className={setLog.completed ? 'fill-current' : ''} />
+                          </button>
                         );
 
                         return (
@@ -2071,7 +2014,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                   <>
                                     <div className="mb-2 flex min-w-0 items-center gap-2 pr-[7.5rem]">
                                       <span className="shrink-0 text-[11px] font-black uppercase tracking-wide text-slate-700 dark:text-slate-200 sm:text-xs">
-                                        Serie {idx + 1}
+                                        Serie {idx + 1}{setRpe ? ` · RPE ${setRpe}` : ''}
                                       </span>
                                       <div className="flex min-w-0 flex-1 justify-center">
                                         <div
@@ -2156,7 +2099,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                             type="text"
                                             inputMode="decimal"
                                             placeholder={targetWeight.toString()}
-                                            value={logInputDraft[`w-${logId}-${idx}`] ?? (setLog.weight ?? '')}
+                                            value={logInputDraft[`w-${logId}-${idx}`] ?? (setLog.weight && setLog.weight > 0 ? setLog.weight : '')}
                                             onChange={(e) => {
                                               const raw = e.target.value.replace(/[^\d.,]/g, '');
                                               setLogInputDraft(prev => ({ ...prev, [`w-${logId}-${idx}`]: raw }));
@@ -2180,6 +2123,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                         <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
                                           Reps
                                         </span>
+                                        {repsLocked ? plannedRepsBox : (
                                         <input
                                           type="text"
                                           inputMode="numeric"
@@ -2201,6 +2145,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                           }}
                                           className={inputClass}
                                         />
+                                        )}
                                       </div>
                                     </div>
                                     <p className="mt-2 text-center text-xs font-bold leading-tight text-indigo-600 dark:text-indigo-400">
@@ -2215,7 +2160,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                   <>
                                     <div className="pr-[7.5rem] mb-2">
                                       <span className="text-xs font-black uppercase tracking-wide text-slate-700 dark:text-slate-200">
-                                        Serie {idx + 1}
+                                        Serie {idx + 1}{setRpe ? ` · RPE ${setRpe}` : ''}
                                       </span>
                                     </div>
                                     <div className="grid w-full grid-cols-2 gap-2 sm:gap-3">
@@ -2227,7 +2172,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                           type="text"
                                           inputMode="decimal"
                                           placeholder={(loggingExercise.exercise.weight || 0).toString()}
-                                          value={logInputDraft[`w-${logId}-${idx}`] ?? (setLog.weight ?? '')}
+                                          value={logInputDraft[`w-${logId}-${idx}`] ?? (setLog.weight && setLog.weight > 0 ? setLog.weight : '')}
                                           onChange={(e) => {
                                             const raw = e.target.value.replace(/[^\d.,]/g, '');
                                             setLogInputDraft(prev => ({ ...prev, [`w-${logId}-${idx}`]: raw }));
@@ -2249,6 +2194,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                         <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
                                           Reps
                                         </span>
+                                        {repsLocked ? plannedRepsBox : (
                                         <input
                                           type="text"
                                           inputMode="numeric"
@@ -2270,6 +2216,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                           }}
                                           className={inputClass}
                                         />
+                                        )}
                                       </div>
                                     </div>
                                     <p className="mt-2 text-center text-xs font-bold text-indigo-600 dark:text-indigo-400">
@@ -2284,7 +2231,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                               <>
                                 <div className="mb-2 flex min-w-0 items-center gap-2 pr-[7.5rem]">
                                   <span className="shrink-0 text-[11px] font-black uppercase tracking-wide text-slate-700 dark:text-slate-200 sm:text-xs">
-                                    Serie {idx + 1}
+                                    Serie {idx + 1}{setRpe ? ` · RPE ${setRpe}` : ''}
                                   </span>
                                   <div className="flex min-w-0 flex-1 justify-center">
                                     <div
@@ -2368,7 +2315,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                       }}
                                       className={inputClass}
                                     />
-                                  ) : (
+                                  ) : repsLocked ? plannedRepsBox : (
                                     <input
                                       type="text"
                                       inputMode="numeric"
@@ -2404,13 +2351,14 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                               <>
                                 <div className="pr-[7.5rem] mb-2">
                                   <span className="text-xs font-black uppercase text-slate-700 dark:text-slate-200">
-                                    Serie {idx + 1}
+                                    Serie {idx + 1}{setRpe ? ` · RPE ${setRpe}` : ''}
                                   </span>
                                 </div>
                                 <div className="flex flex-col gap-1">
                                   <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
                                     {exerciseMode === 'reps' ? 'Reps' : 'Segundos'}
                                   </span>
+                                  {repsLocked ? plannedRepsBox : (
                                   <input
                                     type="text"
                                     inputMode="numeric"
@@ -2432,6 +2380,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                     }}
                                     className={inputClass}
                                   />
+                                  )}
                                 </div>
                                 <p className="mt-2 text-center text-xs font-bold text-slate-500 dark:text-slate-400">
                                   {unitLabel}
@@ -2441,63 +2390,16 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                           </div>
                         );
                       })}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
 
-                <div className="mt-4 sm:mt-6 flex flex-col sm:flex-row gap-2 sm:gap-3">
-                  {!isHistoryMode && (
-                    <Button
-                      variant="outline"
-                      className="w-full h-11 sm:h-12 rounded-xl font-black uppercase tracking-wider text-xs sm:text-sm text-rose-600 border-2 border-rose-200 hover:bg-rose-50 dark:text-rose-400 dark:border-rose-800 dark:hover:bg-rose-950/30"
-                      onClick={() => {
-                        onRemoveExercise(loggingExercise.weekId, loggingExercise.dayId, loggingExercise.exercise.id);
-                        setLoggingExercise(null); setLogInputDraft({});
-                      }}
-                    >
-                      <Trash2 size={15} className="mr-1.5" />
-                      Eliminar
-                    </Button>
-                  )}
-                  <Button 
-                    variant="primary" 
-                    disabled={savingSession}
-                    className="w-full h-11 sm:h-12 rounded-xl font-black uppercase tracking-wider text-xs sm:text-sm bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-100 dark:shadow-indigo-950/50"
-                    onClick={async () => {
-                      const next = modalDayContext?.next;
-                      if (!isHistoryMode && loggingExercise) {
-                        setSavingSession(true);
-                        try {
-                          await onRoutinePlanFlush?.();
-                        } finally {
-                          setSavingSession(false);
-                        }
-                      }
-                      setLogInputDraft({});
-                      // Encadena con el siguiente ejercicio del día; en el último cierra el modal.
-                      if (next && loggingExercise) {
-                        setLoggingExercise({ ...loggingExercise, exercise: next });
-                        return;
-                      }
-                      setLoggingExercise(null);
-                    }}
-                  >
-                    {savingSession ? (
-                      <><Loader2 size={16} className="animate-spin mr-2" /> Guardando…</>
-                    ) : modalDayContext?.next ? (
-                      <>Guardar y siguiente <ChevronRight size={16} className="ml-1.5" /></>
-                    ) : (
-                      'Guardar sesión'
-                    )}
-                  </Button>
-                </div>
               </div>
-            </motion.div>
-            </div>
-          </div>
-        </AnimatePresence>,
-        document.body
-      )}
+        )}
+      </GlassModal>
 
       {createPortal(
         <AnimatePresence>
@@ -2514,19 +2416,19 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
                 onClick={() => setRmListOpen(false)}
-                className="fixed inset-0 min-h-[100dvh] bg-black/50 backdrop-blur-[2px]"
+                className="fixed inset-0 min-h-[100dvh] bg-slate-900/25 backdrop-blur-md dark:bg-black/45"
               />
               <motion.div
                 initial={{ opacity: 0, y: 24 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 16 }}
                 onClick={(e) => e.stopPropagation()}
-                className="relative z-10 w-full max-w-md max-h-[82vh] overflow-y-auto rounded-t-[28px] bg-white shadow-2xl sm:rounded-[28px] dark:bg-slate-900"
+                className="relative z-10 w-full max-w-sm max-h-[78vh] overflow-y-auto rounded-t-[28px] border border-white/50 bg-white/70 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl sm:rounded-[28px] dark:border-white/10 dark:bg-slate-900/65"
               >
-                <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white/95 px-5 py-4 dark:border-slate-800 dark:bg-slate-900/95">
+                <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/40 bg-white/40 px-4 py-3 backdrop-blur-xl dark:border-white/10 dark:bg-slate-900/40">
                   <div>
-                    <p className="text-base font-semibold text-slate-900 dark:text-slate-100">Tus RM</p>
-                    <p className="text-xs text-slate-500">Toca uno para cambiarlo</p>
+                    <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">Tus RM</p>
+                    <p className="text-[11px] text-slate-500">Toca uno para cambiarlo</p>
                   </div>
                   <button
                     type="button"
@@ -2537,18 +2439,18 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     <X size={18} />
                   </button>
                 </div>
-                <div className="px-3 py-3">
+                <div className="px-3 py-2">
                   {(!isCurrentWeekLive && tmDisplayIsHistorical) && (
-                    <p className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                    <p className="mb-2 rounded-xl bg-amber-50/80 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
                       Valores de {viewDateLabel}. Al volver a hoy verás los actuales.
                     </p>
                   )}
                   {effectiveTms.length === 0 ? (
-                    <p className="px-2 py-8 text-center text-sm text-slate-400">
+                    <p className="px-2 py-6 text-center text-sm text-slate-400">
                       Aún no hay marcas. Se guardan solas al registrar un ejercicio nuevo.
                     </p>
                   ) : (
-                    <ul className="space-y-1">
+                    <ul className="space-y-0.5">
                       {effectiveTms.map(tm => (
                         <li key={tm.id}>
                           <button
@@ -2559,24 +2461,22 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                               setRmListOpen(false);
                               setEditingTM(tm);
                             }}
-                            className="flex w-full items-center justify-between rounded-2xl px-3 py-3 text-left transition-colors hover:bg-slate-50 disabled:opacity-60 dark:hover:bg-slate-800/70"
+                            className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left transition-colors hover:bg-white/60 disabled:opacity-60 dark:hover:bg-white/5"
                           >
                             <span className="min-w-0">
-                              <span className="block truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+                              <span className="block truncate text-[13px] font-medium text-slate-800 dark:text-slate-100">
                                 {tm.name}
                               </span>
-                              {tm.sharedToSocial ? (
-                                <span className="text-[11px] text-slate-400">Visible para amigos</span>
-                              ) : (
-                                <span className="text-[11px] text-slate-400">Solo tú</span>
-                              )}
+                              <span className="text-[11px] text-slate-400">
+                                {tm.sharedToSocial ? 'Visible para amigos' : 'Solo tú'}
+                              </span>
                             </span>
                             <span className="shrink-0 text-right">
-                              <span className="block text-lg font-semibold tabular-nums text-slate-900 dark:text-white">
+                              <span className="block text-[15px] font-semibold tabular-nums text-slate-900 dark:text-white">
                                 {tm.value}
-                              </span>
-                              <span className="text-[11px] text-slate-400">
-                                {tm.mode === 'weight' ? 'kg' : tm.mode === 'reps' ? 'reps' : 's'}
+                                <span className="ml-1 text-[11px] font-medium text-slate-400">
+                                  {tm.mode === 'weight' ? 'kg' : tm.mode === 'reps' ? 'reps' : 's'}
+                                </span>
                               </span>
                             </span>
                           </button>
@@ -2598,9 +2498,9 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                           sharedToSocial: true,
                         });
                       }}
-                      className="mt-2 flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-slate-200 py-3 text-sm font-medium text-slate-600 hover:border-indigo-300 hover:text-indigo-600 dark:border-slate-700 dark:text-slate-300"
+                      className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300/70 py-2.5 text-sm font-medium text-slate-600 hover:border-indigo-300 hover:text-indigo-600 dark:border-slate-600 dark:text-slate-300"
                     >
-                      <Plus size={16} />
+                      <Plus size={15} />
                       Añadir RM
                     </button>
                   )}
@@ -2628,56 +2528,51 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={closeTmModal}
-              className="fixed inset-0 min-h-[100dvh] bg-black/75 backdrop-blur-sm"
+              className="fixed inset-0 min-h-[100dvh] bg-slate-900/25 backdrop-blur-md dark:bg-black/45"
             />
             <motion.div 
-              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              initial={{ opacity: 0, scale: 0.96, y: 12 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              exit={{ opacity: 0, scale: 0.96, y: 12 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative z-10 w-full max-w-md max-h-[90vh] overflow-y-auto bg-white dark:bg-slate-900 rounded-2xl sm:rounded-[2.5rem] shadow-2xl border border-slate-100 dark:border-slate-700"
+              className="relative z-10 w-full max-w-sm max-h-[88vh] overflow-y-auto rounded-3xl border border-white/50 bg-white/75 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl dark:border-white/10 dark:bg-slate-900/70"
             >
-              <div className="p-6 sm:p-8 md:p-10">
-                <div className="flex items-center justify-between mb-8">
-                  <div className="flex items-center gap-4">
-                    <div className="bg-indigo-600 p-3 rounded-2xl shadow-lg shadow-indigo-100 dark:shadow-indigo-950/50">
-                      <Settings2 className="text-white" size={24} />
-                    </div>
-                    <div>
-                      <h3 className="text-2xl font-black text-slate-900 dark:text-slate-100 uppercase tracking-tight">
-                        {editingTM.id === NEW_TM_DRAFT_ID ? 'Nuevo RM' : 'Editar RM'}
-                      </h3>
-                      <p className="text-slate-400 dark:text-slate-500 text-xs font-bold uppercase tracking-widest mt-1">
-                        {editingTM.id === NEW_TM_DRAFT_ID
-                          ? 'Nombre y valor · cierra sin guardar para cancelar'
-                          : 'Cambia la marca y listo'}
-                      </p>
-                    </div>
+              <div className="p-4 sm:p-5">
+                <div className="mb-4 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                      {editingTM.id === NEW_TM_DRAFT_ID ? 'Nuevo RM' : 'Editar RM'}
+                    </h3>
+                    <p className="text-[11px] text-slate-500">
+                      {editingTM.id === NEW_TM_DRAFT_ID
+                        ? 'Nombre y valor. Cierra para cancelar.'
+                        : 'Cambia la marca y guarda'}
+                    </p>
                   </div>
                   <button 
                     onClick={closeTmModal}
-                    className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full transition-colors"
+                    className="rounded-full p-1.5 text-slate-400 hover:bg-white/60 dark:hover:bg-white/10"
                   >
-                    <X size={24} className="text-slate-400" />
+                    <X size={18} />
                   </button>
                 </div>
 
-                <div className="space-y-6">
+                <div className="space-y-3">
                   <div>
-                    <label className="text-[11px] font-black uppercase text-slate-400 mb-3 block tracking-[0.2em]">Nombre del Ejercicio</label>
+                    <label className="mb-1.5 block text-[11px] font-medium text-slate-500">Ejercicio</label>
                     <Input 
                       value={editingTM.name}
                       onChange={(e) => {
                         setTmModalError('');
                         setEditingTM({ ...editingTM, name: e.target.value });
                       }}
-                      className="h-16 text-lg font-black uppercase tracking-widest rounded-3xl border-2 border-slate-100 dark:border-slate-600 focus:border-indigo-500 shadow-md shadow-slate-200/60 dark:shadow-none bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                      className="h-11 rounded-xl border border-white/60 bg-white/70 text-sm font-medium text-slate-900 shadow-none dark:border-white/10 dark:bg-slate-800/70 dark:text-white"
                     />
                   </div>
 
-                  <div className="grid grid-cols-2 gap-6">
+                  <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="text-[11px] font-black uppercase text-slate-400 mb-3 block tracking-[0.2em]">Valor Máximo</label>
+                      <label className="mb-1.5 block text-[11px] font-medium text-slate-500">Valor</label>
                     <Input 
                       type="number"
                       min={1}
@@ -2688,18 +2583,18 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                         setTmModalError('');
                         setEditingTM({ ...editingTM, value: Number.isNaN(v) || v < 1 ? 0 : v });
                       }}
-                        className="h-16 text-2xl font-black text-center rounded-3xl border-2 border-slate-100 dark:border-slate-600 focus:border-indigo-500 shadow-md shadow-slate-200/60 dark:shadow-none bg-white dark:bg-slate-800 text-slate-900 dark:text-white"
+                        className="h-11 rounded-xl border border-white/60 bg-white/70 text-center text-lg font-semibold tabular-nums text-slate-900 shadow-none dark:border-white/10 dark:bg-slate-800/70 dark:text-white"
                       />
                     </div>
                   <div>
-                    <label className="text-[11px] font-black uppercase text-slate-400 mb-3 block tracking-[0.2em]">Unidad</label>
+                    <label className="mb-1.5 block text-[11px] font-medium text-slate-500">Unidad</label>
                     <select 
                       value={editingTM.mode}
                       onChange={(e) => {
                         setTmModalError('');
                         setEditingTM({ ...editingTM, mode: e.target.value as ExerciseMode });
                       }}
-                      className="w-full h-16 px-6 text-sm font-black uppercase tracking-widest rounded-3xl border-2 border-slate-100 dark:border-slate-600 focus:border-indigo-500 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white outline-none appearance-none cursor-pointer shadow-md shadow-slate-200/60 dark:shadow-none"
+                      className="h-11 w-full cursor-pointer appearance-none rounded-xl border border-white/60 bg-white/70 px-3 text-sm font-medium text-slate-900 outline-none dark:border-white/10 dark:bg-slate-800/70 dark:text-white"
                     >
                       <option value="weight">Kilogramos (KG)</option>
                       <option value="reps">Repeticiones (REPS)</option>
@@ -2708,40 +2603,74 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   </div>
                   </div>
 
-                  <div className="flex items-center gap-3 p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-600">
-                    <button
-                      type="button"
-                      role="checkbox"
-                      aria-checked={!!editingTM.sharedToSocial}
-                      onClick={() => setEditingTM({ ...editingTM, sharedToSocial: !editingTM.sharedToSocial })}
-                      className={cn(
-                        "w-12 h-12 rounded-xl flex items-center justify-center transition-all border-2",
-                        editingTM.sharedToSocial
-                          ? "bg-indigo-600 border-indigo-600 text-white"
-                          : "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-600 text-slate-400"
-                      )}
-                    >
-                      <CheckCircle2 size={24} className={editingTM.sharedToSocial ? "opacity-100" : "opacity-50"} />
-                    </button>
+                  {tmValueChanged && (
                     <div>
-                      <p className="font-bold text-slate-900 dark:text-slate-100">Compartir</p>
-                      <p className="text-xs text-slate-500 dark:text-slate-400">
-                        Visible en tu perfil y tus amigos reciben aviso cuando batas el récord
+                      <label className="mb-1.5 block text-[11px] font-medium text-slate-500">
+                        {storedTmValue} → {editingTM.value}
+                      </label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {([
+                          { kind: 'record', label: 'Marca nueva' },
+                          { kind: 'correction', label: 'Estaba mal' },
+                        ] as const).map(opt => (
+                          <button
+                            key={opt.kind}
+                            type="button"
+                            onClick={() => setTmChangeKind(opt.kind)}
+                            aria-pressed={tmChangeKindEffective === opt.kind}
+                            className={cn(
+                              'rounded-xl border px-3 py-2 text-xs font-semibold transition-all',
+                              tmChangeKindEffective === opt.kind
+                                ? 'border-indigo-500 bg-indigo-600 text-white'
+                                : 'border-white/50 bg-white/50 text-slate-500 hover:bg-white/80 dark:border-white/10 dark:bg-slate-800/50'
+                            )}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="mt-2 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+                        {tmChangeKindEffective === 'record'
+                          ? 'Se guarda como marca de hoy y se verá el salto en Progreso.'
+                          : 'Corrige el historial. En Progreso no habrá salto.'}
                       </p>
                     </div>
-                  </div>
+                  )}
+
+                  <button
+                    type="button"
+                    role="checkbox"
+                    aria-checked={!!editingTM.sharedToSocial}
+                    onClick={() => setEditingTM({ ...editingTM, sharedToSocial: !editingTM.sharedToSocial })}
+                    className="flex w-full items-center gap-3 rounded-xl border border-white/50 bg-white/40 px-3 py-2.5 text-left dark:border-white/10 dark:bg-slate-800/40"
+                  >
+                    <span
+                      className={cn(
+                        'flex h-8 w-8 items-center justify-center rounded-lg border',
+                        editingTM.sharedToSocial
+                          ? 'border-indigo-500 bg-indigo-600 text-white'
+                          : 'border-slate-200 bg-white/70 text-slate-400 dark:border-slate-600 dark:bg-slate-800'
+                      )}
+                    >
+                      <CheckCircle2 size={16} />
+                    </span>
+                    <span>
+                      <span className="block text-sm font-medium text-slate-900 dark:text-slate-100">Compartir</span>
+                      <span className="block text-[11px] text-slate-500">Aviso a amigos si bates el récord</span>
+                    </span>
+                  </button>
                 </div>
 
                 {tmModalError ? (
-                  <p className="mt-6 text-sm font-bold text-rose-600 dark:text-rose-400 text-center" role="alert">
+                  <p className="mt-3 text-center text-sm font-medium text-rose-600 dark:text-rose-400" role="alert">
                     {tmModalError}
                   </p>
                 ) : null}
 
-                <div className="flex flex-col gap-3 mt-10">
+                <div className="mt-5 flex flex-col gap-2">
                   <Button 
                     variant="primary" 
-                    className="w-full h-16 rounded-3xl font-black uppercase tracking-widest bg-indigo-600 hover:bg-indigo-700 shadow-xl shadow-indigo-100 dark:shadow-indigo-950/50 transition-all active:scale-95"
+                    className="h-11 w-full rounded-xl text-sm font-semibold"
                     onClick={async () => {
                       if (editingTM.id === NEW_TM_DRAFT_ID) {
                         const name = editingTM.name.trim();
@@ -2767,12 +2696,16 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                         return;
                       }
                       const valueToSave = editingTM.value === 0 ? 50 : editingTM.value;
-                      onUpdateTM(editingTM.id, { 
-                        name: editingTM.name, 
-                        value: valueToSave, 
-                        mode: editingTM.mode,
-                        sharedToSocial: editingTM.sharedToSocial 
-                      });
+                      onUpdateTM(
+                        editingTM.id,
+                        {
+                          name: editingTM.name,
+                          value: valueToSave,
+                          mode: editingTM.mode,
+                          sharedToSocial: editingTM.sharedToSocial,
+                        },
+                        tmChangeKindEffective
+                      );
                       closeTmModal();
                     }}
                   >
@@ -2781,7 +2714,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   {editingTM.id !== NEW_TM_DRAFT_ID ? (
                     <Button 
                       variant="outline" 
-                      className="w-full h-16 rounded-3xl font-black uppercase tracking-widest text-rose-500 border-2 border-rose-100 hover:bg-rose-50 hover:border-rose-200"
+                      className="h-10 w-full rounded-xl text-sm font-medium text-rose-500 border-rose-200/70 hover:bg-rose-50/70"
                       onClick={() => {
                         onRemoveTM(editingTM.id);
                         closeTmModal();
@@ -3003,13 +2936,6 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
 
                 </div>
 
-                <div className="mt-4 p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 flex items-start gap-2">
-                  <Lightbulb size={18} className="text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
-                  <div className="text-xs leading-snug">
-                    <p className="font-bold text-amber-800 dark:text-amber-200">Torneos</p>
-                    <p className="text-amber-700 dark:text-amber-300 mt-0.5">En <span className="font-black">Comunidad → Torneos</span> puedes competir con amigos en este ejercicio.</p>
-                  </div>
-                </div>
                 {newExModalError ? (
                   <p className="mt-3 text-sm font-bold text-rose-600 dark:text-rose-400 text-center" role="alert">
                     {newExModalError}

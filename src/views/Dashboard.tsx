@@ -10,7 +10,7 @@ import {
   useTransform,
   type Variants,
 } from 'motion/react';
-import { Trophy, TrendingUp, Dumbbell, ChevronRight, MapPin, Clock, Bell } from 'lucide-react';
+import { Trophy, TrendingUp, Dumbbell, MapPin, Bell } from 'lucide-react';
 import { 
   ComposedChart, 
   Area, 
@@ -19,6 +19,7 @@ import {
   YAxis, 
   CartesianGrid, 
   Tooltip, 
+  ReferenceLine,
   ResponsiveContainer
 } from 'recharts';
 import { Card } from '@/src/components/ui/Card';
@@ -31,6 +32,7 @@ import { entryDateISO } from '@/src/lib/calendarWeekDate';
 import { cn } from '@/src/lib/utils';
 import {
   computeRoutineProgressTotal,
+  firstKnownTmValues,
   progressValueFromHistoryEntry,
 } from '@/src/lib/routineProgressTotal';
 import { weekOfYearFromDate, getMesocycleWeekIndex, weekStartDateForWeekOfYear } from '@/src/lib/mesocycleWeek';
@@ -44,8 +46,36 @@ import { EASE_OUT, VIEW_TRANSITION } from '@/src/lib/motionPresets';
  * estuviera en DashboardView, cada tick repintaría también todos los gráficos.
  */
 /** Props estáticas de Recharts: como literales inline cambiaban de identidad en cada render. */
-const CHART_MARGIN = { top: 12, right: 10, left: 0, bottom: 2 } as const;
+const CHART_MARGIN = { top: 8, right: 4, left: 0, bottom: 0 } as const;
 const Y_AXIS_DOMAIN = ['dataMin - 8', 'dataMax + 8'] as const;
+
+/** Curva suave: los escalones se leían como bloques cuadrados. */
+const RM_LINE_TYPE = 'monotone' as const;
+
+/**
+ * Eje Y en números redondos, con los cortes calculados a mano.
+ *
+ * Dejar que Recharts los repartiese (`tickCount`) daba series como 135, 139, 143, 145:
+ * ni redondas ni a la misma distancia. Aquí se elige un paso múltiplo de 5 o 10 y los
+ * cortes caen justo en él, así el valor del RM coincide con una línea de la rejilla.
+ */
+function buildYAxis(values: number[]): { domain: [number, number]; ticks: number[] } {
+  const clean = values.filter((v): v is number => v != null && Number.isFinite(v));
+  if (clean.length === 0) return { domain: [0, 10], ticks: [0, 5, 10] };
+
+  const min = Math.min(...clean);
+  const max = Math.max(...clean);
+  const span = max - min;
+  // Línea plana (aún sin progreso): margen fijo para que no quede pegada al borde.
+  const pad = Math.max(5, span * 0.35);
+  const step = span > 120 ? 20 : span > 45 ? 10 : 5;
+
+  const lo = Math.max(0, Math.floor((min - pad) / step) * step);
+  const hi = Math.ceil((max + pad) / step) * step;
+  const ticks: number[] = [];
+  for (let v = lo; v <= hi; v += step) ticks.push(v);
+  return { domain: [lo, hi], ticks };
+}
 const X_TICK_DARK = { fontSize: 11, fill: 'rgba(255,255,255,0.45)' } as const;
 const X_TICK_LIGHT = { fontSize: 11, fill: '#94a3b8' } as const;
 const Y_TICK_DARK = { fontSize: 10, fill: 'rgba(255,255,255,0.32)' } as const;
@@ -245,26 +275,6 @@ function tmConfigFor(name: string, mbMode: boolean): TmCardConfig {
  * Tarjeta de progreso de un TM. Memoizada: el dashboard se repinta con check-ins,
  * torneos y refrescos que no afectan a estos gráficos.
  */
-/** Con un solo punto (o todos iguales) la curva es una raya plana que parece un fallo. */
-function isFlatSeries(values: Array<number | null | undefined>): boolean {
-  const nums = values.filter((v): v is number => v != null && !Number.isNaN(v));
-  return nums.length < 2 || new Set(nums).size < 2;
-}
-
-/**
- * Sin histórico la gráfica sería un punto suelto, así que se añade un arranque en 0:
- * se ve la subida hasta la marca actual en vez de un hueco vacío.
- */
-function withZeroStart<K extends string>(
-  data: Array<{ date: string } & Record<K, number | null>>,
-  key: K
-): Array<{ date: string } & Record<K, number | null>> {
-  if (!isFlatSeries(data.map(p => p[key]))) return data;
-  const first = data.find(p => p[key] != null);
-  if (!first) return data;
-  return [{ date: 'Inicio', [key]: 0 } as { date: string } & Record<K, number | null>, ...data];
-}
-
 const TmProgressCard = React.memo(function TmProgressCard({
   tm,
   config,
@@ -292,35 +302,54 @@ const TmProgressCard = React.memo(function TmProgressCard({
     [unit]
   );
   const renderDot = useCallback(
-    (dotProps: { cx?: number; cy?: number; payload?: { value?: number | null } }) => {
+    (dotProps: { cx?: number; cy?: number; index?: number; payload?: { value?: number | null } }) => {
       const v = dotProps.payload?.value;
       if (v == null || Number.isNaN(v)) return null;
       const { cx, cy } = dotProps;
       if (cx == null || cy == null) return null;
-      return <circle cx={cx} cy={cy} r={3} fill={config.color} stroke="none" />;
+      const prev = chartData[(dotProps.index ?? 0) - 1]?.value;
+      if (prev != null && prev === v) return null;
+      return <circle cx={cx} cy={cy} r={4} fill={config.color} stroke={isDark ? '#0f172a' : '#fff'} strokeWidth={1.5} />;
     },
-    [config.color]
+    [config.color, chartData, isDark]
   );
+  // El eje se calcula con los datos y con el RM vivo, para que la línea de referencia
+  // entre siempre en el encuadre aunque el salto sea de hoy y aún no haya snapshot.
+  const yAxis = useMemo(
+    () => buildYAxis([...chartData.map(d => d.value as number), tm.value]),
+    [chartData, tm.value]
+  );
+  const knownPoints = chartData.filter(d => d.value != null);
+  const firstKnown = knownPoints[0]?.value;
+  const lastKnown = knownPoints[knownPoints.length - 1]?.value;
+  const delta =
+    firstKnown != null && lastKnown != null && lastKnown !== firstKnown
+      ? lastKnown - firstKnown
+      : null;
 
   return (
     // Sin `initial`/`animate` propios: hereda el escalonado de la raíz para que todo entre al mismo ritmo.
     <motion.div variants={ENTER_ITEM}>
-      <Card padding="md" rounded="xl" className="group hover:shadow-xl hover:shadow-slate-200/50 dark:hover:shadow-slate-900/50 dark:border-slate-700/60 border border-slate-100 overflow-hidden">
-        <div className="flex justify-between items-center mb-2">
-          <div className={cn("p-3 rounded-2xl", config.bg, "dark:bg-opacity-50")}>
-            <Dumbbell size={20} className={config.text} />
+      <Card padding="md" rounded="2xl" variant="glass" className="group relative overflow-hidden">
+        <div className="flex justify-between items-center mb-3">
+          <div className={cn("p-2.5 rounded-2xl", config.bg, "dark:bg-opacity-50")}>
+            <Dumbbell size={18} className={config.text} />
           </div>
           <div className="text-right">
-            <div className="text-2xl font-black text-slate-900 dark:text-white">
+            <div className="text-xl font-semibold tabular-nums text-slate-900 dark:text-white">
               <CountUpNumber value={tm.value} />
-              <span className="text-xs text-slate-400 dark:text-slate-500 ml-1">{unit}</span>
+              <span className="text-xs font-medium text-slate-400 dark:text-slate-500 ml-1">{unit}</span>
             </div>
             {stat ? (
-              <AlternatingStat abs={stat.abs} pct={stat.pct} className="text-xs font-bold block mt-0.5" />
+              <AlternatingStat abs={stat.abs} pct={stat.pct} className="text-xs font-semibold block mt-0.5" />
+            ) : delta != null ? (
+              <span className={cn('text-xs font-semibold', delta > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500')}>
+                {delta > 0 ? '+' : ''}{Math.round(delta)} {unit}
+              </span>
             ) : null}
           </div>
         </div>
-        <h3 className="font-bold text-slate-800 dark:text-slate-200 mb-4">{tm.name}</h3>
+        <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-200">{tm.name}</h3>
         <AnimatePresence mode="wait">
           <motion.div
             key={chartKey}
@@ -329,7 +358,7 @@ const TmProgressCard = React.memo(function TmProgressCard({
             exit={CHART_ENTER_EXIT}
             transition={CHART_ENTER_TRANSITION}
             // Recharts 3 hace focusable el gráfico: sin esto queda un recuadro de foco al tocarlo.
-            className="relative h-[156px] max-[360px]:h-[140px] sm:h-[176px] md:h-[196px] w-full -mx-1 sm:-mx-2 outline-none [&_.recharts-wrapper]:outline-none [&_.recharts-surface]:outline-none"
+            className="relative h-[132px] w-full overflow-hidden outline-none max-[360px]:h-[120px] sm:h-[144px] md:h-[152px] [&_.recharts-wrapper]:overflow-hidden [&_.recharts-wrapper]:outline-none [&_.recharts-surface]:overflow-hidden [&_.recharts-surface]:outline-none"
             onPointerDownCapture={(e) => e.stopPropagation()}
             onPointerMoveCapture={(e) => e.stopPropagation()}
             onTouchStart={(e) => e.stopPropagation()}
@@ -337,21 +366,23 @@ const TmProgressCard = React.memo(function TmProgressCard({
             style={{ touchAction: 'pan-x pan-y', WebkitTapHighlightColor: 'transparent', outline: 'none' }}
           >
             <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={withZeroStart(chartData, 'value')} margin={CHART_MARGIN}>
+              <ComposedChart data={chartData} margin={CHART_MARGIN}>
                 <defs>
                   <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={config.color} stopOpacity={0.42}/>
+                    <stop offset="0%" stopColor={config.color} stopOpacity={0.28}/>
                     <stop offset="100%" stopColor={config.color} stopOpacity={0}/>
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 6" vertical={false} stroke={isDark ? GRID_STROKE_DARK : GRID_STROKE_LIGHT} />
                 <XAxis dataKey="date" interval="preserveStartEnd" minTickGap={22} axisLine={false} tickLine={false} tick={isDark ? X_TICK_DARK : X_TICK_LIGHT} />
                 <YAxis
-                  width={32}
+                  width={34}
                   axisLine={false}
                   tickLine={false}
                   tick={isDark ? Y_TICK_DARK : Y_TICK_LIGHT}
-                  domain={Y_AXIS_DOMAIN as unknown as [string, string]}
+                  domain={yAxis.domain}
+                  ticks={yAxis.ticks}
+                  allowDecimals={false}
                 />
                 <Tooltip
                   cursor={false}
@@ -360,8 +391,16 @@ const TmProgressCard = React.memo(function TmProgressCard({
                   itemStyle={itemStyle}
                   formatter={formatter}
                 />
+                {/* Nivel actual: da una referencia fija contra la que leer el resto de la línea. */}
+                <ReferenceLine
+                  y={tm.value}
+                  stroke={config.color}
+                  strokeOpacity={0.45}
+                  strokeDasharray="2 5"
+                  strokeWidth={1}
+                />
                 <Area
-                  type="monotone"
+                  type={RM_LINE_TYPE}
                   dataKey="value"
                   stroke="none"
                   fillOpacity={1}
@@ -373,10 +412,12 @@ const TmProgressCard = React.memo(function TmProgressCard({
                   connectNulls
                 />
                 <Line
-                  type="monotone"
+                  type={RM_LINE_TYPE}
                   dataKey="value"
                   stroke={config.color}
                   strokeWidth={2.25}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
                   dot={renderDot}
                   activeDot={activeDot}
                   fill="none"
@@ -457,16 +498,15 @@ function isEffectivelyZeroDelta(delta: number, kind: RoutineProgressKind): boole
   return Math.abs(delta) < 0.01;
 }
 
-/** Torneo a destacar en el dashboard: más participantes; empate → más reciente. */
-function pickFeaturedChallenge(list: Challenge[]): Challenge | undefined {
-  if (list.length === 0) return undefined;
+/** Torneos de más a menos movimiento: más participantes; empate → más reciente. */
+function sortChallengesByActivity(list: Challenge[]): Challenge[] {
   return [...list].sort((a, b) => {
     const byCount = b.participants.length - a.participants.length;
     if (byCount !== 0) return byCount;
     const ta = a.createdAt ? Date.parse(a.createdAt) : 0;
     const tb = b.createdAt ? Date.parse(b.createdAt) : 0;
     return tb - ta;
-  })[0];
+  });
 }
 
 export interface DashboardProps {
@@ -499,7 +539,10 @@ export interface DashboardProps {
   checkIns: GymCheckIn[];
   onUpdateUser?: (updates: Partial<User>) => void;
   onOpenProgram: () => void;
-  onOpenSocial: (tab?: 'friends' | 'challenges' | 'checkins', options?: { openCheckInModal?: boolean }) => void;
+  onOpenSocial: (
+    tab?: 'feed' | 'friends' | 'challenges' | 'checkins' | 'chat',
+    options?: { openCheckInModal?: boolean }
+  ) => void;
   onJoinFriendCheckIn: (checkIn: GymCheckIn) => void;
   /** Se incrementa al volver a Progreso desde otra pestaña; fuerza remount de gráficos y replay de animación. */
   chartEnterKey?: number;
@@ -623,11 +666,6 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
     setProgressMode(mode);
     onUpdateUser?.({ progressMode: mode === 'week' ? 'month' : 'year' });
   }, [onUpdateUser]);
-  /** Snapshot de referencia para % de mejora (checkpoint) o el primero del historial. */
-  const baselineEntryForGains = useMemo(() => {
-    if (!history.length) return undefined;
-    return history[0];
-  }, [history]);
 
   const routineStart = useMemo(
     () => computeRoutineStartDate(routineCreatedAtProp, history),
@@ -643,9 +681,15 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
 
   const displayRoutineProgress = routineProgressMeta.value;
 
+  /** Alta de cada TM: el peso con el que se dio de alta, no 0. */
+  const firstKnownTms = useMemo(
+    () => firstKnownTmValues(history, trainingMaxes),
+    [history, trainingMaxes]
+  );
+
   /**
-   * Ganancia: checkpoint TMs (si existe) o primer historial vs TM vivos.
-   * progressCheckpointTms es bullet-proof: se guarda al pulsar la bandera y no depende del historial.
+   * Ganancia: checkpoint TMs (si existe) o primer valor conocido de cada TM vs TM vivos.
+   * Añadir un TM no cuenta como subida desde 0.
    */
   const { totalGain, totalGainPct } = useMemo(() => {
     const currentTotal = routineProgressMeta.value;
@@ -657,8 +701,12 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
         value: progressCheckpointTms[tm.id] ?? tm.value,
       }));
       base = computeRoutineProgressTotal(tmsAtCp).value;
-    } else if (baselineEntryForGains) {
-      base = progressValueFromHistoryEntry(baselineEntryForGains, trainingMaxes);
+    } else if (trainingMaxes.length > 0) {
+      const tmsAtBirth = trainingMaxes.map((tm) => ({
+        ...tm,
+        value: firstKnownTms[tm.id] ?? tm.value,
+      }));
+      base = computeRoutineProgressTotal(tmsAtBirth).value;
     } else {
       return { totalGain: 0, totalGainPct: 0 };
     }
@@ -668,7 +716,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
     }
     const pct = base > 0 ? Math.round((gain / base) * 100) : 0;
     return { totalGain: gain, totalGainPct: pct };
-  }, [baselineEntryForGains, trainingMaxes, routineProgressMeta.value, routineProgressMeta.kind, progressCheckpointTms]);
+  }, [firstKnownTms, trainingMaxes, routineProgressMeta.value, routineProgressMeta.kind, progressCheckpointTms]);
 
   /** Variación del agregado de la rutina (misma unidad que `routineProgressMeta`), en ambas variantes. */
   const mainStatDisplay = useMemo(() => {
@@ -700,7 +748,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
       for (const h of history) {
         if (h.trainingMaxes == null) continue;
         for (const [tmId, val] of Object.entries(h.trainingMaxes)) {
-          if (val != null && !firstByTmId.has(tmId)) firstByTmId.set(tmId, val);
+          if (val != null && val > 0 && !firstByTmId.has(tmId)) firstByTmId.set(tmId, val);
         }
       }
     }
@@ -752,12 +800,17 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
   }, [challenges, user.id]);
 
   const featuredFriendTournament = useMemo(
-    () => pickFeaturedChallenge(friendTournamentsToJoin),
+    () => sortChallengesByActivity(friendTournamentsToJoin)[0],
     [friendTournamentsToJoin]
   );
 
-  const featuredJoinedChallenge = useMemo(
-    () => pickFeaturedChallenge(joinedChallenges),
+  /**
+   * Antes solo se veía uno y el resto quedaba detrás de «Ver todos», con un aviso que
+   * mandaba a una sección («Comunidad») que ya no existe. Tres caben de sobra y hacen
+   * que el apartado sirva para algo sin salir de Progreso.
+   */
+  const topJoinedChallenges = useMemo(
+    () => sortChallengesByActivity(joinedChallenges).slice(0, 3),
     [joinedChallenges]
   );
 
@@ -809,9 +862,9 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
       if (v == null || Number.isNaN(v)) return null;
       const { cx, cy } = dotProps;
       if (cx == null || cy == null) return null;
-      return <circle cx={cx} cy={cy} r={3} fill={routineMainStroke} stroke="none" />;
+      return <circle cx={cx} cy={cy} r={4} fill={routineMainStroke} stroke={isDarkTheme ? '#0f172a' : '#fff'} strokeWidth={1.5} />;
     },
-    [routineMainStroke]
+    [routineMainStroke, isDarkTheme]
   );
 
   const cl = Math.max(1, cycleLengthProp);
@@ -923,20 +976,24 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
         let carryTotal: number | null = null;
         const isCurrentMonth = selectedYear === cy && selectedMonth === cm;
         if (lastBefore && trainingMaxes.length > 0) {
-          carryTotal = progressValueFromHistoryEntry(lastBefore.source, trainingMaxes);
-        } else if (trainingMaxes.length > 0) {
-          carryTotal = 0;
+          carryTotal = progressValueFromHistoryEntry(lastBefore.source, trainingMaxes, {
+            missingTmFallback: firstKnownTms,
+          });
         }
 
         return Array.from({ length: weeksInMonth }, (_, i) => {
           const week = i + 1;
           const point = latestByWeek.get(week);
           const isCurrentSlot = isCurrentMonth && week === currentWeekSlotInMonth;
-          if (point?.source) carryTotal = progressValueFromHistoryEntry(point.source, trainingMaxes);
+          if (point?.source) {
+            carryTotal = progressValueFromHistoryEntry(point.source, trainingMaxes, {
+              missingTmFallback: firstKnownTms,
+            });
+          }
           if (isCurrentSlot) carryTotal = currentTotal;
           const isFuture = isCurrentMonth && week > currentWeekSlotInMonth;
           const preRoutine = weekSlotEndsBeforeRoutine(selectedYear, selectedMonth, week, rs);
-          let total: number | null = isFuture ? null : preRoutine ? 0 : carryTotal;
+          let total: number | null = isFuture || preRoutine ? null : carryTotal;
           return {
             key: `w${week}`,
             label: String(week),
@@ -968,9 +1025,9 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
       });
       let carryTotalBlock: number | null = null;
       if (lastBeforeCycle && trainingMaxes.length > 0) {
-        carryTotalBlock = progressValueFromHistoryEntry(lastBeforeCycle.source, trainingMaxes);
-      } else if (trainingMaxes.length > 0) {
-        carryTotalBlock = 0;
+        carryTotalBlock = progressValueFromHistoryEntry(lastBeforeCycle.source, trainingMaxes, {
+          missingTmFallback: firstKnownTms,
+        });
       }
 
       return Array.from({ length: cl }, (_, i) => {
@@ -978,11 +1035,15 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
         const point = latestBySlot.get(slot);
         const pw = cycleStartWeek + slot - 1;
         const isCurrentSlot = refYear === cyNow && pw === cwToday;
-        if (point?.source) carryTotalBlock = progressValueFromHistoryEntry(point.source, trainingMaxes);
+        if (point?.source) {
+          carryTotalBlock = progressValueFromHistoryEntry(point.source, trainingMaxes, {
+            missingTmFallback: firstKnownTms,
+          });
+        }
         if (isCurrentSlot) carryTotalBlock = currentTotal;
         const isFuture = refYear > cyNow || (refYear === cyNow && pw > cwToday);
         const preRoutine = blockSlotEndsBeforeRoutine(pw, refYear, rs);
-        let total: number | null = isFuture ? null : preRoutine ? 0 : carryTotalBlock;
+        let total: number | null = isFuture || preRoutine ? null : carryTotalBlock;
         return {
           key: `b${slot}`,
           label: String(slot),
@@ -1006,18 +1067,22 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
     });
     let carryTotal: number | null = null;
     if (lastBeforeYear && trainingMaxes.length > 0) {
-      carryTotal = progressValueFromHistoryEntry(lastBeforeYear.source, trainingMaxes);
-    } else if (trainingMaxes.length > 0) {
-      carryTotal = 0;
+      carryTotal = progressValueFromHistoryEntry(lastBeforeYear.source, trainingMaxes, {
+        missingTmFallback: firstKnownTms,
+      });
     }
     return Array.from({ length: 12 }, (_, month) => {
       const point = latestByMonth.get(month);
       const isCurrentSlot = selectedYear === cy && month === cm;
-      if (point?.source) carryTotal = progressValueFromHistoryEntry(point.source, trainingMaxes);
+      if (point?.source) {
+        carryTotal = progressValueFromHistoryEntry(point.source, trainingMaxes, {
+          missingTmFallback: firstKnownTms,
+        });
+      }
       if (isCurrentSlot) carryTotal = currentTotal;
       const isFuture = isCurrentYear && month > cm;
       const preRoutine = monthEntirelyBeforeRoutine(selectedYear, month, rs);
-      let total: number | null = isFuture ? null : preRoutine ? 0 : carryTotal;
+      let total: number | null = isFuture || preRoutine ? null : carryTotal;
       return {
         key: `m${month}`,
         label: MONTH_LABELS_SHORT[month],
@@ -1037,10 +1102,15 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
     blockCycleParams,
     routineStart,
     routineStartMs,
+    firstKnownTms,
   ]);
 
   const mainChartData = useMemo(() => chartContext.map(p => ({ date: p.label, total: p.total })), [chartContext]);
-  const mainChartDisplayData = useMemo(() => withZeroStart(mainChartData, 'total'), [mainChartData]);
+  const mainChartDisplayData = mainChartData;
+  const mainYAxis = useMemo(
+    () => buildYAxis(mainChartData.map(p => p.total as number)),
+    [mainChartData]
+  );
 
   const tmChartDataById = useMemo(() => {
     const byId: Record<string, Array<{ date: string; value: number | null }>> = {};
@@ -1058,7 +1128,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
           const lastBefore = lastParsedBeforeMonth(parsedHistory, selectedYear, selectedMonth, routineStartMs);
           const vBefore = lastBefore?.source.trainingMaxes?.[tm.id];
           const useCurrent = selectedYear === cy && selectedMonth === cm;
-          carryValue = vBefore != null ? vBefore : useCurrent ? tm.value : 0;
+          carryValue = vBefore != null ? vBefore : null;
         } else {
           const { refYear: refY, cycleStartWeek: csw } = blockCycleParams;
           const lastBefore = [...parsedHistory].reverse().find(item => {
@@ -1066,7 +1136,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
             return item.year < refY || (item.year === refY && item.planWeek < csw);
           });
           const vBefore = lastBefore?.source.trainingMaxes?.[tm.id];
-          carryValue = vBefore != null ? vBefore : tm.value;
+          carryValue = vBefore != null ? vBefore : null;
         }
       } else {
         const lastBefore = [...parsedHistory].reverse().find(item => {
@@ -1074,7 +1144,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
           return item.year < selectedYear;
         });
         const vBefore = lastBefore?.source.trainingMaxes?.[tm.id];
-        carryValue = vBefore != null ? vBefore : (selectedYear === cy ? tm.value : 0);
+        carryValue = vBefore != null ? vBefore : null;
       }
 
       byId[tm.id] = chartContext.map(point => {
@@ -1098,19 +1168,19 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
         }
         if (progressMode === 'week' && sameTemplateAllWeeksProp && slotNum != null) {
           if (weekSlotEndsBeforeRoutine(selectedYear, selectedMonth, slotNum, routineStart)) {
-            return { date: point.label, value: 0 };
+            return { date: point.label, value: null };
           }
         }
         if (progressMode === 'week' && !sameTemplateAllWeeksProp && slotNum != null) {
           const { refYear: refY, cycleStartWeek: csw } = blockCycleParams;
           const pw = csw + slotNum - 1;
           if (blockSlotEndsBeforeRoutine(pw, refY, routineStart)) {
-            return { date: point.label, value: 0 };
+            return { date: point.label, value: null };
           }
         }
         if (progressMode === 'year' && monthNum != null) {
           if (monthEntirelyBeforeRoutine(selectedYear, monthNum, routineStart)) {
-            return { date: point.label, value: 0 };
+            return { date: point.label, value: null };
           }
         }
         const rawValue = isCurrentSlot
@@ -1140,54 +1210,55 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
       initial="hidden"
       animate={enterControls}
       exit="exit"
-      className="max-w-5xl mx-auto mt-2 max-[400px]:mt-2 sm:mt-4 md:mt-8 mb-6 sm:mb-10 md:mb-12 px-3 max-[360px]:px-2 sm:px-5 md:px-6 py-5 max-[360px]:py-4 sm:py-8 md:py-10 pb-32 max-[360px]:pb-28 sm:pb-40 md:pb-44 rounded-2xl max-[400px]:rounded-xl sm:rounded-[2rem] bg-[var(--app-bg)]"
+      className="mx-auto w-full max-w-6xl bg-[var(--app-bg)] px-3 pt-3 pb-[calc(8.5rem+env(safe-area-inset-bottom))] max-[360px]:px-2 max-[360px]:pt-2 max-[400px]:pt-3 sm:px-5 sm:pt-5 sm:pb-[calc(9.5rem+env(safe-area-inset-bottom))] md:px-6 md:pt-6"
     >
-      <motion.header variants={ENTER_ITEM} className="mb-3 max-[400px]:mb-2 flex items-center justify-between gap-2 max-[360px]:gap-1">
-        <div className="flex items-center gap-2 max-[360px]:gap-1.5 min-w-0">
+      <motion.header variants={ENTER_ITEM} className="mb-4 flex flex-wrap items-center justify-between gap-2 max-[360px]:mb-3 max-[360px]:gap-1.5 sm:mb-5">
+        <div className="flex min-w-0 items-center gap-2 max-[360px]:gap-1.5">
           <Avatar 
-            src={user.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'User')}`}
+            src={user.avatar}
             name={user.name}
-            className="w-10 max-[360px]:w-9 h-10 max-[360px]:h-9 sm:w-12 sm:h-12 rounded-full border-2 border-slate-100 dark:border-slate-700 shadow-lg flex-shrink-0"
+            className="h-10 w-10 flex-shrink-0 rounded-full border-2 border-slate-100 shadow-lg max-[360px]:h-9 max-[360px]:w-9 sm:h-12 sm:w-12 dark:border-slate-700"
           />
           <div className="min-w-0">
-            <p className="text-lg font-semibold text-slate-900 dark:text-white truncate">Hola, {(user.name || 'Atleta').split(' ')[0]}</p>
+            <p className="truncate text-lg font-semibold text-slate-900 dark:text-white">Hola, {(user.name || 'Atleta').split(' ')[0]}</p>
             <p className="text-xs text-slate-500">Tus marcas y quién entrena hoy</p>
           </div>
         </div>
-        <ProgressModeSwitch mode={progressMode} onChange={handleProgressModeChange} />
+        <div className="flex flex-wrap items-center justify-end gap-1.5 max-[360px]:gap-1">
+          <ProgressModeSwitch mode={progressMode} onChange={handleProgressModeChange} />
+          {(progressMode === 'year' || progressMode === 'week') && (
+            <>
+              <select
+                value={selectedYear}
+                onChange={(e) => setSelectedYear(Number(e.target.value))}
+                className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 max-[360px]:h-7 max-[360px]:px-1.5 max-[360px]:text-[10px] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                style={{ WebkitTapHighlightColor: 'transparent' }}
+              >
+                {availableYears.map(year => (
+                  <option key={year} value={year}>{year}</option>
+                ))}
+              </select>
+              {progressMode === 'week' && sameTemplateAllWeeksProp && (
+                <select
+                  value={selectedMonth}
+                  onChange={(e) => setSelectedMonth(Number(e.target.value))}
+                  className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 max-[360px]:h-7 max-[360px]:px-1.5 max-[360px]:text-[10px] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  style={{ WebkitTapHighlightColor: 'transparent' }}
+                >
+                  {MONTH_LABELS_SHORT.map((month, idx) => (
+                    <option key={month} value={idx}>{month}</option>
+                  ))}
+                </select>
+              )}
+            </>
+          )}
+        </div>
       </motion.header>
 
-      {(progressMode === 'year' || progressMode === 'week') && (
-        <motion.div variants={ENTER_ITEM} className="mb-4 max-[400px]:mb-3 flex justify-end gap-1.5 max-[360px]:gap-1 flex-wrap">
-          <select
-            value={selectedYear}
-            onChange={(e) => setSelectedYear(Number(e.target.value))}
-            className="h-7 max-[360px]:h-6 sm:h-8 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 max-[360px]:px-1.5 text-[11px] max-[360px]:text-[10px] sm:text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500"
-            style={{ WebkitTapHighlightColor: 'transparent' }}
-          >
-            {availableYears.map(year => (
-              <option key={year} value={year}>{year}</option>
-            ))}
-          </select>
-          {progressMode === 'week' && sameTemplateAllWeeksProp && (
-            <select
-              value={selectedMonth}
-              onChange={(e) => setSelectedMonth(Number(e.target.value))}
-              className="h-7 max-[360px]:h-6 sm:h-8 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2 max-[360px]:px-1.5 text-[11px] max-[360px]:text-[10px] sm:text-xs font-semibold text-slate-700 dark:text-slate-200 outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500"
-              style={{ WebkitTapHighlightColor: 'transparent' }}
-            >
-              {MONTH_LABELS_SHORT.map((month, idx) => (
-                <option key={month} value={idx}>{month}</option>
-              ))}
-            </select>
-          )}
-        </motion.div>
-      )}
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 max-[360px]:gap-2 sm:gap-4 md:gap-6 mb-6 max-[400px]:mb-5 sm:mb-8 md:mb-10">
+      <div className="mb-6 grid grid-cols-1 gap-3 max-[360px]:gap-2 sm:mb-8 sm:gap-4 md:grid-cols-3 md:gap-5">
         {/* Main Stat Card - Progreso total */}
         <motion.div variants={ENTER_ITEM} className="md:col-span-3">
-        <Card padding="md" rounded="xl" className="relative overflow-hidden border border-slate-100 dark:border-slate-700/60 group hover:shadow-xl hover:shadow-slate-200/50 dark:hover:shadow-slate-900/50 p-4 max-[360px]:p-3">
+        <Card padding="md" rounded="2xl" variant="glass" className="relative overflow-hidden p-4 max-[360px]:p-3">
           <div className="flex justify-between items-center mb-2 max-[360px]:mb-1.5">
             <div className={cn("p-2.5 max-[360px]:p-2 rounded-xl max-[360px]:rounded-lg sm:rounded-2xl", "bg-indigo-50 dark:bg-indigo-950/50")}>
               <TrendingUp size={18} className="max-[360px]:size-4 sm:size-5 text-indigo-600 dark:text-indigo-400" />
@@ -1211,16 +1282,15 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
               <AlternatingStat
                 abs={mainStatDisplay.abs}
                 pct={mainStatDisplay.pct}
-                prefix="En esta rutina: "
                 className="text-xs sm:text-sm font-bold block mt-0.5"
               />
             </div>
           </div>
           <h3 className="font-semibold text-slate-800 dark:text-slate-200 mb-0.5 text-sm sm:text-base">
-            Cómo vas
+            Progreso general
           </h3>
-          <p className="text-xs text-indigo-600 dark:text-indigo-400 mb-3 truncate" title={activeRoutineName}>
-            {activeRoutineName}
+          <p className="mb-3 truncate text-xs text-slate-500 dark:text-slate-400">
+            Tus marcas
           </p>
           <AnimatePresence mode="wait">
             <motion.div
@@ -1229,7 +1299,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
               animate={CHART_ENTER_ANIMATE}
               exit={CHART_ENTER_EXIT}
               transition={CHART_ENTER_TRANSITION}
-              className="relative h-[168px] max-[360px]:h-[148px] sm:h-[188px] md:h-[210px] w-full -mx-1 sm:-mx-2 outline-none [&_.recharts-wrapper]:outline-none [&_.recharts-surface]:outline-none"
+              className="relative h-[160px] w-full overflow-hidden outline-none max-[360px]:h-[144px] sm:h-[176px] md:h-[188px] [&_.recharts-wrapper]:overflow-hidden [&_.recharts-wrapper]:outline-none [&_.recharts-surface]:overflow-hidden [&_.recharts-surface]:outline-none"
                 onPointerDownCapture={(e) => e.stopPropagation()}
                 onPointerMoveCapture={(e) => e.stopPropagation()}
                 onTouchStart={(e) => e.stopPropagation()}
@@ -1240,22 +1310,24 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
                 <ComposedChart data={mainChartDisplayData} margin={CHART_MARGIN}>
                   <defs>
                     <linearGradient id="colorTotalLight" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={routineMainGradTop} stopOpacity={0.4}/>
-                      <stop offset="100%" stopColor={routineMainGradTop} stopOpacity={0}/>
-                    </linearGradient>
-                    <linearGradient id="colorTotalDark" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={routineMainGradTop} stopOpacity={0.36}/>
-                      <stop offset="100%" stopColor={routineMainGradTop} stopOpacity={0}/>
+                    <stop offset="0%" stopColor={routineMainGradTop} stopOpacity={0.26}/>
+                    <stop offset="100%" stopColor={routineMainGradTop} stopOpacity={0}/>
+                  </linearGradient>
+                  <linearGradient id="colorTotalDark" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={routineMainGradTop} stopOpacity={0.22}/>
+                    <stop offset="100%" stopColor={routineMainGradTop} stopOpacity={0}/>
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 6" vertical={false} stroke={isDarkTheme ? GRID_STROKE_DARK : GRID_STROKE_LIGHT} />
                   <XAxis dataKey="date" interval="preserveStartEnd" minTickGap={22} axisLine={false} tickLine={false} tick={isDarkTheme ? X_TICK_DARK : X_TICK_LIGHT} />
                   <YAxis
-                    width={32}
+                    width={34}
                     axisLine={false}
                     tickLine={false}
                     tick={isDarkTheme ? Y_TICK_DARK : Y_TICK_LIGHT}
-                    domain={Y_AXIS_DOMAIN as unknown as [string, string]}
+                    domain={mainYAxis.domain}
+                    ticks={mainYAxis.ticks}
+                    allowDecimals={false}
                   />
                   <Tooltip 
                     cursor={false}
@@ -1264,8 +1336,15 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
                     itemStyle={mainTooltipItemStyle}
                     formatter={mainTooltipFormatter}
                   />
+                  <ReferenceLine
+                    y={displayRoutineProgress}
+                    stroke={routineMainStroke}
+                    strokeOpacity={0.4}
+                    strokeDasharray="2 5"
+                    strokeWidth={1}
+                  />
                   <Area
-                    type="monotone"
+                    type={RM_LINE_TYPE}
                     dataKey="total"
                     stroke="none"
                     fillOpacity={1}
@@ -1275,10 +1354,12 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
                     connectNulls
                   />
                   <Line
-                    type="monotone"
+                    type={RM_LINE_TYPE}
                     dataKey="total"
                     stroke={routineMainStroke}
                     strokeWidth={2.25}
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
                     dot={mainLineDot}
                     activeDot={mainActiveDot}
                     fill="none"
@@ -1311,94 +1392,85 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
         <StrengthInsights stats={sessionStats} isDark={isDarkTheme} enterKey={chartEnterKey} />
       </motion.div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-[400px]:gap-3 sm:gap-6 md:gap-8 mb-6 max-[400px]:mb-5 sm:mb-8 md:mb-10">
-        {/* Joined Challenges Section */}
+      <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 max-[400px]:mb-5 sm:mb-8 md:mb-10">
         <motion.section variants={ENTER_ITEM}>
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
-              <Trophy size={18} className="text-amber-500 flex-shrink-0" />
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="flex items-center gap-1.5 text-base font-semibold text-slate-800 dark:text-slate-100">
+              <Trophy size={18} className="shrink-0 text-amber-500" />
               Torneos
             </h2>
-            <Button variant="ghost" size="sm" onClick={() => onOpenSocial('challenges')} className="text-indigo-600 text-xs font-bold">
-              Ver todos
+            <Button variant="ghost" size="sm" onClick={() => onOpenSocial('challenges')} className="text-xs font-bold text-indigo-600">
+              {joinedChallenges.length > topJoinedChallenges.length
+                ? `Ver los ${joinedChallenges.length}`
+                : 'Ver todos'}
             </Button>
           </div>
-
           {featuredFriendTournament && (
-            <Card padding="md" rounded="2xl" className="mb-4 border-amber-200/80 dark:border-amber-700/50 bg-amber-50/40 dark:bg-amber-950/20">
-              <p className="text-[10px] font-black uppercase tracking-widest text-amber-800 dark:text-amber-300 mb-2">
-                Tus amigos — únete
-              </p>
-              <p className="text-xs text-slate-600 dark:text-slate-400 mb-3">
-                Destacamos el torneo con más participantes (si empatan, el más reciente). El resto en Comunidad.
+            <Card padding="md" rounded="2xl" variant="glass" className="mb-3">
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-300">
+                {friendTournamentsToJoin.length > 1
+                  ? `De tus amigos · ${friendTournamentsToJoin.length} abiertos`
+                  : 'Te invitan tus amigos'}
               </p>
               <button
                 type="button"
                 onClick={() => onOpenSocial('challenges')}
-                className="w-full text-left flex items-center justify-between gap-2 py-2 px-3 rounded-xl bg-white/80 dark:bg-slate-950/80 border border-amber-100 dark:border-amber-900/40 hover:border-indigo-300 dark:hover:border-indigo-600 transition-colors"
+                className="flex w-full items-center justify-between gap-3 text-left"
               >
                 <div className="min-w-0">
-                  <p className="font-bold text-slate-900 dark:text-slate-100 truncate text-sm">{featuredFriendTournament.title}</p>
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400">
-                    Por {featuredFriendTournament.createdBy?.name ?? 'Amigo'} · {featuredFriendTournament.exercise}
-                  </p>
-                  <p className="text-[10px] text-amber-700/90 dark:text-amber-400/90 mt-0.5">
-                    {featuredFriendTournament.participants.length} {featuredFriendTournament.participants.length === 1 ? 'persona unida' : 'personas unidas'}
-                  </p>
+                  <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{featuredFriendTournament.title}</p>
+                  <p className="text-[11px] text-slate-500">{featuredFriendTournament.exercise}</p>
                 </div>
-                <span className="text-[10px] font-black uppercase text-indigo-600 dark:text-indigo-400 flex-shrink-0">Unirse</span>
+                <span className="shrink-0 rounded-full bg-indigo-600 px-3 py-1 text-[10px] font-semibold text-white">Unirse</span>
               </button>
             </Card>
           )}
-          
-          <div className="space-y-4">
-            {featuredJoinedChallenge ? (
-              (() => {
-                const challenge = featuredJoinedChallenge;
+          <div className="space-y-2">
+            {topJoinedChallenges.length > 0 ? (
+              topJoinedChallenges.slice(0, 3).map(challenge => {
                 const usePts = challenge.usePointsSystem !== false;
                 const sorted = [...challenge.participants].sort((a, b) => {
                   if (!usePts) return b.value - a.value;
                   return b.score - a.score;
                 });
-                const myRank = sorted.findIndex(p => p.userId === user.id) + 1;
+                const myIdx = sorted.findIndex(p => p.userId === user.id);
+                const days = Math.max(0, Math.ceil((new Date(challenge.endDate).getTime() - Date.now()) / 86400000));
                 return (
-                  <Card key={challenge.id} padding="md" rounded="2xl" className="hover:border-indigo-200 dark:hover:border-indigo-700/50 transition-colors cursor-pointer" onClick={() => onOpenSocial('challenges')}>
+                  <Card
+                    key={challenge.id}
+                    padding="sm"
+                    rounded="2xl"
+                    variant="glass"
+                    className="cursor-pointer"
+                    onClick={() => onOpenSocial('challenges')}
+                  >
                     <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="flex -space-x-2 flex-shrink-0">
-                          {sorted.slice(0, 4).map((p) => (
-                            <Avatar key={p.userId} src={p.avatar} name={p.name} className="w-8 h-8 rounded-full border-2 border-white dark:border-slate-900" />
-                          ))}
-                        </div>
-                        <div className="min-w-0">
-                          <h3 className="font-bold text-slate-900 dark:text-slate-100 truncate">{challenge.title}</h3>
-                          <p className="text-[10px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-400">{challenge.exercise}</p>
-                          {joinedChallenges.length > 1 && (
-                            <p className="text-[10px] text-slate-400 mt-0.5">Tu torneo con más movimiento · Ver más en Comunidad</p>
-                          )}
-                        </div>
+                      <div className="min-w-0">
+                        <h3 className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{challenge.title}</h3>
+                        <p className="text-[11px] text-slate-400">
+                          {challenge.exercise} · {days === 0 ? 'Termina hoy' : `${days} días`}
+                        </p>
                       </div>
-                      <div className="text-right flex-shrink-0">
-                        <div className="flex items-center gap-1 justify-end">
-                          <span className="text-xs font-black text-slate-400 dark:text-slate-500">Puesto</span>
-                          <span className="text-lg font-black text-indigo-600 dark:text-indigo-400">#{myRank}</span>
-                        </div>
-                        <p className="text-[10px] text-slate-400 dark:text-slate-500 font-medium">de {challenge.participants.length} atletas</p>
-                      </div>
+                      {myIdx >= 0 ? (
+                        <span className="shrink-0 text-sm font-semibold text-indigo-600 dark:text-indigo-400">#{myIdx + 1}</span>
+                      ) : (
+                        <span className="shrink-0 text-[11px] text-slate-400">Sin marca</span>
+                      )}
                     </div>
                   </Card>
                 );
-              })()
+              })
             ) : !featuredFriendTournament ? (
-              <Card padding="md" className="text-center border-dashed border-2 border-slate-200 dark:border-slate-600 bg-transparent">
-                <p className="text-slate-400 dark:text-slate-500 text-sm font-medium">No te has unido a ningún torneo aún</p>
-                <Button variant="outline" size="sm" className="mt-2 rounded-xl" onClick={() => onOpenSocial('challenges')}>Explorar</Button>
+              <Card padding="md" variant="glass" rounded="2xl" className="border-dashed text-center">
+                <p className="text-sm font-medium text-slate-400">Aún no estás en ningún torneo</p>
+                <Button variant="outline" size="sm" className="mt-2 rounded-xl" onClick={() => onOpenSocial('challenges')}>
+                  Explorar
+                </Button>
               </Card>
             ) : null}
           </div>
         </motion.section>
 
-        {/* Today's Gym Check-ins */}
         <motion.section variants={ENTER_ITEM}>
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">

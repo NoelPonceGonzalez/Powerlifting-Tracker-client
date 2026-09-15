@@ -12,7 +12,7 @@ export const Card = React.forwardRef<HTMLDivElement, CardProps>(
     const variants = {
       white: 'bg-white border border-slate-100 shadow-sm dark:bg-slate-900 dark:border-slate-700 dark:text-slate-100 dark:shadow-none',
       dark: 'bg-slate-900 text-white shadow-2xl shadow-indigo-200 dark:shadow-black/50',
-      glass: 'bg-white/80 backdrop-blur-xl border border-white/20 shadow-2xl shadow-indigo-200/50 dark:bg-slate-950/85 dark:border-slate-700/60 dark:text-slate-100 dark:shadow-2xl dark:shadow-black/50',
+      glass: 'bg-white border border-white/40 shadow-sm shadow-slate-200/40 dark:bg-slate-900 dark:border-white/10 dark:text-slate-100 dark:shadow-none',
     };
 
     const paddings = {

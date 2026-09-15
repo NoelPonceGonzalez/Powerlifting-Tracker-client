@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { BellRing, Download, Dumbbell, Plus, Share, X } from 'lucide-react';
-import { useInstallPrompt } from '@/src/pwa/installPrompt';
+import { isAndroid, isIOS, useInstallPrompt } from '@/src/pwa/installPrompt';
 import { useWebNotifications } from '@/src/pwa/notifications';
 
 const DISMISS_KEY = {
@@ -104,7 +104,7 @@ export const InstallPrompt: React.FC = () => {
           transition={{ type: 'spring', stiffness: 320, damping: 30 }}
           role="dialog"
           aria-label={isNotificationsMode ? 'Activar notificaciones' : 'Instalar la aplicación'}
-          className="fixed inset-x-3 bottom-20 z-[60] mx-auto max-w-md sm:bottom-28"
+          className="fixed inset-x-3 bottom-24 z-[120050] mx-auto max-w-md sm:bottom-28"
         >
           <div className="relative overflow-hidden rounded-3xl border border-white/20 bg-white/90 p-5 shadow-2xl shadow-black/10 backdrop-blur-2xl dark:border-slate-700/60 dark:bg-slate-950/90 dark:shadow-black/60">
             <button
@@ -122,33 +122,59 @@ export const InstallPrompt: React.FC = () => {
               </div>
               <div className="min-w-0 flex-1">
                 <h2 className="text-base font-black uppercase tracking-tight text-slate-900 dark:text-slate-100">
-                  {isNotificationsMode ? 'Activar notificaciones' : 'Instalar Tracker'}
+                  {isNotificationsMode ? 'Activar notificaciones' : 'Instalar en el móvil'}
                 </h2>
                 <p className="mt-1 text-xs leading-snug text-slate-500 dark:text-slate-400">
                   {isNotificationsMode
                     ? 'Recibe avisos de tus entrenos y de la actividad de tus amigos aunque la app esté cerrada.'
-                    : needsManualInstructions
-                      ? 'Añádela a tu pantalla de inicio para abrirla como una app y recibir notificaciones.'
-                      : 'Instálala en tu dispositivo: se abre a pantalla completa, funciona sin conexión y recibe notificaciones.'}
+                    : 'Añádela a la pantalla de inicio: se abre como una app, sin barra del navegador.'}
                 </p>
               </div>
             </div>
 
             {!isNotificationsMode && needsManualInstructions ? (
-              <ol className="mt-4 space-y-2 rounded-2xl bg-slate-50 p-4 text-xs font-medium text-slate-600 dark:bg-slate-900/70 dark:text-slate-300">
-                <li className="flex items-center gap-2">
-                  <Share size={16} className="shrink-0 text-indigo-600 dark:text-indigo-400" />
-                  <span>
-                    1. Pulsa <strong className="font-black">Compartir</strong> en la barra de Safari.
-                  </span>
-                </li>
-                <li className="flex items-center gap-2">
-                  <Plus size={16} className="shrink-0 text-indigo-600 dark:text-indigo-400" />
-                  <span>
-                    2. Elige <strong className="font-black">Añadir a pantalla de inicio</strong>.
-                  </span>
-                </li>
-              </ol>
+              <div className="mt-4 space-y-3">
+                <ol className="space-y-2 rounded-2xl bg-slate-50 p-4 text-xs font-medium text-slate-600 dark:bg-slate-900/70 dark:text-slate-300">
+                  {isIOS() ? (
+                    <>
+                      <li className="flex items-center gap-2">
+                        <Share size={16} className="shrink-0 text-indigo-600 dark:text-indigo-400" />
+                        <span>
+                          1. Pulsa <strong className="font-black">Compartir</strong> en Safari.
+                        </span>
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <Plus size={16} className="shrink-0 text-indigo-600 dark:text-indigo-400" />
+                        <span>
+                          2. Elige <strong className="font-black">Añadir a pantalla de inicio</strong>.
+                        </span>
+                      </li>
+                    </>
+                  ) : (
+                    <>
+                      <li className="flex items-center gap-2">
+                        <Download size={16} className="shrink-0 text-indigo-600 dark:text-indigo-400" />
+                        <span>
+                          1. Abre el menú {isAndroid() ? '⋮ de Chrome' : 'del navegador'}.
+                        </span>
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <Plus size={16} className="shrink-0 text-indigo-600 dark:text-indigo-400" />
+                        <span>
+                          2. Pulsa <strong className="font-black">Instalar app</strong> o <strong className="font-black">Añadir a pantalla de inicio</strong>.
+                        </span>
+                      </li>
+                    </>
+                  )}
+                </ol>
+                <button
+                  type="button"
+                  onClick={close}
+                  className="w-full rounded-2xl border-2 border-slate-200 px-4 py-3 text-xs font-black uppercase tracking-widest text-slate-500 dark:border-slate-700 dark:text-slate-300"
+                >
+                  Ahora no
+                </button>
+              </div>
             ) : (
               <div className="mt-4 flex gap-2">
                 <button
@@ -161,8 +187,7 @@ export const InstallPrompt: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => void (isNotificationsMode ? handleEnableNotifications() : handleInstall())}
-                  disabled={!isNotificationsMode && !canPrompt}
-                  className="flex flex-[1.4] items-center justify-center gap-2 rounded-2xl bg-indigo-600 px-4 py-3 text-xs font-black uppercase tracking-widest text-white shadow-lg shadow-indigo-300/50 transition-all active:scale-[0.98] disabled:opacity-50 dark:bg-indigo-500 dark:shadow-indigo-900/50"
+                  className="flex flex-[1.4] items-center justify-center gap-2 rounded-2xl bg-indigo-600 px-4 py-3 text-xs font-black uppercase tracking-widest text-white shadow-lg shadow-indigo-300/50 transition-all active:scale-[0.98] dark:bg-indigo-500 dark:shadow-indigo-900/50"
                 >
                   {isNotificationsMode ? (
                     <>

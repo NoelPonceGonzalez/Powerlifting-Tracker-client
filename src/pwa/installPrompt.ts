@@ -34,6 +34,11 @@ export function isIOS(): boolean {
   return /Macintosh/i.test(ua) && typeof document !== 'undefined' && 'ontouchend' in document;
 }
 
+export function isAndroid(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  return /Android/i.test(navigator.userAgent);
+}
+
 /**
  * `beforeinstallprompt` se dispara una sola vez y puede llegar antes de que React monte,
  * así que se captura a nivel de módulo y los componentes leen de aquí.
@@ -102,9 +107,9 @@ export async function promptInstall(): Promise<InstallOutcome> {
 }
 
 export interface UseInstallPromptResult extends InstallSnapshot {
-  /** iOS necesita instrucciones manuales (Compartir → Añadir a pantalla de inicio). */
+  /** El navegador no tiene diálogo nativo: hay que instalar desde el menú o Safari. */
   needsManualInstructions: boolean;
-  /** Hay algo que ofrecer al usuario: o el diálogo nativo o las instrucciones de iOS. */
+  /** Aún no está instalada: se puede ofrecer el aviso o el botón. */
   isInstallable: boolean;
   install: () => Promise<InstallOutcome>;
 }
@@ -112,12 +117,12 @@ export interface UseInstallPromptResult extends InstallSnapshot {
 export function useInstallPrompt(): UseInstallPromptResult {
   const state = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const install = useCallback(() => promptInstall(), []);
-  const needsManualInstructions = !state.isInstalled && !state.canPrompt && isIOS();
+  const needsManualInstructions = !state.isInstalled && !state.canPrompt;
 
   return {
     ...state,
     needsManualInstructions,
-    isInstallable: !state.isInstalled && (state.canPrompt || needsManualInstructions),
+    isInstallable: !state.isInstalled,
     install,
   };
 }

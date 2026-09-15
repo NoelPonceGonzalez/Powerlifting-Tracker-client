@@ -11,6 +11,7 @@ import { User } from '@/src/types';
 import type { AccountSummary } from '@/src/lib/savedAccounts';
 import { cn } from '@/src/lib/utils';
 import { VIEW_TRANSITION } from '@/src/lib/motionPresets';
+import { hasRealAvatar } from '@/src/lib/avatar';
 
 function touchDistance(a: Touch, b: Touch) {
   const dx = a.clientX - b.clientX;
@@ -360,6 +361,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <p className="text-sm text-slate-500 dark:text-slate-400">Cuenta, aspecto y avisos</p>
       </header>
 
+      <div className="mb-8">
+        <PwaSettingsSection />
+      </div>
+
       <div className="space-y-8">
         {/* Profile Section: cuenta(s) en este dispositivo + foto (tocar imagen) + datos */}
         <section>
@@ -401,7 +406,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         )}
                       >
                         <Avatar
-                          src={acc.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(acc.name || 'U')}`}
+                          src={acc.avatar}
                           name={acc.name}
                           className="w-11 h-11 rounded-xl border-2 border-white dark:border-slate-700 flex-shrink-0"
                         />
@@ -470,7 +475,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   aria-label="Cambiar foto de perfil: galería o cámara"
                 >
                   <Avatar
-                    src={user.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'User')}`}
+                    src={user.avatar}
                     name={user.name}
                     className="w-24 h-24 rounded-full border-2 border-slate-100 dark:border-slate-700 shadow-xl pointer-events-none"
                   />
@@ -513,7 +518,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       <Camera size={18} className="text-indigo-600 dark:text-indigo-400" />
                       Hacer foto
                     </button>
-                    {user.avatar && !user.avatar.startsWith('https://ui-avatars') && (
+                    {hasRealAvatar(user.avatar) && (
                       <button
                         type="button"
                         role="menuitem"
@@ -686,9 +691,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
           </Card>
         </section>
-
-        {/* App: instalación (PWA) y notificaciones del navegador */}
-        <PwaSettingsSection />
 
         {/* Danger Zone */}
         <section className="pt-8 border-t border-slate-100 dark:border-slate-700">

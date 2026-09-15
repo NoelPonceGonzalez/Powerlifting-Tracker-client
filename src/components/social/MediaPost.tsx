@@ -4,6 +4,7 @@ import { Heart, MessageCircle, Send, Trash2 } from 'lucide-react';
 import { Card } from '@/src/components/ui/Card';
 import { cn } from '@/src/lib/utils';
 import { mediaUrl } from '@/src/lib/api';
+import { avatarInitial, resolveAvatarUrl } from '@/src/lib/avatar';
 import { EASE_OUT } from '@/src/lib/motionPresets';
 import {
   addComment,
@@ -17,10 +18,11 @@ import {
 } from '@/src/lib/feedApi';
 
 export function Avatar({ name, avatar, size = 40 }: { name: string; avatar: string | null; size?: number }) {
-  if (avatar) {
+  const src = resolveAvatarUrl(avatar);
+  if (src) {
     return (
       <img
-        src={avatar}
+        src={src}
         alt={name}
         width={size}
         height={size}
@@ -34,7 +36,7 @@ export function Avatar({ name, avatar, size = 40 }: { name: string; avatar: stri
       className="flex items-center justify-center rounded-full bg-indigo-100 font-black text-indigo-600 dark:bg-indigo-950/60 dark:text-indigo-300"
       style={{ width: size, height: size, fontSize: size * 0.4 }}
     >
-      {name.trim().charAt(0).toUpperCase() || '?'}
+      {avatarInitial(name)}
     </div>
   );
 }
@@ -152,7 +154,7 @@ export const MediaPost: React.FC<MediaPostProps> = ({
   }, [post.id, onDeleted]);
 
   return (
-    <Card padding="none" rounded="3xl" className="overflow-hidden border border-slate-200/80 shadow-sm dark:border-slate-800">
+    <Card padding="none" rounded="md" className="overflow-hidden shadow-sm">
       <div className="flex items-center gap-3 px-4 py-3">
         <button
           type="button"
@@ -250,7 +252,7 @@ export const MediaPost: React.FC<MediaPostProps> = ({
 
         {post.caption && (
           <p className="mt-2 text-sm text-slate-700 dark:text-slate-200">
-            <span className="font-black text-slate-900 dark:text-slate-100">{post.author.name} </span>
+            <span className="font-semibold text-slate-900 dark:text-slate-100">{post.author.name} </span>
             {post.caption}
           </p>
         )}

@@ -4,6 +4,7 @@ import { motion } from 'motion/react';
 import { Camera, Film, Image as ImageIcon, Loader2, RefreshCw, Sparkles, X } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { MAX_UPLOAD_BYTES, publishMedia, type FeedPost } from '@/src/lib/feedApi';
+import { useEscapeClose } from '@/src/lib/useEscapeClose';
 
 interface PublishModalProps {
   onClose: () => void;
@@ -27,6 +28,8 @@ export const PublishModal: React.FC<PublishModalProps> = ({
   const [dragging, setDragging] = useState(false);
   const galleryRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
+
+  useEscapeClose(true, onClose);
 
   useEffect(() => {
     if (!file) return setPreviewUrl(null);

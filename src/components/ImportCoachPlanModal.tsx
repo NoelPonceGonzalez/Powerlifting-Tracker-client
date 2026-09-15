@@ -35,6 +35,9 @@ interface ImportCoachPlanModalProps {
   lastImport?: LastCoachImport | null;
   /** Nombre de la rutina sobre la que se va a volcar. */
   routineName: string;
+  /** Ciclo que ya eligió al crear la rutina. El archivo llena huecos; no lo cambia salvo que traiga más semanas. */
+  routineCycleLength?: number;
+  sameTemplateAllWeeks?: boolean;
   onClose: () => void;
   onConfirm: (result: ImportCoachPlanResult) => void | Promise<void>;
 }
@@ -57,6 +60,8 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
   planYear = new Date().getFullYear(),
   lastImport,
   routineName,
+  routineCycleLength,
+  sameTemplateAllWeeks = false,
   onClose,
   onConfirm,
 }) => {
@@ -70,16 +75,20 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
   const [customStartWeek, setCustomStartWeek] = useState(false);
   /** Un ciclo de varias semanas (tipo power) se repite; un doc de 1 semana suele ser “esta semana y ya”. */
   const [repeatAfterPlan, setRepeatAfterPlan] = useState(true);
-  /** 0 mientras el usuario borra el campo; al confirmar se usan las semanas del documento. */
-  const [cycleLength, setCycleLength] = useState(0);
+  /** 0 mientras el usuario borra el campo; al confirmar se usa el ciclo de la rutina o el del documento. */
+  const [cycleLength, setCycleLength] = useState(routineCycleLength && routineCycleLength >= 1 ? routineCycleLength : 0);
+  const [expandCycle, setExpandCycle] = useState(false);
+  const [useContinue, setUseContinue] = useState(false);
   const [clearUntouchedDays, setClearUntouchedDays] = useState(true);
   const [importMaxes, setImportMaxes] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [showOptions, setShowOptions] = useState(false);
 
   const totalExercises = useMemo(() => (plan ? countPlanExercises(plan) : 0), [plan]);
 
+  const knownCycle = routineCycleLength && routineCycleLength >= 1 ? routineCycleLength : 0;
   /** Mismo plan ampliado: se respeta lo ya entrenado y el documento solo manda de esta semana en adelante. */
-  const continuingPlan = !customStartWeek && !!lastImport && startWeekNumber === lastImport.startWeekNumber;
+  const continuingPlan = useContinue && !!lastImport && startWeekNumber === lastImport.startWeekNumber;
 
   /** Atajos habituales; el número de semana civil no le dice nada a nadie. */
   const startOptions = useMemo(() => {
@@ -103,19 +112,55 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
     }) as { id: string; label: string; week: number }[];
   }, [currentWeekNumber, planYear, lastImport]);
 
-  /** Explica qué pasará con las semanas siguientes según lo elegido. */
+  const resolvedCycle = useMemo(() => {
+    if (!plan) return knownCycle || 1;
+    if (expandCycle) return Math.max(plan.weeks.length, cycleLength || plan.weeks.length, knownCycle || 0);
+    if (knownCycle) return knownCycle;
+    return Math.max(1, cycleLength || plan.weeks.length);
+  }, [plan, expandCycle, cycleLength, knownCycle]);
+
+  /** Explica qué pasará con las semanas del ciclo según el archivo. */
   const cyclePreview = useMemo(() => {
     if (!plan) return '';
-    const lastPlanWeek = startWeekNumber + plan.weeks.length - 1;
+    const fileWeeks = plan.weeks.length;
+    const n = resolvedCycle;
     if (!repeatAfterPlan) {
+      const lastPlanWeek = startWeekNumber + fileWeeks - 1;
       if (lastPlanWeek >= 52) return 'El plan llega hasta el final del año.';
       const nextStart = weekStartDateForWeekOfYear(lastPlanWeek + 1, planYear);
-      return `Desde el ${nextStart.toLocaleDateString('es-ES', { day: 'numeric', month: 'long' })} los días quedan vacíos hasta que importes el siguiente.`;
+      return `Desde el ${nextStart.toLocaleDateString('es-ES', { day: 'numeric', month: 'long' })} los días quedan vacíos hasta el siguiente archivo.`;
     }
-    const n = Math.max(plan.weeks.length, cycleLength || plan.weeks.length);
-    if (n === 1) return 'Todas las semanas serán iguales (solo cambian los pesos cuando reimportes).';
-    return `Estas ${n} semanas se repetirán en bucle hasta que importes otro plan.`;
-  }, [plan, cycleLength, startWeekNumber, repeatAfterPlan, planYear]);
+    if (n === 1) return 'Se copia esa semana en bucle. Si más adelante importas varias semanas distintas, el ciclo pasará a tener esas.';
+    if (fileWeeks < n) {
+      return `El archivo llena las semanas 1 a ${fileWeeks} de tu ciclo de ${n}. Las demás se quedan como están. Si luego pasas un archivo con más semanas (1+2, o las ${n} de golpe), se irán pisando/añadiendo esas posiciones.`;
+    }
+    if (fileWeeks === n) return `Llena las ${n} semanas del ciclo. Luego se repetirá hasta que importes otro plan.`;
+    return `El archivo trae ${fileWeeks} semanas. ${expandCycle ? `El ciclo pasa a ${fileWeeks} y se repetirá.` : `Solo se usan las primeras ${n} (tu ciclo).`}`;
+  }, [plan, resolvedCycle, startWeekNumber, repeatAfterPlan, planYear, expandCycle]);
+
+  /**
+   * Lo que va a pasar, en frases, para poder confirmar sin abrir ningún ajuste.
+   * Es el mismo estado que manejan los controles de abajo, solo contado.
+   */
+  const summary = useMemo(() => {
+    if (!plan) return [];
+    const when = continuingPlan
+      ? `Continúa el plan que ya tenías, desde el ${formatWeekRange(startWeekNumber, planYear)}`
+      : startWeekNumber === currentWeekNumber
+        ? `Empieza esta semana (${formatWeekRange(startWeekNumber, planYear)})`
+        : startWeekNumber === currentWeekNumber + 1
+          ? `Empieza la semana que viene (${formatWeekRange(startWeekNumber, planYear)})`
+          : `Empieza el ${formatWeekRange(startWeekNumber, planYear)}`;
+
+    const rows = [when, cyclePreview];
+    if (importMaxes && plan.maxes.length > 0) {
+      rows.push(`Se guardarán los maximales del documento: ${plan.maxes.map(m => `${m.name} ${m.value}`).join(', ')}`);
+    }
+    if (!clearUntouchedDays) {
+      rows.push('Se conserva lo que ya tuvieras en los días que el plan no menciona');
+    }
+    return rows.filter(Boolean);
+  }, [plan, continuingPlan, startWeekNumber, currentWeekNumber, planYear, cyclePreview, importMaxes, clearUntouchedDays]);
 
   const handleFile = useCallback(async (file: File) => {
     setReading(true);
@@ -132,8 +177,17 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
         return;
       }
       setPlan(parsed);
-      setCycleLength(parsed.weeks.length);
-      setRepeatAfterPlan(parsed.weeks.length > 1);
+      const keep = knownCycle;
+      if (keep) {
+        const grows = parsed.weeks.length > keep;
+        setExpandCycle(grows);
+        setCycleLength(grows ? parsed.weeks.length : keep);
+        setRepeatAfterPlan(true);
+      } else {
+        setExpandCycle(false);
+        setCycleLength(parsed.weeks.length);
+        setRepeatAfterPlan(parsed.weeks.length > 1 || sameTemplateAllWeeks);
+      }
       /**
        * Documento con al menos las mismas semanas que el anterior: casi siempre es el mismo plan con
        * semanas nuevas al final, así que se propone continuar donde empezó para no descolocarlo.
@@ -141,13 +195,17 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
       if (lastImport && parsed.weeks.length >= lastImport.weeks) {
         setCustomStartWeek(false);
         setStartWeekNumber(lastImport.startWeekNumber);
+        setUseContinue(true);
+      } else {
+        setUseContinue(false);
+        setStartWeekNumber(currentWeekNumber);
       }
     } catch (e: any) {
       setError(e?.message || 'No se ha podido leer el archivo.');
     } finally {
       setReading(false);
     }
-  }, [lastImport]);
+  }, [lastImport, knownCycle, sameTemplateAllWeeks, currentWeekNumber]);
 
   const handleConfirm = async () => {
     if (!plan) return;
@@ -157,9 +215,7 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
         plan,
         startWeekNumber,
         repeatAfterPlan,
-        cycleLength: repeatAfterPlan
-          ? Math.max(plan.weeks.length, cycleLength || plan.weeks.length)
-          : plan.weeks.length,
+        cycleLength: repeatAfterPlan ? resolvedCycle : plan.weeks.length,
         clearUntouchedDays,
         importMaxes,
         continuesPreviousPlan: continuingPlan,
@@ -178,13 +234,13 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           onClick={onClose}
-          className="fixed inset-0 bg-black/75 backdrop-blur-sm"
+          className="fixed inset-0 bg-slate-900/25 backdrop-blur-md dark:bg-black/45"
         />
         <motion.div
-          initial={{ opacity: 0, scale: 0.96, y: 16 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
           onClick={e => e.stopPropagation()}
-          className="relative z-10 flex w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900 max-h-[92dvh]"
+          className="relative z-10 flex max-h-[92dvh] w-full max-w-2xl flex-col overflow-hidden rounded-[28px] border border-white/50 bg-white/75 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl dark:border-white/10 dark:bg-slate-900/70"
         >
           <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4 dark:border-slate-700">
             <div className="min-w-0">
@@ -192,7 +248,9 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
                 Importar plan
               </h2>
               <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                Word, Excel, PDF o texto. El archivo se lee en tu dispositivo, no se sube a ningún sitio.
+                {knownCycle
+                  ? `Tu ciclo es de ${knownCycle} ${knownCycle === 1 ? 'semana' : 'semanas'}. El archivo llena huecos; no hace falta que traiga el ciclo entero.`
+                  : 'Word, Excel, PDF o texto. El archivo se lee en tu dispositivo, no se sube.'}
               </p>
             </div>
             <button
@@ -251,8 +309,189 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
                   </p>
                 </div>
 
-                {/* Ajustes del volcado */}
-                <div className="space-y-3 rounded-xl border border-slate-200 p-4 dark:border-slate-700">
+                {/* La preview escaneada va primero: es lo que quieres revisar. */}
+                <div className="space-y-3">
+                  {plan.weeks.map((w, i) => (
+                    <div key={`${w.number}-${i}`} className="rounded-xl border border-slate-200 dark:border-slate-700">
+                      <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-4 py-2.5 dark:border-slate-700">
+                        <p className="text-sm font-black uppercase tracking-tight text-slate-800 dark:text-slate-100">
+                          {w.label}
+                        </p>
+                        <p className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400">
+                          → {formatWeekRange(startWeekNumber + i, planYear)}
+                        </p>
+                      </div>
+                      <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                        {w.days.map(d => (
+                          <div key={d.dayIndex} className="px-4 py-2.5">
+                            <p className="mb-1.5 text-[11px] font-black uppercase tracking-wider text-slate-400">
+                              {d.name} · {d.exercises.length}
+                            </p>
+                            <ul className="space-y-1">
+                              {d.exercises.map((e, k) => (
+                                <li key={k} className="flex items-baseline justify-between gap-3 text-xs">
+                                  <span className="min-w-0 flex-1 truncate text-slate-700 dark:text-slate-200">
+                                    {e.name}
+                                    {e.note && (
+                                      <span className="ml-1 text-slate-400 dark:text-slate-500">· {e.note}</span>
+                                    )}
+                                  </span>
+                                  <span className="shrink-0 font-bold text-slate-500 dark:text-slate-400">
+                                    {e.setScheme ?? `${e.sets}×${e.reps}`}
+                                    {e.mode === 'seconds' ? '"' : ''}
+                                    {e.pct !== undefined
+                                      ? ` · ${e.pct}%`
+                                      : e.weight !== undefined && ` · ${e.weight} kg`}
+                                    {e.rpe && ` · RPE ${e.rpe}`}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {(plan.warnings.length > 0 || plan.unparsedLines.length > 0) && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-800/50 dark:bg-amber-950/30">
+                    <p className="mb-1.5 text-xs font-black uppercase tracking-wider text-amber-700 dark:text-amber-300">
+                      Revisa esto
+                    </p>
+                    <ul className="space-y-1 text-xs text-amber-800 dark:text-amber-200">
+                      {plan.warnings.map((w, i) => (
+                        <li key={`w${i}`}>· {w}</li>
+                      ))}
+                      {plan.unparsedLines.slice(0, 6).map((l, i) => (
+                        <li key={`u${i}`}>· No se ha entendido: «{l}»</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <div className="space-y-2.5">
+                  <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Qué hace este archivo</p>
+                  <div className="rounded-2xl bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600 dark:bg-slate-800/70 dark:text-slate-300">
+                    <p>
+                      Trae <span className="font-semibold text-slate-800 dark:text-slate-100">{plan.weeks.length} {plan.weeks.length === 1 ? 'semana' : 'semanas'}</span>
+                      {knownCycle
+                        ? <> y tu ciclo es de <span className="font-semibold text-slate-800 dark:text-slate-100">{knownCycle}</span>.</>
+                        : '.'}
+                    </p>
+                    <p className="mt-1.5">{cyclePreview}</p>
+                  </div>
+
+                  {knownCycle > 0 && plan.weeks.length > knownCycle && (
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExpandCycle(false);
+                          setCycleLength(knownCycle);
+                        }}
+                        className={cn(
+                          'flex-1 rounded-2xl px-3 py-2.5 text-left text-xs',
+                          !expandCycle ? 'bg-indigo-50 ring-1 ring-indigo-400 dark:bg-indigo-950/40' : 'bg-white shadow-sm dark:bg-slate-800'
+                        )}
+                      >
+                        <span className="block font-semibold text-slate-800 dark:text-slate-100">Quedarme en {knownCycle}</span>
+                        <span className="mt-0.5 block text-slate-500">Solo usa las primeras {knownCycle} del archivo.</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExpandCycle(true);
+                          setCycleLength(plan.weeks.length);
+                        }}
+                        className={cn(
+                          'flex-1 rounded-2xl px-3 py-2.5 text-left text-xs',
+                          expandCycle ? 'bg-indigo-50 ring-1 ring-indigo-400 dark:bg-indigo-950/40' : 'bg-white shadow-sm dark:bg-slate-800'
+                        )}
+                      >
+                        <span className="block font-semibold text-slate-800 dark:text-slate-100">Alargar a {plan.weeks.length}</span>
+                        <span className="mt-0.5 block text-slate-500">El ciclo pasa a tener {plan.weeks.length} semanas.</span>
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 gap-2">
+                    {lastImport && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCustomStartWeek(false);
+                          setStartWeekNumber(lastImport.startWeekNumber);
+                          setUseContinue(true);
+                          setRepeatAfterPlan(true);
+                        }}
+                        className={cn(
+                          'rounded-2xl px-3.5 py-3 text-left',
+                          continuingPlan
+                            ? 'bg-indigo-50 ring-1 ring-indigo-400 dark:bg-indigo-950/40'
+                            : 'bg-white shadow-sm dark:bg-slate-800'
+                        )}
+                      >
+                        <span className="block text-sm font-semibold text-slate-800 dark:text-slate-100">
+                          Es el mismo plan, con más semanas
+                        </span>
+                        <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">
+                          La semana 1 sigue en el {formatWeekRange(lastImport.startWeekNumber, planYear)}.
+                          {plan.weeks.length > lastImport.weeks
+                            ? ` Antes tenías ${lastImport.weeks}; ahora trae ${plan.weeks.length}. Se añaden las nuevas. Lo ya entrenado no se toca.`
+                            : ' Actualiza el ciclo. Lo ya entrenado no se toca.'}
+                        </span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCustomStartWeek(false);
+                        setStartWeekNumber(currentWeekNumber);
+                        setUseContinue(false);
+                        setRepeatAfterPlan(true);
+                      }}
+                      className={cn(
+                        'rounded-2xl px-3.5 py-3 text-left',
+                        !continuingPlan && startWeekNumber === currentWeekNumber
+                          ? 'bg-indigo-50 ring-1 ring-indigo-400 dark:bg-indigo-950/40'
+                          : 'bg-white shadow-sm dark:bg-slate-800'
+                      )}
+                    >
+                      <span className="block text-sm font-semibold text-slate-800 dark:text-slate-100">
+                        Meterlo desde esta semana
+                      </span>
+                      <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">
+                        La semana 1 del archivo cae en el {formatWeekRange(currentWeekNumber, planYear)}.
+                        {knownCycle > 1 && plan.weeks.length < knownCycle
+                          ? ` Llena ${plan.weeks.length} de ${knownCycle} huecos.`
+                          : ' El ciclo se mantiene y se repetirá.'}
+                      </span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-slate-200 dark:border-slate-700">
+                  <div className="flex items-start justify-between gap-3 p-4">
+                    <ul className="min-w-0 space-y-1">
+                      {summary.map((row, i) => (
+                        <li key={i} className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">
+                          {row}
+                        </li>
+                      ))}
+                    </ul>
+                    <button
+                      type="button"
+                      onClick={() => setShowOptions(v => !v)}
+                      aria-expanded={showOptions}
+                      className="shrink-0 rounded-xl border-2 border-slate-200 px-3 py-1.5 text-[11px] font-black uppercase tracking-wider text-slate-500 transition-colors hover:border-indigo-400 hover:text-indigo-600 dark:border-slate-600 dark:text-slate-400"
+                    >
+                      {showOptions ? 'Listo' : 'Más opciones'}
+                    </button>
+                  </div>
+
+                {showOptions && (
+                <div className="space-y-3 border-t border-slate-100 p-4 dark:border-slate-700">
                   <div className="space-y-2">
                     <p className="text-sm font-bold text-slate-800 dark:text-slate-100">¿Cuándo empieza el plan?</p>
                     <div className="grid grid-cols-2 gap-2">
@@ -265,6 +504,7 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
                             onClick={() => {
                               setCustomStartWeek(false);
                               setStartWeekNumber(opt.week);
+                              setUseContinue(opt.id === 'continue');
                             }}
                             className={cn(
                               'rounded-xl border-2 px-3 py-2 text-left transition-colors',
@@ -340,7 +580,7 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
                   </div>
 
                   <div className="space-y-2 border-t border-slate-100 pt-3 dark:border-slate-700">
-                    <p className="text-sm font-bold text-slate-800 dark:text-slate-100">Al acabar el plan</p>
+                    <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Cuando acaban esas semanas</p>
                     <div className="flex gap-2">
                       {([
                         { value: false, label: 'No repetir' },
@@ -415,65 +655,8 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
                     </label>
                   )}
                 </div>
-
-                {/* Previsualización */}
-                <div className="space-y-3">
-                  {plan.weeks.map((w, i) => (
-                    <div key={`${w.number}-${i}`} className="rounded-xl border border-slate-200 dark:border-slate-700">
-                      <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-4 py-2.5 dark:border-slate-700">
-                        <p className="text-sm font-black uppercase tracking-tight text-slate-800 dark:text-slate-100">
-                          {w.label}
-                        </p>
-                        <p className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400">
-                          → {formatWeekRange(startWeekNumber + i, planYear)}
-                        </p>
-                      </div>
-                      <div className="divide-y divide-slate-100 dark:divide-slate-800">
-                        {w.days.map(d => (
-                          <div key={d.dayIndex} className="px-4 py-2.5">
-                            <p className="mb-1.5 text-[11px] font-black uppercase tracking-wider text-slate-400">
-                              {d.name} · {d.exercises.length}
-                            </p>
-                            <ul className="space-y-1">
-                              {d.exercises.map((e, k) => (
-                                <li key={k} className="flex items-baseline justify-between gap-3 text-xs">
-                                  <span className="min-w-0 flex-1 truncate text-slate-700 dark:text-slate-200">
-                                    {e.name}
-                                    {e.note && (
-                                      <span className="ml-1 text-slate-400 dark:text-slate-500">· {e.note}</span>
-                                    )}
-                                  </span>
-                                  <span className="shrink-0 font-bold text-slate-500 dark:text-slate-400">
-                                    {e.sets}×{e.reps}
-                                    {e.mode === 'seconds' ? '"' : ''}
-                                    {e.weight !== undefined && ` · ${e.weight} kg`}
-                                    {e.rpe && ` · RPE ${e.rpe}`}
-                                  </span>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {(plan.warnings.length > 0 || plan.unparsedLines.length > 0) && (
-                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 dark:border-amber-800/50 dark:bg-amber-950/30">
-                    <p className="mb-1.5 text-xs font-black uppercase tracking-wider text-amber-700 dark:text-amber-300">
-                      Revisa esto
-                    </p>
-                    <ul className="space-y-1 text-xs text-amber-800 dark:text-amber-200">
-                      {plan.warnings.map((w, i) => (
-                        <li key={`w${i}`}>· {w}</li>
-                      ))}
-                      {plan.unparsedLines.slice(0, 6).map((l, i) => (
-                        <li key={`u${i}`}>· No se ha entendido: «{l}»</li>
-                      ))}
-                    </ul>
-                  </div>
                 )}
+                </div>
               </div>
             )}
           </div>

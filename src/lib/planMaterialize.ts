@@ -135,6 +135,7 @@ export function expandRoutineFromApi(raw: {
   cycleLength?: number;
   skippedWeeks?: number[];
   shiftedAtCalendarWeeks?: number[];
+  calendarDayShifts?: { year: number; week: number; skippedDays: number[] }[];
   weeks?: TrainingWeek[];
   versions?: RoutineVersion[];
   baseTemplate?: TrainingWeek[];
@@ -154,6 +155,7 @@ export function expandRoutineFromApi(raw: {
   skippedWeeks: number[];
   /** Semanas civiles donde «Saltar la semana» desplazó el ciclo (solo block mode). */
   shiftedAtCalendarWeeks: number[];
+  calendarDayShifts: { year: number; week: number; skippedDays: number[] }[];
   weeks: TrainingWeek[];
   versions: RoutineVersion[];
   baseTemplate: TrainingWeek[];
@@ -257,6 +259,12 @@ export function expandRoutineFromApi(raw: {
     cycleLength,
     skippedWeeks,
     shiftedAtCalendarWeeks: Array.isArray(raw.shiftedAtCalendarWeeks) ? raw.shiftedAtCalendarWeeks.filter(Number.isFinite) : [],
+    calendarDayShifts: Array.isArray(raw.calendarDayShifts)
+      ? raw.calendarDayShifts.filter(
+          (s): s is { year: number; week: number; skippedDays: number[] } =>
+            !!s && Number.isFinite(s.year) && Number.isFinite(s.week) && Array.isArray(s.skippedDays)
+        )
+      : [],
     weeks: outWeeks,
     versions: outVersions,
     baseTemplate: baseTemplateOut.length > 0 ? baseTemplateOut : deriveBaseTemplateFromWeeks(outWeeks, cycleLength),

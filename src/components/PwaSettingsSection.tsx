@@ -2,7 +2,7 @@ import React, { useCallback, useState } from 'react';
 import { Bell, BellRing, Check, Download, Plus, Share, Smartphone } from 'lucide-react';
 import { Card } from '@/src/components/ui/Card';
 import { Button } from '@/src/components/ui/Button';
-import { isIOS, useInstallPrompt } from '@/src/pwa/installPrompt';
+import { isAndroid, isIOS, useInstallPrompt } from '@/src/pwa/installPrompt';
 import { useWebNotifications } from '@/src/pwa/notifications';
 import { cn } from '@/src/lib/utils';
 
@@ -21,7 +21,7 @@ const StatusChip: React.FC<{ tone: 'ok' | 'warn'; children: React.ReactNode }> =
 
 /** Instalación de la app (PWA) y permiso de notificaciones del navegador. */
 export const PwaSettingsSection: React.FC = () => {
-  const { isInstalled, canPrompt, needsManualInstructions, install } = useInstallPrompt();
+  const { isInstalled, needsManualInstructions, install } = useInstallPrompt();
   const { permission, isSupported, isBlocked, requesting, request, sendTestNotification } = useWebNotifications();
   const [showIosSteps, setShowIosSteps] = useState(false);
   const [testSent, setTestSent] = useState(false);
@@ -40,8 +40,6 @@ export const PwaSettingsSection: React.FC = () => {
     setTestSent(true);
     setTimeout(() => setTestSent(false), 3000);
   }, [sendTestNotification]);
-
-  const canOfferInstall = canPrompt || needsManualInstructions;
 
   return (
     <section>
@@ -76,9 +74,7 @@ export const PwaSettingsSection: React.FC = () => {
               <p className="text-xs leading-snug text-slate-500 dark:text-slate-400">
                 {isInstalled
                   ? 'Ya la estás usando como app instalada.'
-                  : canOfferInstall
-                    ? 'Ábrela a pantalla completa desde tu pantalla de inicio.'
-                    : 'Usa el menú de tu navegador → «Instalar app» o «Añadir a pantalla de inicio».'}
+                  : 'Ábrela a pantalla completa desde tu pantalla de inicio.'}
               </p>
             </div>
           </div>
@@ -90,30 +86,48 @@ export const PwaSettingsSection: React.FC = () => {
             <Button
               type="button"
               size="sm"
-              variant={canOfferInstall ? 'primary' : 'outline'}
-              disabled={!canOfferInstall}
+              variant="primary"
               onClick={() => void handleInstall()}
               className="shrink-0 uppercase tracking-widest"
             >
-              {needsManualInstructions ? 'Cómo' : 'Instalar'}
+              {needsManualInstructions ? (showIosSteps ? 'Ocultar' : 'Instalar') : 'Instalar'}
             </Button>
           )}
         </div>
 
         {showIosSteps && needsManualInstructions && (
           <ol className="space-y-2 rounded-2xl bg-slate-50 p-4 text-xs font-medium text-slate-600 dark:bg-slate-900/70 dark:text-slate-300">
-            <li className="flex items-center gap-2">
-              <Share size={16} className="shrink-0 text-indigo-600 dark:text-indigo-400" />
-              <span>
-                1. Pulsa <strong className="font-black">Compartir</strong> en la barra de Safari.
-              </span>
-            </li>
-            <li className="flex items-center gap-2">
-              <Plus size={16} className="shrink-0 text-indigo-600 dark:text-indigo-400" />
-              <span>
-                2. Elige <strong className="font-black">Añadir a pantalla de inicio</strong>.
-              </span>
-            </li>
+            {isIOS() ? (
+              <>
+                <li className="flex items-center gap-2">
+                  <Share size={16} className="shrink-0 text-indigo-600 dark:text-indigo-400" />
+                  <span>
+                    1. Pulsa <strong className="font-black">Compartir</strong> en Safari.
+                  </span>
+                </li>
+                <li className="flex items-center gap-2">
+                  <Plus size={16} className="shrink-0 text-indigo-600 dark:text-indigo-400" />
+                  <span>
+                    2. Elige <strong className="font-black">Añadir a pantalla de inicio</strong>.
+                  </span>
+                </li>
+              </>
+            ) : (
+              <>
+                <li className="flex items-center gap-2">
+                  <Download size={16} className="shrink-0 text-indigo-600 dark:text-indigo-400" />
+                  <span>
+                    1. Abre el menú {isAndroid() ? '⋮ de Chrome' : 'del navegador'}.
+                  </span>
+                </li>
+                <li className="flex items-center gap-2">
+                  <Plus size={16} className="shrink-0 text-indigo-600 dark:text-indigo-400" />
+                  <span>
+                    2. Pulsa <strong className="font-black">Instalar app</strong> o <strong className="font-black">Añadir a pantalla de inicio</strong>.
+                  </span>
+                </li>
+              </>
+            )}
           </ol>
         )}
 

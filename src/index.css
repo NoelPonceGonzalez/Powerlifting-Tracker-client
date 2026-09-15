@@ -29,8 +29,28 @@
     --app-accent: #818cf8;
   }
 
+  html,
+  body,
+  #root {
+    background-color: var(--app-bg);
+    min-height: 100%;
+  }
+
   html {
     color-scheme: light dark;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button,
+  [role="button"] {
+    -webkit-tap-highlight-color: transparent;
+    outline: none;
+  }
+
+  button:focus,
+  button:focus-visible,
+  [role="button"]:focus-visible {
+    outline: none;
   }
 
   html.dark {
@@ -46,6 +66,31 @@
   body {
     @apply font-sans text-slate-900;
     background-color: var(--app-bg);
+    overflow: hidden;
+  }
+
+  .app-scroll,
+  .app-scroll * {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .app-scroll::-webkit-scrollbar,
+  .app-scroll *::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+
+  * {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  *::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
   }
 
   .dark body {
@@ -117,4 +162,23 @@
   .dark textarea {
     @apply bg-slate-900 text-slate-100 border-slate-700;
   }
+}
+
+.app-tabbar {
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: color-mix(in srgb, white 52%, transparent);
+  box-shadow:
+    0 12px 40px rgba(15, 23, 42, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(28px) saturate(1.8);
+  -webkit-backdrop-filter: blur(28px) saturate(1.8);
+}
+
+html.dark .app-tabbar {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: color-mix(in srgb, #0b1220 62%, transparent);
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }

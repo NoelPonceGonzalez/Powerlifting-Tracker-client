@@ -13,16 +13,16 @@ import {
   Plus,
   Repeat,
   Trash2,
-  TrendingUp,
 } from 'lucide-react';
 import { Card } from '@/src/components/ui/Card';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { cn } from '@/src/lib/utils';
 import { VIEW_TRANSITION } from '@/src/lib/motionPresets';
+import { useEscapeClose } from '@/src/lib/useEscapeClose';
 
-/** Cómo se comporta la plantilla: igual siempre, oleada de pesos, o bloque que se cambia. */
-type PlanShape = 'repeat' | 'wave' | 'block';
+/** Al crear: una semana que se copia, o un ciclo de N semanas distintas. */
+type PlanShape = 'repeat' | 'cycle';
 
 interface RoutineSummary {
   id: string;
@@ -64,10 +64,9 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
   const deleteInFlight = deleteRoutineLoadingId != null;
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newRoutineName, setNewRoutineName] = useState('');
-  const [planShape, setPlanShape] = useState<PlanShape>('wave');
-  const [waveWeeks, setWaveWeeks] = useState<number | ''>(4);
+  const [planShape, setPlanShape] = useState<PlanShape>('cycle');
+  const [cycleWeeks, setCycleWeeks] = useState<number | ''>(4);
   const [importAfter, setImportAfter] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
 
@@ -79,8 +78,8 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
     const resolvedCycleLength =
       planShape === 'repeat'
         ? 1
-        : typeof waveWeeks === 'number' && waveWeeks >= 2
-          ? Math.min(12, waveWeeks)
+        : typeof cycleWeeks === 'number' && cycleWeeks >= 2
+          ? Math.min(12, cycleWeeks)
           : 4;
     if (planShape !== 'repeat' && resolvedCycleLength < 2) return;
     try {
@@ -92,10 +91,9 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
         })
       );
       setNewRoutineName('');
-      setPlanShape('wave');
-      setWaveWeeks(4);
+      setPlanShape('cycle');
+      setCycleWeeks(4);
       setImportAfter(false);
-      setShowAdvanced(false);
       setShowCreateModal(false);
     } catch {
       /* Error: feedback en App; modal abierto */
@@ -106,11 +104,11 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
     if (createRoutineLoading) return;
     setShowCreateModal(false);
     setNewRoutineName('');
-    setPlanShape('wave');
-    setWaveWeeks(4);
+    setPlanShape('cycle');
+    setCycleWeeks(4);
     setImportAfter(false);
-    setShowAdvanced(false);
   };
+  useEscapeClose(showCreateModal && !createRoutineLoading, closeCreateModal);
 
   return (
     <motion.div
@@ -134,7 +132,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
           <div>
             <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">Rutinas</h1>
             <p className="text-sm text-slate-500 dark:text-slate-400">
-              Elige con cuál entrenas. Crear una es un nombre y listo.
+              Al crear, elige cuántas semanas dura el ciclo. Luego la rellenas a mano o con un archivo.
             </p>
           </div>
         </div>
@@ -144,9 +142,9 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
         <Button
           variant="primary"
           onClick={() => {
-            setPlanShape('wave');
+            setPlanShape('cycle');
+            setCycleWeeks(4);
             setImportAfter(false);
-            setShowAdvanced(false);
             setShowCreateModal(true);
           }}
           disabled={createRoutineLoading || deleteInFlight}
@@ -171,7 +169,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
               exit={{ opacity: 0 }}
               onClick={createRoutineLoading ? undefined : closeCreateModal}
               className={cn(
-                'absolute inset-0 min-h-[100dvh] bg-black/75 backdrop-blur-sm',
+                'absolute inset-0 min-h-[100dvh] bg-slate-900/25 backdrop-blur-md dark:bg-black/45',
                 createRoutineLoading && 'cursor-wait'
               )}
             />
@@ -180,7 +178,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 10 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative overflow-hidden bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl p-6 shadow-2xl dark:border dark:border-slate-700 max-h-[92dvh] overflow-y-auto"
+              className="relative max-h-[92dvh] w-full max-w-md overflow-y-auto rounded-[28px] border border-white/50 bg-white/75 p-6 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl dark:border-white/10 dark:bg-slate-900/70"
             >
               {createRoutineLoading && (
                 <div
@@ -215,104 +213,85 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                 </div>
               )}
               <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-1">Nueva rutina</h3>
-              <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">
-                Un nombre y listo. Lo avanzado, solo si lo necesitas.
+              <p className="mb-4 text-sm leading-relaxed text-slate-500 dark:text-slate-400">
+                Primero decides cuánto dura el ciclo. Luego lo rellenas: a mano basta con una semana si se copia sola; si usas archivos, cada uno va llenando semanas.
               </p>
               <Input
                 value={newRoutineName}
                 onChange={(e) => setNewRoutineName(e.target.value)}
-                placeholder="Nombre (ej. 4º ciclo, Fuerza)"
+                placeholder="Nombre (ej. Mesociclo 1, Fuerza)"
                 className="mb-4"
                 disabled={createRoutineLoading}
                 onKeyDown={(e) => e.key === 'Enter' && !createRoutineLoading && void handleCreate()}
               />
-              <button
-                type="button"
-                onClick={() => setShowAdvanced(v => !v)}
-                className="mb-3 text-xs font-semibold text-slate-500 hover:text-indigo-600"
-              >
-                {showAdvanced ? 'Menos opciones' : 'Cómo se comporta el plan'}
-              </button>
-              <div
-                className={cn(
-                  'mb-4 space-y-2',
-                  !showAdvanced && 'hidden',
-                  createRoutineLoading && 'pointer-events-none opacity-60'
-                )}
-              >
-                {([
-                  {
-                    id: 'repeat' as const,
-                    icon: Repeat,
-                    title: 'Igual cada semana',
-                    hint: 'Misma sesión siempre. Cambias un ejercicio y cambia en todas.',
-                  },
-                  {
-                    id: 'wave' as const,
-                    icon: TrendingUp,
-                    title: 'Kilos distintos cada semana',
-                    hint: 'Mismos ejercicios; kg y RPE cambian (S1 @6,5 → S2 @7…). Como tu ciclo.',
-                  },
-                  {
-                    id: 'block' as const,
-                    icon: Layers,
-                    title: 'Bloque que se cambia',
-                    hint: 'Cada mes (o cuando toque) cambias algún ejercicio o tiras el siguiente Word.',
-                  },
-                ]).map((opt) => {
-                  const Icon = opt.icon;
-                  const active = planShape === opt.id;
-                  return (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      onClick={() => setPlanShape(opt.id)}
-                      disabled={createRoutineLoading}
-                      className={cn(
-                        'flex w-full items-start gap-3 rounded-xl border-2 px-3 py-3 text-left transition-all',
-                        active
-                          ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-900 dark:text-indigo-100'
-                          : 'border-slate-200 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400 hover:border-slate-300'
-                      )}
-                    >
-                      <Icon className="mt-0.5 size-5 shrink-0" />
-                      <span>
-                        <span className="block text-sm font-black">{opt.title}</span>
-                        <span className="mt-0.5 block text-[11px] font-medium leading-snug opacity-90">
-                          {opt.hint}
-                        </span>
-                      </span>
-                    </button>
-                  );
-                })}
+              <p className="mb-2 text-xs font-medium text-slate-400">¿Cómo dura el plan?</p>
+              <div className={cn('mb-3 space-y-2', createRoutineLoading && 'pointer-events-none opacity-60')}>
+                <button
+                  type="button"
+                  onClick={() => setPlanShape('repeat')}
+                  disabled={createRoutineLoading}
+                  className={cn(
+                    'flex w-full items-start gap-3 rounded-2xl px-3.5 py-3 text-left shadow-sm transition-colors',
+                    planShape === 'repeat'
+                      ? 'bg-indigo-50 ring-1 ring-indigo-400 dark:bg-indigo-950/40'
+                      : 'bg-slate-50 dark:bg-slate-800'
+                  )}
+                >
+                  <Repeat className="mt-0.5 size-5 shrink-0 text-indigo-600 dark:text-indigo-300" />
+                  <span>
+                    <span className="block text-sm font-semibold text-slate-900 dark:text-slate-100">La misma semana, en bucle</span>
+                    <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">
+                      Escribes o importas 1 semana. Se copia todas las demás. Si cambias un ejercicio, cambia en todas.
+                    </span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPlanShape('cycle')}
+                  disabled={createRoutineLoading}
+                  className={cn(
+                    'flex w-full items-start gap-3 rounded-2xl px-3.5 py-3 text-left shadow-sm transition-colors',
+                    planShape === 'cycle'
+                      ? 'bg-indigo-50 ring-1 ring-indigo-400 dark:bg-indigo-950/40'
+                      : 'bg-slate-50 dark:bg-slate-800'
+                  )}
+                >
+                  <Layers className="mt-0.5 size-5 shrink-0 text-indigo-600 dark:text-indigo-300" />
+                  <span>
+                    <span className="block text-sm font-semibold text-slate-900 dark:text-slate-100">Un ciclo de varias semanas</span>
+                    <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">
+                      Cada semana puede ser distinta (kilos, RPE o ejercicios). Al acabar, vuelve a la 1 hasta que pongas otro plan.
+                    </span>
+                  </span>
+                </button>
               </div>
-              {showAdvanced && planShape !== 'repeat' && (
+              {planShape === 'cycle' && (
                 <div className="mb-4">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 mb-1 block">
-                    Semanas de este bloque
+                  <label className="mb-1 block text-xs font-medium text-slate-400">
+                    Semanas del ciclo
                   </label>
                   <Input
                     type="text"
                     inputMode="numeric"
-                    value={waveWeeks}
+                    value={cycleWeeks}
                     disabled={createRoutineLoading}
                     onChange={(e) => {
                       const raw = e.target.value.replace(/\D/g, '');
-                      if (raw === '') { setWaveWeeks(''); return; }
-                      setWaveWeeks(Math.min(12, parseInt(raw, 10)));
+                      if (raw === '') { setCycleWeeks(''); return; }
+                      setCycleWeeks(Math.min(12, parseInt(raw, 10)));
                     }}
-                    className="text-center font-black"
+                    className="text-center font-semibold"
                   />
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1">
-                    {typeof waveWeeks === 'number'
-                      ? `Semana 1 a ${waveWeeks} distintas; luego se puede repetir o importar el siguiente ciclo.`
-                      : 'Normalmente 4, como un mesociclo.'}
+                  <p className="mt-1.5 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                    {typeof cycleWeeks === 'number' && cycleWeeks >= 2
+                      ? `Quedan ${cycleWeeks} huecos. Un archivo con 1 semana llena la 1; otro con 2 llena la 1 y la 2 (pisa lo que ya hubiera en esas). Si te pasan las ${cycleWeeks} de golpe, se llena el ciclo entero.`
+                      : 'Normalmente 4. Puede ser 3, 5… según el plan.'}
                   </p>
                 </div>
               )}
               <label
                 className={cn(
-                  'mb-4 flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 px-3 py-3 dark:border-slate-700',
+                  'mb-4 flex cursor-pointer items-start gap-3 rounded-2xl bg-slate-50 px-3.5 py-3 dark:bg-slate-800',
                   createRoutineLoading && 'pointer-events-none opacity-60'
                 )}
               >
@@ -324,13 +303,12 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                   className="mt-0.5 h-5 w-5 shrink-0 accent-indigo-600"
                 />
                 <span className="min-w-0">
-                  <span className="flex items-center gap-1.5 text-sm font-black text-slate-800 dark:text-slate-100">
+                  <span className="flex items-center gap-1.5 text-sm font-semibold text-slate-800 dark:text-slate-100">
                     <FileUp size={14} className="shrink-0" />
                     Tengo un Word o PDF
                   </span>
-                  <span className="mt-0.5 block text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                    Al crear se abre el importador. El archivo se lee en tu móvil, no se sube.
-                    Si más adelante te vinculas a un entrenador, él también podrá cambiarte este plan.
+                  <span className="mt-0.5 block text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                    Se abre el importador. Si el archivo trae menos semanas que el ciclo, solo llena esas; el resto las puedes añadir después, a mano o con otro archivo.
                   </span>
                 </span>
               </label>
@@ -350,7 +328,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                   disabled={
                     createRoutineLoading ||
                     !newRoutineName.trim() ||
-                    (planShape !== 'repeat' && (waveWeeks === '' || Number(waveWeeks) < 2))
+                    (planShape !== 'repeat' && (cycleWeeks === '' || Number(cycleWeeks) < 2))
                   }
                 >
                   {createRoutineLoading ? (

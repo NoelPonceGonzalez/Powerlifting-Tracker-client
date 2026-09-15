@@ -182,10 +182,18 @@ export interface PlannedExercise {
   weight?: number;
   mode: ExerciseMode;
   linkedTo?: string;
-  /** RPE objetivo prescrito por el entrenador ("6", "8,5"). */
+  /** RPE objetivo prescrito por el entrenador ("6", "8,5" o "8,5 · 6,5"). */
   targetRpe?: string;
   /** Indicación del entrenador para ese ejercicio ("grabar ambas piernas"). */
   coachNote?: string;
+  /** Varios bloques del mismo movimiento: "1×2 + 3×4". */
+  setScheme?: string;
+  /** Reps objetivo de cada serie cuando los bloques no son iguales. */
+  repsPerSet?: string[];
+  /** RPE de cada serie (el primero, luego el siguiente). */
+  rpePerSet?: string[];
+  /** Ids extra si la vista ha unido filas del mismo ejercicio. */
+  mergedFromIds?: string[];
 }
 
 export type DayType = 'workout' | 'rest' | 'deload';

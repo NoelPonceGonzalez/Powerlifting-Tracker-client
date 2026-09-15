@@ -426,6 +426,8 @@ export const CoachAthletePlan: React.FC<CoachAthletePlanProps> = ({ athleteId, a
           <ImportCoachPlanModal
             currentWeekNumber={weekOfYearFromDate(new Date(), new Date().getFullYear())}
             routineName={`Plan de ${athleteName}`}
+            routineCycleLength={cycleLength}
+            sameTemplateAllWeeks={sameAll}
             onClose={() => setShowImport(false)}
             onConfirm={async result => {
               await applyImport(result);

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { ArrowLeft, Settings as SettingsIcon, Users, Trophy } from 'lucide-react';
 import { createPortal } from 'react-dom';
@@ -7,6 +7,7 @@ import { SettingsView } from '@/src/views/Settings';
 import type { AccountSummary } from '@/src/lib/savedAccounts';
 import type { User } from '@/src/types';
 import { SCREEN_TRANSITION, VIEW_TRANSITION } from '@/src/lib/motionPresets';
+import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
 
 interface ProfileViewProps {
   user: User;
@@ -46,9 +47,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const [showSettings, setShowSettings] = useState(false);
   const [viewingProfileId, setViewingProfileId] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (openSettingsSignal > 0) setShowSettings(true);
-  }, [openSettingsSignal]);
+  useIncrementSignal('profile-settings', openSettingsSignal, () => setShowSettings(true));
 
   if (showSettings) {
     return (
@@ -99,6 +98,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
       <ProfileScreen
         userId={user.id}
+        liveAvatar={user.avatar}
         onOpenProfile={id => setViewingProfileId(id)}
         onGoToFeed={onGoToFeed}
       />

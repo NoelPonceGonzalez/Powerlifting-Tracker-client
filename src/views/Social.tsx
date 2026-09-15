@@ -1,12 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-
-/**
- * Evita reabrir el modal de gym y saltar a «Actividad» al volver a Social: el efecto que
- * escucha `openCheckInModalSignal` se volvería a disparar en cada remount si solo comparamos
- * el número guardado en App (sigue siendo > 0). Solo reaccionamos a incrementos nuevos.
- */
-let lastConsumedOpenCheckInModalSignal = 0;
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Search, 
@@ -28,23 +21,25 @@ import {
   AlertCircle,
   GraduationCap,
   Users,
-  MessageCircle,
+  Bell,
 } from 'lucide-react';
 import { Card } from '@/src/components/ui/Card';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { FriendRequest, Friend, Challenge, GymCheckIn, User, UserSearchResult, ChallengeType, TrainingWeek, BodyWeightScoringMode, RoutineProgressLeaderboardEntry } from '@/src/types';
-import { subscribeChatRealtime } from '@/src/lib/chatRealtime';
 import { cn } from '@/src/lib/utils';
 import { apiGet, apiPut, mediaUrl } from '@/src/lib/api';
 import { SCREEN_TRANSITION, VIEW_TRANSITION } from '@/src/lib/motionPresets';
+import { EQUITY_OPTIONS, equitySummary, suggestBodyWeightScoring } from '@/src/lib/challengeEquity';
+import { GlassModal } from '@/src/components/ui/GlassModal';
+import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
+import { useEscapeClose } from '@/src/lib/useEscapeClose';
 import {
   answerChatRequest,
   answerCoachRequest,
   answerGroupInvite,
   fetchChatRequests,
-  fetchChats,
   fetchCoachRequests,
   fetchGroupInvites,
   fetchUserPosts,
@@ -55,6 +50,7 @@ import {
 } from '@/src/lib/feedApi';
 import { FeedTab } from '@/src/components/social/FeedTab';
 import { ChatTab } from '@/src/components/social/ChatTab';
+import { HomeActivitySheet } from '@/src/components/social/HomeActivitySheet';
 import { ProfileScreen } from '@/src/components/social/ProfileScreen';
 import { Avatar as FeedAvatar } from '@/src/components/social/MediaPost';
 
@@ -111,6 +107,8 @@ interface SocialViewProps {
   onGoToProfile?: () => void;
   onGoToDashboard?: () => void;
   socialBackTo?: 'feed' | 'profile' | 'dashboard';
+  /** Cada toque de la nav fuerza la pestaña (Inicio siempre vuelve al feed). */
+  socialNavTick?: number;
   /** Rutinas del usuario local (para detectar si ya copió la del amigo por nombre). */
   myRoutines?: { id: string; name: string }[];
   /** Ejercicios de la rutina activa: atajo para crear el torneo sobre algo que ya entrenas. */
@@ -119,6 +117,7 @@ interface SocialViewProps {
   /** Activar la rutina ya copiada del amigo y abrir Programa (no volver a copiar). */
   onGoToCopiedRoutine?: (routineId: string) => void;
   onUnfriend?: (friendId: string) => Promise<void>;
+  onChatConversationChange?: (open: boolean) => void;
 }
 
 const CHALLENGE_TYPE_LABELS: Record<ChallengeType, string> = {
@@ -133,13 +132,6 @@ const CHALLENGE_TYPE_UNIT: Record<ChallengeType, string> = {
   seconds: 'seg',
 };
 
-/** Opciones como botones: en WebView/Android los <select> a veces no se ven bien. */
-const BODY_WEIGHT_SCORING_OPTIONS: { value: BodyWeightScoringMode; short: string; hint: string }[] = [
-  { value: 'heavier_more', short: 'Más peso → más puntos', hint: 'Reps o tiempo' },
-  { value: 'lighter_more', short: 'Menos peso → más puntos', hint: 'Reps o tiempo' },
-  { value: 'neutral', short: 'Igual para todos', hint: 'Sin ponderar por peso corporal' },
-];
-
 const CHALLENGE_TYPE_OPTIONS: { value: ChallengeType; label: string }[] = [
   { value: 'max_reps', label: 'Repeticiones' },
   { value: 'weight', label: 'Fuerza (kg)' },
@@ -152,11 +144,11 @@ function bodyWeightScoringSummary(
   mode: BodyWeightScoringMode | undefined
 ): string {
   if (!usePoints) return 'Clasificación por marca bruta';
-  if (type === 'weight') return 'Puntos IPF GL: peso corporal y género (hombres y mujeres a la par)';
-  const m = mode ?? 'heavier_more';
-  if (m === 'neutral') return 'Puntos sin ponderar por peso corporal';
-  if (m === 'lighter_more') return 'Puntos favoreciendo menos peso corporal';
-  return 'Puntos favoreciendo más peso corporal (reps/tiempo)';
+  return equitySummary(type, mode ?? 'heavier_more');
+}
+
+function sameUserId(a?: string | null, b?: string | null) {
+  return Boolean(a && b && String(a) === String(b));
 }
 
 function sortChallengeRanking<T extends { score: number; value: number }>(
@@ -195,6 +187,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
   onGoToProfile,
   onGoToDashboard,
   socialBackTo = 'feed',
+  socialNavTick = 0,
+  onChatConversationChange,
   openCheckInModalSignal = 0,
   openPublishSignal = 0,
   checkInIntent = null,
@@ -240,6 +234,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [gymName, setGymName] = useState('');
   const [gymTime, setGymTime] = useState('');
   const [editingCheckIn, setEditingCheckIn] = useState<GymCheckIn | null>(null);
+  const [localCheckInIntent, setLocalCheckInIntent] = useState<'now' | 'later' | null>(null);
 
   // Búsqueda de usuarios para añadir (el API excluye amigos ya aceptados)
   const [searchResults, setSearchResults] = useState<UserSearchResult[]>([]);
@@ -256,6 +251,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
   /** true = IPF GL / puntos por peso y género; false = solo la mejor marca (kg, reps o s). */
   const [createUsePointsSystem, setCreateUsePointsSystem] = useState(true);
   const [createBodyWeightScoring, setCreateBodyWeightScoring] = useState<BodyWeightScoringMode>('heavier_more');
+  const [createEquityOpen, setCreateEquityOpen] = useState(false);
+  const [createEquityTouched, setCreateEquityTouched] = useState(false);
   const [createSubmitting, setCreateSubmitting] = useState(false);
 
   // Form unirse a torneo
@@ -272,8 +269,12 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [chatAsks, setChatAsks] = useState<ChatAsk[]>([]);
   const [chatAskBusyId, setChatAskBusyId] = useState<string | null>(null);
   const [chatPeerId, setChatPeerId] = useState<string | null>(null);
-  const [chatUnread, setChatUnread] = useState(0);
+  const [chatWriteSignal, setChatWriteSignal] = useState(0);
+  const [showHomeActivity, setShowHomeActivity] = useState(false);
+  const [unreadNotifCount, setUnreadNotifCount] = useState(0);
   const activityBadge = pendingRequests.length + coachRequests.length + groupInvites.length + chatAsks.length;
+  const homeActivityCount = activityBadge + unreadNotifCount;
+  const markHomeNotifsRead = useCallback(() => setUnreadNotifCount(0), []);
 
   const loadCoachRequests = useCallback(() => {
     fetchCoachRequests()
@@ -297,24 +298,15 @@ export const SocialView: React.FC<SocialViewProps> = ({
     loadCoachRequests();
     loadGroupInvites();
     loadChatAsks();
-  }, [loadCoachRequests, loadGroupInvites, loadChatAsks, user.id]);
-
-  useEffect(() => {
     const loadUnread = () => {
-      fetchChats()
-        .then(inbox => setChatUnread(inbox.threads.reduce((sum, thread) => sum + thread.unread, 0)))
-        .catch(() => setChatUnread(0));
+      apiGet<{ count: number }>('/api/notifications/unread-count')
+        .then(r => setUnreadNotifCount(typeof r.count === 'number' ? r.count : 0))
+        .catch(() => setUnreadNotifCount(0));
     };
     loadUnread();
     const id = window.setInterval(loadUnread, 20000);
-    const unsub = subscribeChatRealtime(event => {
-      if (event.type === 'chat_message') loadUnread();
-    });
-    return () => {
-      window.clearInterval(id);
-      unsub();
-    };
-  }, [user.id]);
+    return () => window.clearInterval(id);
+  }, [loadCoachRequests, loadGroupInvites, loadChatAsks, user.id]);
 
   const answerCoach = useCallback(async (id: string, decision: 'accept' | 'reject') => {
     setCoachRequestBusyId(id);
@@ -371,12 +363,44 @@ export const SocialView: React.FC<SocialViewProps> = ({
     }
   }, [activeTab, challengeSubTab, loadRoutineLeaderboard, friendsList.length]);
 
-  /** Si el padre cambia la pestaña (p. ej. «Avisar yo» → checkins), sincronizar sin remount por key. */
+  /** Nav de abajo: Inicio/Chat/Torneos siempre gana, aunque hayas abierto Amigos o Gym por dentro. */
   useEffect(() => {
-    if (initialTab === prevInitialTabPropRef.current) return;
-    prevInitialTabPropRef.current = initialTab;
     setActiveTab(initialTab);
-  }, [initialTab]);
+    prevInitialTabPropRef.current = initialTab;
+  }, [initialTab, socialNavTick]);
+
+  /** Al cambiar de pestaña por la barra, se cierran hojas sueltas. El check-in pedido en el mismo tick se reabre después. */
+  const lastNavTick = useRef(socialNavTick);
+  useEffect(() => {
+    if (lastNavTick.current === socialNavTick) return;
+    lastNavTick.current = socialNavTick;
+    setShowCreateChallengeModal(false);
+    setShowJoinChallengeModal(null);
+    setSelectedChallengeDetail(null);
+    setShowFriendModal(null);
+    setUnfriendConfirmFriend(null);
+    setFriendRoutine(null);
+    setFriendProfile(null);
+    setShowHomeActivity(false);
+    setViewingProfileId(null);
+    setShowCheckInModal(false);
+    setEditingCheckIn(null);
+  }, [socialNavTick]);
+
+  useEscapeClose(!!unfriendConfirmFriend, () => setUnfriendConfirmFriend(null));
+  useEscapeClose(!!showFriendModal && !unfriendConfirmFriend, () => {
+    setShowFriendModal(null);
+    setFriendRoutine(null);
+    setFriendProfile(null);
+  });
+  useEscapeClose(!!selectedChallengeDetail && !showJoinChallengeModal, () => setSelectedChallengeDetail(null));
+  useEscapeClose(!!viewingProfileId && !showFriendModal, () => setViewingProfileId(null));
+  useEscapeClose(showHomeActivity, () => setShowHomeActivity(false));
+
+  useEffect(() => {
+    if (createEquityTouched) return;
+    setCreateBodyWeightScoring(suggestBodyWeightScoring(createType, createExercise));
+  }, [createType, createExercise, createEquityTouched]);
 
   // Marcar notificaciones como leídas al ver la pestaña Actividad
   useEffect(() => {
@@ -385,14 +409,11 @@ export const SocialView: React.FC<SocialViewProps> = ({
     }
   }, [activeTab]);
 
-  /** Desde Progreso (dashboard): «Avisar yo» abre Social → Actividad con el modal de gym (solo al pulsar, no al volver a entrar). */
-  useEffect(() => {
-    if (!openCheckInModalSignal) return;
-    if (openCheckInModalSignal <= lastConsumedOpenCheckInModalSignal) return;
-    lastConsumedOpenCheckInModalSignal = openCheckInModalSignal;
+  useIncrementSignal('checkin-modal', openCheckInModalSignal, () => {
     setActiveTab('checkins');
     setEditingCheckIn(null);
     setGymName('');
+    setLocalCheckInIntent(checkInIntent ?? 'later');
     if (checkInIntent === 'now') {
       const d = new Date();
       setGymTime(`${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`);
@@ -400,11 +421,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
       setGymTime('');
     }
     setShowCheckInModal(true);
-  }, [openCheckInModalSignal, checkInIntent]);
-
-  useEffect(() => {
-    lastConsumedOpenCheckInModalSignal = 0;
-  }, [user.id]);
+  });
 
   // Búsqueda desde la 1.ª letra (sin mínimo de 2); debounce corto para que responda al instante
   useEffect(() => {
@@ -444,8 +461,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const finishedChallenges = challenges.filter(c => {
     const ended = (c.status === 'finished') || new Date(c.endDate) <= now;
     if (!ended) return false;
-    const isParticipant = c.participants.some(p => p.userId === user.id);
-    const isCreator = c.createdBy?.id === user.id;
+    const isParticipant = c.participants.some(p => sameUserId(p.userId, user.id));
+    const isCreator = sameUserId(c.createdBy?.id, user.id);
     return isParticipant || isCreator;
   });
   const displayedChallenges =
@@ -501,7 +518,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
           trainingMaxesAll?: { name: string; mode: string; linkedExercise?: string }[];
         }>(`/api/social/friends/${friend.id}/profile?includeAllTms=1`).catch(() => ({
           name: friend.name,
-          avatar: friend.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(friend.name)}`,
+                      avatar: friend.avatar || '',
           trainingMaxes: [],
         })),
       ]);
@@ -533,7 +550,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
       setFriendProfile(profile);
     } catch {
       setFriendRoutine(null);
-      setFriendProfile({ name: friend.name, avatar: friend.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(friend.name)}`, trainingMaxes: [] });
+      setFriendProfile({ name: friend.name, avatar: friend.avatar || '', trainingMaxes: [] });
     } finally {
       setFriendRoutineLoading(false);
     }
@@ -601,7 +618,9 @@ export const SocialView: React.FC<SocialViewProps> = ({
       setCreateExercise('');
       setCreateEndDate('');
       setCreateUsePointsSystem(true);
-      setCreateBodyWeightScoring('heavier_more');
+      setCreateBodyWeightScoring(suggestBodyWeightScoring(createType, createExercise));
+      setCreateEquityOpen(false);
+      setCreateEquityTouched(false);
       onRefreshChallenges?.();
       if (challengeSubTab === 'progress') loadRoutineLeaderboard();
     } finally {
@@ -630,9 +649,9 @@ export const SocialView: React.FC<SocialViewProps> = ({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={VIEW_TRANSITION}
-      className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-28 sm:pb-32 text-slate-900 dark:text-slate-100"
+      className="mx-auto max-w-5xl px-4 pb-28 pt-5 text-slate-900 sm:px-6 sm:pb-32 sm:pt-7 dark:text-slate-100"
     >
-      <header className="mb-5 space-y-3">
+      <header className="mb-5 space-y-4">
         <div className="flex items-center gap-3">
           {activeTab !== 'feed' ? (
             <button
@@ -670,7 +689,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
               aria-label="Mi perfil"
             >
               <Avatar
-                src={user.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'User')}`}
+                src={user.avatar}
                 name={user.name}
                 className="h-10 w-10 rounded-full border border-slate-200 dark:border-slate-700"
               />
@@ -682,16 +701,60 @@ export const SocialView: React.FC<SocialViewProps> = ({
             </h1>
           </div>
           {activeTab === 'feed' && (
+            <div className="ml-auto flex shrink-0 items-center gap-0.5">
+              <button
+                type="button"
+                onClick={() => setActiveTab('friends')}
+                className="flex h-10 w-10 items-center justify-center rounded-full text-slate-700 transition-colors active:bg-slate-100 dark:text-slate-200 dark:active:bg-slate-800"
+                aria-label="Amigos"
+                title="Amigos"
+              >
+                <Users size={22} strokeWidth={2} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('checkins')}
+                className="flex h-10 w-10 items-center justify-center rounded-full text-slate-700 transition-colors active:bg-slate-100 dark:text-slate-200 dark:active:bg-slate-800"
+                aria-label="Gym"
+                title="Gym"
+              >
+                <MapPin size={22} strokeWidth={2} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowHomeActivity(true)}
+                className="relative flex h-10 w-10 items-center justify-center rounded-full text-slate-700 transition-colors active:bg-slate-100 dark:text-slate-200 dark:active:bg-slate-800"
+                aria-label="Avisos"
+                title="Avisos"
+              >
+                <Bell size={22} strokeWidth={2} />
+                {homeActivityCount > 0 && (
+                  <span className="absolute right-0.5 top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-indigo-600 px-1 text-[10px] font-semibold text-white">
+                    {homeActivityCount > 9 ? '9+' : homeActivityCount}
+                  </span>
+                )}
+              </button>
+            </div>
+          )}
+          {activeTab === 'challenges' && (
             <button
               type="button"
-              onClick={() => setActiveTab('chat')}
-              className="relative flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200"
-              aria-label="Chat"
+              onClick={() => setShowCreateChallengeModal(true)}
+              className="flex h-10 shrink-0 items-center gap-1.5 rounded-full bg-indigo-600 px-3.5 text-sm font-semibold text-white"
             >
-              <MessageCircle size={20} />
-              {chatUnread > 0 && (
-                <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-rose-500" />
-              )}
+              <Plus size={15} />
+              Crear
+            </button>
+          )}
+          {activeTab === 'chat' && (
+            <button
+              type="button"
+              onClick={() => setChatWriteSignal(s => s + 1)}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/50 bg-white/70 text-slate-800 shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-slate-800/70 dark:text-slate-100"
+              aria-label="Nuevo mensaje"
+              title="Nuevo mensaje"
+            >
+              <Plus size={20} strokeWidth={2.25} />
             </button>
           )}
         </div>
@@ -786,6 +849,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
               startWith={chatPeerId}
               onOpened={() => setChatPeerId(null)}
               onOpenProfile={id => setViewingProfileId(id)}
+              onConversationChange={onChatConversationChange}
+              writeSignal={chatWriteSignal}
             />
           </motion.div>
         )}
@@ -946,7 +1011,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                       className="flex items-center gap-4 cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors"
                       onClick={() => setViewingProfileId(f.id)}
                     >
-                      <Avatar src={f.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(f.name || 'U')}`} name={f.name} className="w-12 h-12 rounded-full border-2 border-slate-100 dark:border-slate-700" />
+                      <Avatar src={f.avatar} name={f.name} className="w-12 h-12 rounded-full border-2 border-slate-100 dark:border-slate-700" />
                       <div className="flex-1 min-w-0">
                         <h3 className="font-bold text-slate-900 dark:text-slate-100">{f.name}</h3>
                         
@@ -969,90 +1034,61 @@ export const SocialView: React.FC<SocialViewProps> = ({
             transition={SCREEN_TRANSITION}
             className="space-y-6"
           >
-            <div className="flex items-center justify-between flex-wrap gap-4">
-              <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
-                <button 
-                  onClick={() => setChallengeSubTab('active')}
-                  className={cn(
-                    "px-4 py-2 rounded-lg text-sm font-bold transition-all",
-                    challengeSubTab === 'active' ? "bg-white dark:bg-slate-900 text-indigo-600 shadow-sm" : "text-slate-500"
-                  )}
-                >
-                  Activos
-                </button>
-                <button 
-                  onClick={() => setChallengeSubTab('finished')}
-                  className={cn(
-                    "px-4 py-2 rounded-lg text-sm font-bold transition-all",
-                    challengeSubTab === 'finished' ? "bg-white dark:bg-slate-900 text-indigo-600 shadow-sm" : "text-slate-500"
-                  )}
-                >
-                  Finalizados
-                </button>
-                <button 
-                  onClick={() => setChallengeSubTab('progress')}
-                  className={cn(
-                    "px-4 py-2 rounded-lg text-sm font-bold transition-all",
-                    challengeSubTab === 'progress' ? "bg-white dark:bg-slate-900 text-indigo-600 shadow-sm" : "text-slate-500"
-                  )}
-                >
-                  Progreso
-                </button>
-              </div>
-              <Button variant="outline" size="sm" onClick={() => setShowCreateChallengeModal(true)} className="rounded-xl border-2">
-                <Plus size={16} className="mr-2" />
-                <span className="text-[10px] font-black uppercase tracking-widest">Crear Torneo</span>
-              </Button>
+            <div className="flex rounded-2xl bg-white p-1.5 dark:bg-slate-900">
+                {([
+                  { id: 'active' as const, label: 'Activos' },
+                  { id: 'finished' as const, label: 'Finalizados' },
+                  { id: 'progress' as const, label: 'Progreso' },
+                ]).map(tab => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setChallengeSubTab(tab.id)}
+                    className={cn(
+                      'flex-1 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors sm:py-3',
+                      challengeSubTab === tab.id
+                        ? 'bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-white'
+                        : 'text-slate-500'
+                    )}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
             </div>
 
             {challengeSubTab !== 'progress' && (
-            <div className="flex flex-col sm:flex-row gap-4">
-              <Input 
-                placeholder="Buscar torneos por título, ejercicio..."
-                value={challengeSearch}
-                onChange={(e) => setChallengeSearch(e.target.value)}
-                icon={<Search size={20} />}
-                className="py-3 flex-1"
-              />
-            </div>
+            <Input 
+              placeholder="Buscar por título o ejercicio"
+              value={challengeSearch}
+              onChange={(e) => setChallengeSearch(e.target.value)}
+              icon={<Search size={16} />}
+              className="h-11 rounded-2xl border-slate-200/80 bg-white py-0 shadow-none dark:border-white/10 dark:bg-slate-900"
+            />
             )}
 
             {challengeSubTab === 'progress' && (
               <>
-                <Card padding="lg" rounded="2xl" className="border-2 border-indigo-200 dark:border-indigo-900/50 bg-gradient-to-r from-indigo-50 to-white dark:from-indigo-950/30 dark:to-slate-900">
-                  <div className="flex items-start gap-4">
-                    <div className="bg-indigo-100 dark:bg-indigo-900/50 p-4 rounded-2xl shrink-0">
-                      <Dumbbell size={32} className="text-indigo-600 dark:text-indigo-400" />
-                    </div>
-                    <div>
-                      <h3 className="text-sm font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-400">Progreso de rutina</h3>
-                      <p className="text-sm text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">
-                        Tú y tus amigos aparecen aquí. El % es la mejora del agregado de tu rutina activa entre el primer y el último guardado del historial (misma lógica que en Progreso del inicio).
-                      </p>
-                    </div>
-                  </div>
+                <Card padding="sm" rounded="md" variant="white">
+                  <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Mejora de rutina</p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    El % es el cambio de tus marcas entre el primer y el último registro, igual que en Progreso.
+                  </p>
                 </Card>
 
                 {routineLeaderboardLoading ? (
-                  <Card padding="lg" rounded="2xl" className="text-center text-slate-500">Cargando ranking…</Card>
+                  <Card padding="md" rounded="md" variant="white" className="text-center text-slate-500">Cargando ranking…</Card>
                 ) : routineLeaderboard && routineLeaderboard.length > 0 ? (
-                  <div className="space-y-2">
+                  <div className="space-y-3">
                     {routineLeaderboard.map((row, idx) => {
                       const pct = row.improvementPct;
                       const rank = idx + 1;
-                      const rankStyle = rank === 1
-                        ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800/50'
-                        : rank === 2
-                          ? 'bg-slate-50 dark:bg-slate-800/80 border-slate-200 dark:border-slate-600/50'
-                          : rank === 3
-                            ? 'bg-amber-50/80 dark:bg-amber-950/20 border-amber-200/80 dark:border-amber-800/40'
-                            : 'bg-white dark:bg-slate-900/50 border-slate-100 dark:border-slate-700';
                       return (
                         <Card
                           key={row.userId}
-                          padding="md"
-                          rounded="2xl"
-                          className={cn('border-2', rankStyle, row.isSelf && 'ring-2 ring-indigo-400 dark:ring-indigo-500')}
+                          padding="sm"
+                          rounded="md"
+                          variant="white"
+                          className={cn(row.isSelf && 'ring-1 ring-indigo-400/70')}
                         >
                           <div className="flex items-center gap-3 sm:gap-4">
                             <span className={cn(
@@ -1093,11 +1129,11 @@ export const SocialView: React.FC<SocialViewProps> = ({
                     })}
                   </div>
                 ) : (
-                  <Card padding="lg" rounded="2xl" className="text-center border-dashed border-2 border-slate-200 bg-transparent">
-                    <p className="text-slate-500 font-medium">
+                  <Card padding="md" rounded="md" variant="white" className="border-dashed text-center">
+                    <p className="text-sm text-slate-500">
                       {friendsList.length === 0
                         ? 'Añade amigos para comparar el progreso de rutina.'
-                        : 'Aún no hay datos de historial para mostrar. Guarda periodos en Progreso con tu rutina activa.'}
+                        : 'Aún no hay historial. Guarda tus RM en Progreso.'}
                     </p>
                   </Card>
                 )}
@@ -1105,104 +1141,78 @@ export const SocialView: React.FC<SocialViewProps> = ({
             )}
 
             {challengeSubTab !== 'progress' && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="space-y-3.5">
               {filteredChallenges.map(challenge => {
                 const isFinished = challengeSubTab === 'finished' || new Date(challenge.endDate) <= now;
-                const isParticipant = challenge.participants.some(p => p.userId === user.id);
+                const isParticipant = challenge.participants.some(p => sameUserId(p.userId, user.id));
+                const ranking = sortChallengeRanking(challenge.participants, challenge.usePointsSystem);
+                const myIdx = ranking.findIndex(p => sameUserId(p.userId, user.id));
+                const me = challenge.participants.find(p => sameUserId(p.userId, user.id));
+                const days = Math.max(0, Math.ceil((new Date(challenge.endDate).getTime() - Date.now()) / 86400000));
+                const typeLabel = challenge.type === 'weight' ? 'Fuerza' : CHALLENGE_TYPE_LABELS[challenge.type as ChallengeType];
                 const unit = CHALLENGE_TYPE_UNIT[challenge.type as ChallengeType] || '';
 
                 return (
-                  <Card 
-                    key={challenge.id} 
-                    padding="lg" 
-                    rounded="2xl" 
-                    className={cn(
-                      "border-2 relative overflow-hidden group cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-600 transition-colors",
-                      isFinished ? "border-slate-200 opacity-90 dark:border-slate-700" : "border-slate-100 dark:border-slate-700"
-                    )}
+                  <Card
+                    key={challenge.id}
+                    padding="md"
+                    rounded="md"
+                    variant="white"
+                    className="cursor-pointer"
                     onClick={() => setSelectedChallengeDetail(challenge)}
                   >
-                    <div className="mb-6 flex gap-3 sm:gap-4">
-                      <div className="min-w-0 flex-1">
-                        <h3 className="text-xl font-black text-slate-900 dark:text-slate-100 mb-1 break-words">{challenge.title}</h3>
-                      {challenge.description && (
-                        <p className="text-sm text-slate-600 dark:text-slate-400 mb-2">{challenge.description}</p>
-                      )}
-                      <p className="text-[10px] font-black uppercase tracking-widest text-indigo-600">{challenge.exercise}</p>
-                      <p className="text-[10px] text-slate-500 mt-1">
-                        {CHALLENGE_TYPE_LABELS[challenge.type as ChallengeType]}
-                        <span className="mx-1">•</span>
-                        <Calendar size={10} className="inline" /> Hasta {new Date(challenge.endDate).toLocaleDateString('es-ES')}
-                      </p>
-                      <p className="text-[9px] text-slate-400 mt-0.5 font-medium">
-                        {bodyWeightScoringSummary(
-                          challenge.type as ChallengeType,
-                          challenge.usePointsSystem !== false,
-                          challenge.bodyWeightScoring
-                        )}
-                      </p>
+                    <div className="flex items-start gap-3.5">
+                      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-300">
+                        <Trophy size={20} />
                       </div>
-                      <div className="flex shrink-0 flex-col items-end gap-2 pt-0.5 sm:flex-row sm:items-start sm:gap-2">
-                        {isFinished && (
-                          <span className="bg-slate-200 dark:bg-slate-600 text-slate-600 dark:text-slate-300 text-[10px] font-black uppercase px-2 py-1 rounded-lg whitespace-nowrap">
-                            Finalizado
+                      <div className="min-w-0 flex-1">
+                        <h3 className="text-[15px] font-semibold leading-snug text-slate-900 dark:text-slate-100">
+                          {challenge.title}
+                        </h3>
+                        <p className="mt-1.5 text-xs leading-relaxed text-slate-500">
+                          {challenge.exercise}
+                          <span className="mx-1.5 text-slate-300 dark:text-slate-600">·</span>
+                          {typeLabel}
+                          <span className="mx-1.5 text-slate-300 dark:text-slate-600">·</span>
+                          {isFinished ? 'Finalizado' : days === 0 ? 'Termina hoy' : `${days} días`}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="mt-4 flex items-center justify-between gap-3 border-t border-slate-100 pt-3.5 dark:border-slate-800">
+                      <div className="flex min-w-0 items-center gap-2.5">
+                        {ranking.length > 0 ? (
+                          <>
+                            <div className="flex -space-x-2">
+                              {ranking.slice(0, 4).map(p => (
+                                <Avatar key={p.userId} src={p.avatar} name={p.name} className="h-7 w-7 rounded-full border-2 border-white dark:border-slate-900" />
+                              ))}
+                            </div>
+                            <span className="truncate text-[12px] text-slate-400">
+                              {myIdx >= 0 ? `#${myIdx + 1} · ` : ''}
+                              {ranking.length} {ranking.length === 1 ? 'persona' : 'personas'}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="text-[12px] text-slate-400">Aún nadie se ha unido</span>
+                        )}
+                        {isParticipant && me && (
+                          <span className="shrink-0 text-[12px] font-semibold tabular-nums text-slate-600 dark:text-slate-300">
+                            {challenge.usePointsSystem ? `${Math.round(me.score)} pts` : `${me.value} ${unit}`}
                           </span>
                         )}
-                        <div className="bg-amber-100 text-amber-600 dark:bg-amber-900/30 dark:text-amber-400 p-2 rounded-xl shadow-sm">
-                          <Trophy size={20} className="block" aria-hidden />
-                        </div>
                       </div>
+                      {!isFinished ? (
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); openJoinModal(challenge); }}
+                          className="shrink-0 rounded-full bg-indigo-600 px-4 py-2 text-xs font-semibold text-white"
+                        >
+                          {isParticipant ? 'Actualizar' : 'Unirse'}
+                        </button>
+                      ) : (
+                        <span className="shrink-0 text-xs text-slate-400">Fin</span>
+                      )}
                     </div>
-
-                    <div className="space-y-4 mb-6">
-                      {sortChallengeRanking(challenge.participants, challenge.usePointsSystem).map((p, idx) => (
-                          <div key={p.userId} className="flex items-center justify-between">
-                            <div className="flex items-center gap-3">
-                              <span className={cn(
-                                "text-xs font-black w-4",
-                                idx === 0 ? "text-amber-500 dark:text-amber-400" :
-                                idx === 1 ? "text-slate-500 dark:text-slate-400" :
-                                idx === 2 ? "text-amber-700 dark:text-amber-600" :
-                                "text-slate-300 dark:text-slate-600"
-                              )}>{idx + 1}</span>
-                              <Avatar src={p.avatar} name={p.name} className="w-8 h-8 rounded-full border border-slate-100 dark:border-slate-700" />
-                              <span className="text-sm font-bold text-slate-700 dark:text-slate-300">{p.name}</span>
-                            </div>
-                            <div className="flex flex-col items-end">
-                              {challenge.usePointsSystem !== false ? (
-                                <>
-                                  <span className="text-sm font-black text-slate-900 dark:text-slate-100">{p.score} pts</span>
-                                  <span className="text-[10px] text-slate-400 font-medium">{p.value} {unit}</span>
-                                </>
-                              ) : (
-                                <>
-                                  <span className="text-sm font-black text-slate-900 dark:text-slate-100">{p.value} {unit}</span>
-                                  <span className="text-[10px] text-slate-400 font-medium">Marca bruta</span>
-                                </>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                    </div>
-
-                    {!isFinished && !isParticipant && (
-                      <Button 
-                        variant="primary" 
-                        className="w-full rounded-xl"
-                        onClick={(e) => { e.stopPropagation(); openJoinModal(challenge); }}
-                      >
-                        Unirse al Torneo
-                      </Button>
-                    )}
-                    {!isFinished && isParticipant && (
-                      <Button 
-                        variant="outline" 
-                        className="w-full rounded-xl"
-                        onClick={(e) => { e.stopPropagation(); openJoinModal(challenge); }}
-                      >
-                        Actualizar mi marca
-                      </Button>
-                    )}
                   </Card>
                 );
               })}
@@ -1210,12 +1220,25 @@ export const SocialView: React.FC<SocialViewProps> = ({
             )}
 
             {challengeSubTab !== 'progress' && filteredChallenges.length === 0 && (
-              <Card padding="lg" className="text-center border-dashed border-2 border-slate-200 bg-transparent">
-                <p className="text-slate-400 font-medium">
-                  {challengeSubTab === 'active' 
-                    ? 'No hay torneos activos. Crea uno o espera a que tus amigos creen uno.' 
+              <Card padding="lg" rounded="md" variant="white" className="border-dashed text-center">
+                <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300">
+                  <Trophy size={20} />
+                </div>
+                <p className="text-sm text-slate-500">
+                  {challengeSubTab === 'active'
+                    ? 'No hay torneos activos. Crea uno o espera a que un amigo lo haga.'
                     : 'No hay torneos finalizados.'}
                 </p>
+                {challengeSubTab === 'active' && (
+                  <button
+                    type="button"
+                    onClick={() => setShowCreateChallengeModal(true)}
+                    className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white"
+                  >
+                    <Plus size={14} />
+                    Crear torneo
+                  </button>
+                )}
               </Card>
             )}
           </motion.div>
@@ -1394,7 +1417,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
               </section>
             )}
 
-            <h2 className="text-xl font-black text-slate-800 uppercase tracking-tight mb-6 dark:text-slate-100">Actividad de Amigos</h2>
+            <h2 className="mb-6 text-lg font-semibold text-slate-800 dark:text-slate-100">Quién va al gym</h2>
             
             {(() => {
               const todayStr = new Date().toDateString();
@@ -1450,6 +1473,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                           setEditingCheckIn(null);
                           setGymName('');
                           setGymTime('');
+                          setLocalCheckInIntent('later');
                           setShowCheckInModal(true);
                         }}
                         className="group inline-flex items-center gap-1.5 rounded-lg border border-indigo-200/90 bg-white px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-indigo-700 shadow-sm transition-all hover:border-indigo-300 hover:bg-indigo-50 active:scale-[0.98] dark:border-indigo-500/35 dark:bg-indigo-950/35 dark:text-indigo-200 dark:hover:border-indigo-400/50 dark:hover:bg-indigo-900/40"
@@ -1510,154 +1534,105 @@ export const SocialView: React.FC<SocialViewProps> = ({
         )}
       </AnimatePresence>
 
-      {/* Check-In Modal (crear o editar) */}
-      {(showCheckInModal || editingCheckIn) && typeof document !== 'undefined' && createPortal(
-        <AnimatePresence>
-          <div key="checkin-modal" className="fixed inset-0 flex items-center justify-center px-4 py-6 min-h-[100dvh] overflow-y-auto" style={{ zIndex: 100000 }}>
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => { setShowCheckInModal(false); setEditingCheckIn(null); setGymName(''); setGymTime(''); }}
-              className="absolute inset-0 min-h-[100dvh] bg-black/75 backdrop-blur-sm"
-            />
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.9, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              onClick={(e) => e.stopPropagation()}
-              className="relative bg-white dark:bg-slate-900 w-full max-w-md max-h-[90dvh] overflow-y-auto rounded-2xl sm:rounded-[2.5rem] p-5 sm:p-8 shadow-2xl dark:border dark:border-slate-700 my-auto"
+      <GlassModal
+        open={showCheckInModal || !!editingCheckIn}
+        onClose={() => { setShowCheckInModal(false); setEditingCheckIn(null); setGymName(''); setGymTime(''); }}
+        title={editingCheckIn ? 'Cambiar aviso' : (localCheckInIntent ?? checkInIntent) === 'now' ? 'Estoy en el gym' : 'Avisar a tus amigos'}
+        subtitle={(localCheckInIntent ?? checkInIntent) === 'now' ? 'Tus amigos verán que estás entrenando ahora.' : 'Diles el gym y a qué hora llegas.'}
+        footer={
+          <div className="flex gap-2">
+            <Button variant="outline" className="flex-1" onClick={() => { setShowCheckInModal(false); setEditingCheckIn(null); setGymName(''); setGymTime(''); }}>Cancelar</Button>
+            {editingCheckIn && onCheckInDelete && (
+              <Button
+                variant="outline"
+                className="flex-1 border-rose-200 text-rose-600"
+                onClick={() => {
+                  onCheckInDelete(editingCheckIn.id);
+                  setShowCheckInModal(false);
+                  setEditingCheckIn(null);
+                  setGymName('');
+                  setGymTime('');
+                }}
+              >
+                Quitar
+              </Button>
+            )}
+            <Button
+              variant="primary"
+              className="flex-1"
+              disabled={!gymName.trim() || !gymTime || checkInSaving}
+              onClick={async () => {
+                setCheckInSaving(true);
+                try {
+                  if (editingCheckIn && onCheckInUpdate) {
+                    await onCheckInUpdate(editingCheckIn.id, gymName.trim(), gymTime);
+                    setEditingCheckIn(null);
+                  } else {
+                    await onCheckIn(gymName.trim(), gymTime);
+                    setShowCheckInModal(false);
+                  }
+                  setGymName('');
+                  setGymTime('');
+                } finally {
+                  setCheckInSaving(false);
+                }
+              }}
             >
-              <h3 className="text-xl font-semibold text-slate-900 mb-2 dark:text-slate-100">
-                {editingCheckIn ? 'Cambiar aviso' : checkInIntent === 'now' ? 'Estoy en el gym' : 'Avisar a tus amigos'}
-              </h3>
-              <p className="mb-5 text-sm text-slate-500">
-                {checkInIntent === 'now'
-                  ? 'Tus amigos verán que estás entrenando ahora.'
-                  : 'Diles el gym y a qué hora llegas.'}
-              </p>
-              <div className="space-y-4 mb-8">
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-slate-400">Gimnasio</label>
-                  <Input 
-                    placeholder="Basic Fit, McFit…" 
-                    value={gymName}
-                    onChange={(e) => setGymName(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-slate-400">Hora</label>
-                  <Input 
-                    type="time" 
-                    placeholder="Ej: 18:30"
-                    title="Ejemplo: 18:30 — hora aproximada de llegada"
-                    value={gymTime}
-                    onChange={(e) => setGymTime(e.target.value)}
-                  />
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400 pl-1 pt-0.5">
-                    Hora aproximada de llegada al gym
-                  </p>
-                </div>
-              </div>
-              <div className="flex gap-3">
-                <Button variant="outline" className="flex-1" onClick={() => { setShowCheckInModal(false); setEditingCheckIn(null); setGymName(''); setGymTime(''); }}>Cancelar</Button>
-                {editingCheckIn && onCheckInDelete && (
-                  <Button
-                    variant="outline"
-                    className="flex-1 border-rose-200 text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950/30"
-                    onClick={() => {
-                      onCheckInDelete(editingCheckIn.id);
-                      setShowCheckInModal(false);
-                      setEditingCheckIn(null);
-                      setGymName('');
-                      setGymTime('');
-                    }}
-                  >
-                    Quitar mi hora
-                  </Button>
-                )}
-                <Button 
-                  variant="primary" 
-                  className="flex-1"
-                  disabled={!gymName.trim() || !gymTime || checkInSaving}
-                  onClick={async () => {
-                    setCheckInSaving(true);
-                    try {
-                      if (editingCheckIn && onCheckInUpdate) {
-                        await onCheckInUpdate(editingCheckIn.id, gymName.trim(), gymTime);
-                        setEditingCheckIn(null);
-                      } else {
-                        await onCheckIn(gymName.trim(), gymTime);
-                        setShowCheckInModal(false);
-                      }
-                      setGymName('');
-                      setGymTime('');
-                    } finally {
-                      setCheckInSaving(false);
-                    }
-                  }}
-                >
-                  {checkInSaving ? <><Loader2 size={14} className="animate-spin mr-1" /> Guardando…</> : editingCheckIn ? 'Guardar' : 'Confirmar'}
-                </Button>
-              </div>
-            </motion.div>
+              {checkInSaving ? <><Loader2 size={14} className="mr-1 animate-spin" /> Guardando…</> : 'Confirmar'}
+            </Button>
           </div>
-        </AnimatePresence>,
-        document.body
-      )}
+        }
+      >
+        <div className="space-y-3">
+          <div>
+            <label className="mb-1 block text-[11px] text-slate-400">Gimnasio</label>
+            <Input placeholder="Basic Fit, McFit…" value={gymName} onChange={(e) => setGymName(e.target.value)} />
+          </div>
+          <div>
+            <label className="mb-1 block text-[11px] text-slate-400">Hora</label>
+            <Input type="time" value={gymTime} onChange={(e) => setGymTime(e.target.value)} />
+          </div>
+        </div>
+      </GlassModal>
 
-      {/* Create Challenge Modal */}
-      {showCreateChallengeModal && typeof document !== 'undefined' && createPortal(
-        <AnimatePresence>
-          <div key="create-challenge-modal" className="fixed inset-0 flex items-center justify-center px-4 overflow-y-auto py-8 min-h-[100dvh]" style={{ zIndex: 100000 }}>
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setShowCreateChallengeModal(false)}
-              className="absolute inset-0 min-h-[100dvh] bg-black/75 backdrop-blur-sm"
-            />
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.9, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              onClick={(e) => e.stopPropagation()}
-              className="relative bg-white dark:bg-slate-900 w-full max-w-md max-h-[90dvh] flex flex-col rounded-2xl sm:rounded-[2.5rem] shadow-2xl dark:border dark:border-slate-700 overflow-hidden"
-            >
-              <div className="px-5 sm:px-8 pt-5 sm:pt-8 pb-3 flex-shrink-0">
-                <h3 className="text-2xl font-black text-slate-900 uppercase tracking-tight dark:text-slate-100">Crear Torneo</h3>
-                <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">Solo tus amigos podrán unirse.</p>
-              </div>
-              <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 sm:px-8 pb-2 space-y-4">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Título *</label>
+      <GlassModal
+        open={showCreateChallengeModal}
+        onClose={() => setShowCreateChallengeModal(false)}
+        title="Crear torneo"
+        subtitle="Solo se unen tus amigos"
+      >
+        <div className="space-y-3">
+                <div>
+                  <label className="mb-1 block text-[11px] text-slate-400">Título</label>
                   <Input 
-                    placeholder="Ej: Dominadas de marzo" 
+                    placeholder="Dominadas de marzo" 
                     value={createTitle}
                     onChange={(e) => setCreateTitle(e.target.value)}
+                    className="h-10 rounded-xl border-white/50 bg-white/60 shadow-none dark:border-white/10 dark:bg-slate-800/60"
                   />
                 </div>
-                <div className="space-y-1">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Descripción (opcional)</label>
+                <div>
+                  <label className="mb-1 block text-[11px] text-slate-400">Descripción</label>
                   <Input 
-                    placeholder="Reglas o detalles adicionales" 
+                    placeholder="Opcional" 
                     value={createDesc}
                     onChange={(e) => setCreateDesc(e.target.value)}
+                    className="h-10 rounded-xl border-white/50 bg-white/60 shadow-none dark:border-white/10 dark:bg-slate-800/60"
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Tipo de prueba</label>
-                  <div className="grid grid-cols-1 gap-2">
+                <div>
+                  <p className="mb-1 text-[11px] text-slate-400">Tipo</p>
+                  <div className="grid grid-cols-3 gap-1">
                     {CHALLENGE_TYPE_OPTIONS.map(opt => (
                       <button
                         key={opt.value}
                         type="button"
                         onClick={() => setCreateType(opt.value)}
                         className={cn(
-                          'rounded-xl border-2 px-4 py-3 text-left text-sm font-bold transition-colors',
+                          'rounded-xl px-2 py-2 text-[11px] font-medium',
                           createType === opt.value
-                            ? 'border-indigo-500 bg-indigo-50 text-indigo-900 dark:bg-indigo-950/50 dark:text-indigo-100'
-                            : 'border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100'
+                            ? 'bg-indigo-600 text-white'
+                            : 'bg-white/50 text-slate-600 dark:bg-white/5 dark:text-slate-300'
                         )}
                       >
                         {opt.label}
@@ -1665,295 +1640,267 @@ export const SocialView: React.FC<SocialViewProps> = ({
                     ))}
                   </div>
                 </div>
-                <div className="rounded-2xl border-2 border-indigo-200 dark:border-indigo-800/60 bg-indigo-50/40 dark:bg-indigo-950/25 p-4 space-y-3">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-400">Puntuación y peso corporal</p>
-                  <label className="flex items-start gap-3 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      className="mt-1 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                      checked={createUsePointsSystem}
-                      onChange={(e) => setCreateUsePointsSystem(e.target.checked)}
-                    />
-                    <span className="text-sm text-slate-700 dark:text-slate-200">
-                      <span className="font-bold">Usar sistema de puntos</span>
-                      <span className="block text-xs text-slate-500 dark:text-slate-400 mt-1">
-                        Kg: IPF GL oficial (peso y género, hombres y mujeres a la par). Reps y tiempo: se iguala por género. Sin puntos: gana la marca cruda.
-                      </span>
-                    </span>
-                  </label>
-                  {createUsePointsSystem && (createType === 'max_reps' || createType === 'seconds') && (
-                    <div className="space-y-2 pt-1">
-                      <p className="text-xs font-bold text-slate-700 dark:text-slate-200">¿Cómo cuenta el peso corporal?</p>
-                      <div className="flex flex-col gap-2">
-                        {BODY_WEIGHT_SCORING_OPTIONS.map(opt => (
-                          <button
-                            key={opt.value}
-                            type="button"
-                            onClick={() => setCreateBodyWeightScoring(opt.value)}
-                            className={cn(
-                              'rounded-xl border-2 px-3 py-2.5 text-left transition-colors',
-                              createBodyWeightScoring === opt.value
-                                ? 'border-indigo-500 bg-white dark:bg-slate-900 ring-1 ring-indigo-500/30'
-                                : 'border-slate-200 dark:border-slate-600 bg-white/80 dark:bg-slate-950/85'
-                            )}
-                          >
-                            <span className="text-sm font-bold text-slate-900 dark:text-slate-100 block">{opt.short}</span>
-                            <span className="text-[10px] text-slate-500 dark:text-slate-400">{opt.hint}</span>
-                          </button>
-                        ))}
-                      </div>
-                      <p className="text-[10px] text-slate-500 dark:text-slate-400">
-                        Solo aplica a repeticiones y tiempo. En kilos ya entra el peso en la fórmula oficial.
-                      </p>
+                <div className="rounded-xl bg-white/50 px-3 py-2.5 dark:bg-white/5">
+                  <p className="text-[13px] font-medium text-slate-800 dark:text-slate-100">
+                    {createUsePointsSystem
+                      ? equitySummary(createType, createBodyWeightScoring)
+                      : 'Gana quien tenga la mejor marca, sin igualar por peso.'}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setCreateEquityOpen(v => !v)}
+                    className="mt-1 text-[11px] font-medium text-indigo-600 dark:text-indigo-300"
+                  >
+                    {createEquityOpen ? 'Ocultar ajuste' : '¿Así está bien la equidad?'}
+                  </button>
+                  {createEquityOpen && (
+                    <div className="mt-2 space-y-1">
+                      {createType !== 'weight' && EQUITY_OPTIONS.map(opt => (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          onClick={() => {
+                            setCreateUsePointsSystem(true);
+                            setCreateEquityTouched(true);
+                            setCreateBodyWeightScoring(opt.value);
+                          }}
+                          className={cn(
+                            'flex w-full items-center justify-between rounded-xl px-3 py-2 text-left',
+                            createUsePointsSystem && createBodyWeightScoring === opt.value
+                              ? 'bg-indigo-50 dark:bg-indigo-950/40'
+                              : 'hover:bg-white/40 dark:hover:bg-white/5'
+                          )}
+                        >
+                          <span className="min-w-0">
+                            <span className="block text-[13px] font-medium text-slate-800 dark:text-slate-100">{opt.short}</span>
+                            <span className="text-[11px] text-slate-400">{opt.hint}</span>
+                          </span>
+                        </button>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCreateEquityTouched(true);
+                          setCreateUsePointsSystem(v => !v);
+                        }}
+                        className="w-full rounded-xl px-3 py-2 text-left text-[12px] text-slate-500"
+                      >
+                        {createUsePointsSystem ? 'Clasificar solo por marca bruta' : 'Volver a puntos justos'}
+                      </button>
                     </div>
                   )}
-                  {createUsePointsSystem && createType === 'weight' && (
-                    <p className="text-xs text-slate-600 dark:text-slate-300 rounded-xl border border-indigo-200/80 dark:border-indigo-800/50 px-3 py-2 bg-white/70 dark:bg-slate-950/70">
-                      En kilos se usa la fórmula oficial IPF GL: misma vara para hombres y mujeres según el peso corporal.
-                    </p>
-                  )}
-                  {!createUsePointsSystem && (
-                    <p className="text-xs text-slate-500 dark:text-slate-400">El ranking será solo por marca (kg, reps o segundos), sin normalizar.</p>
-                  )}
                 </div>
-                <div className="space-y-1">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Ejercicio *</label>
+                <div>
+                  <label className="mb-1 block text-[11px] text-slate-400">Ejercicio</label>
                   <Input 
-                    placeholder="Ej: Dominadas, Plancha..." 
+                    placeholder="Dominadas, plancha…" 
                     value={createExercise}
                     onChange={(e) => setCreateExercise(e.target.value)}
+                    className="h-10 rounded-xl border-white/50 bg-white/60 shadow-none dark:border-white/10 dark:bg-slate-800/60"
                   />
                   {myExercises && myExercises.length > 0 && (
-                    <div className="pt-1.5">
-                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
-                        De tu rutina
-                      </p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {myExercises.slice(0, 10).map(name => (
-                          <button
-                            key={name}
-                            type="button"
-                            onClick={() => {
-                              setCreateExercise(name);
-                              if (!createTitle.trim()) setCreateTitle(`Reto de ${name}`);
-                            }}
-                            className={cn(
-                              'px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-all border',
-                              createExercise === name
-                                ? 'bg-indigo-600 border-indigo-600 text-white'
-                                : 'bg-slate-50 dark:bg-slate-800 border-transparent text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
-                            )}
-                          >
-                            {name}
-                          </button>
-                        ))}
-                      </div>
+                    <div className="mt-1.5 flex flex-wrap gap-1">
+                      {myExercises.slice(0, 10).map(name => (
+                        <button
+                          key={name}
+                          type="button"
+                          onClick={() => {
+                            setCreateExercise(name);
+                            if (!createTitle.trim()) setCreateTitle(`Reto de ${name}`);
+                          }}
+                          className={cn(
+                            'rounded-lg px-2 py-1 text-[11px] font-medium',
+                            createExercise === name
+                              ? 'bg-indigo-600 text-white'
+                              : 'text-slate-600 hover:bg-white/60 dark:text-slate-300 dark:hover:bg-white/5'
+                          )}
+                        >
+                          {name}
+                        </button>
+                      ))}
                     </div>
                   )}
                 </div>
-                <div className="space-y-1 pb-2">
-                  <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Fecha de fin *</label>
+                <div>
+                  <label className="mb-1 block text-[11px] text-slate-400">Fecha de fin</label>
                   <Input 
                     type="date" 
                     value={createEndDate}
                     onChange={(e) => setCreateEndDate(e.target.value)}
+                    className="h-10 rounded-xl border-white/50 bg-white/60 shadow-none dark:border-white/10 dark:bg-slate-800/60"
                   />
+                  <p className="mt-1 text-[10px] text-slate-400">Día / mes / año</p>
                 </div>
-              </div>
-              <div className="flex gap-3 px-5 sm:px-8 py-4 sm:pb-8 flex-shrink-0 border-t border-slate-100 dark:border-slate-700 bg-white dark:bg-slate-900">
-                <Button variant="outline" className="flex-1" onClick={() => setShowCreateChallengeModal(false)}>Cancelar</Button>
-                <Button 
-                  variant="primary" 
-                  className="flex-1"
+                <button
+                  type="button"
                   disabled={!createTitle.trim() || !createExercise.trim() || !createEndDate || createSubmitting}
                   onClick={handleCreateSubmit}
+                  className="mt-1 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300/70 py-2.5 text-sm font-medium text-slate-600 hover:border-indigo-300 hover:text-indigo-600 disabled:opacity-50 dark:border-slate-600 dark:text-slate-300"
                 >
-                  {createSubmitting ? 'Creando...' : 'Crear torneo'}
-                </Button>
-              </div>
-            </motion.div>
-          </div>
-        </AnimatePresence>,
-        document.body
-      )}
+                  <Plus size={15} />
+                  {createSubmitting ? 'Creando…' : 'Crear torneo'}
+                </button>
+        </div>
+      </GlassModal>
 
-      {/* Challenge Detail Modal - Ranking con oro/plata/bronce */}
-      {selectedChallengeDetail && typeof document !== 'undefined' && createPortal(
+      {/* Challenge Detail Modal */}
+      {typeof document !== 'undefined' && createPortal(
         <AnimatePresence>
-          <div key="challenge-detail-modal" className="fixed inset-0 flex items-center justify-center px-4 min-h-[100dvh]" style={{ zIndex: 100000 }}>
+          {selectedChallengeDetail && (
+          <motion.div
+            key="challenge-detail-modal"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100000] flex items-end justify-center p-0 min-h-[100dvh] sm:items-center sm:p-4"
+          >
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setSelectedChallengeDetail(null)}
-              className="absolute inset-0 min-h-[100dvh] bg-black/75 backdrop-blur-sm"
+              className="fixed inset-0 min-h-[100dvh] bg-slate-900/25 backdrop-blur-md dark:bg-black/45"
             />
             <motion.div 
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              initial={{ opacity: 0, y: 24 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 16 }}
               onClick={(e) => e.stopPropagation()}
-              className="relative bg-white dark:bg-slate-900 w-full max-w-md max-h-[90dvh] overflow-y-auto rounded-2xl sm:rounded-[2.5rem] p-5 sm:p-8 shadow-2xl dark:border dark:border-slate-700"
+              className="relative z-10 w-full max-w-sm max-h-[78vh] overflow-y-auto rounded-t-[28px] border border-white/50 bg-white/70 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl sm:rounded-[28px] dark:border-white/10 dark:bg-slate-900/65"
             >
-              <div className="flex items-center justify-between gap-3 mb-6">
-                <div className="flex items-center gap-3">
-                  <div className="p-2.5 rounded-xl bg-amber-100 dark:bg-amber-900/30">
-                    <Trophy size={24} className="text-amber-600 dark:text-amber-400" />
-                  </div>
-                  <div>
-                    <h3 className="text-xl font-black text-slate-900 dark:text-slate-100">{selectedChallengeDetail.title}</h3>
-                    <p className="text-[10px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-400">{selectedChallengeDetail.exercise}</p>
-                  </div>
+              <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/40 bg-white/40 px-4 py-3 backdrop-blur-xl dark:border-white/10 dark:bg-slate-900/40">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{selectedChallengeDetail.title}</p>
+                  <p className="text-[11px] text-slate-500">
+                    {selectedChallengeDetail.exercise}
+                    <span className="mx-1">·</span>
+                    {CHALLENGE_TYPE_LABELS[selectedChallengeDetail.type as ChallengeType]}
+                  </p>
                 </div>
                 <button 
+                  type="button"
                   onClick={() => setSelectedChallengeDetail(null)}
-                  className="p-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                  className="rounded-full p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                  aria-label="Cerrar"
                 >
-                  <X size={20} />
+                  <X size={18} />
                 </button>
               </div>
 
-              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2 flex flex-wrap items-center gap-1">
-                <Calendar size={12} /> Hasta {new Date(selectedChallengeDetail.endDate).toLocaleDateString('es-ES')}
-                <span className="mx-1">•</span>
-                {CHALLENGE_TYPE_LABELS[selectedChallengeDetail.type as ChallengeType]}
-              </p>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 mb-6 leading-snug">
-                {selectedChallengeDetail.usePointsSystem !== false ? (
-                  <>
-                    <span className="font-bold text-indigo-600 dark:text-indigo-400">Puntos:</span>{' '}
-                    {selectedChallengeDetail.type === 'weight' && 'IPF GL oficial: misma vara para hombres y mujeres según peso corporal. '}
-                    {selectedChallengeDetail.type === 'max_reps' &&
-                      'Las reps se igualan por género (el tren superior se ajusta más que el inferior) y, si lo eliges, por peso corporal. '}
-                    {selectedChallengeDetail.type === 'seconds' &&
-                      'El tiempo se iguala casi a la par (plancha y similares); el peso corporal solo si lo eliges. '}
-                  </>
-                ) : (
-                  <span className="font-bold text-slate-600 dark:text-slate-300">Clasificación solo por la mejor marca (sin puntos).</span>
-                )}
-              </p>
-
-              <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500 mb-3">Clasificación</h4>
-              <div className="space-y-2 mb-6">
-                {sortChallengeRanking(selectedChallengeDetail.participants, selectedChallengeDetail.usePointsSystem).map((p, idx) => {
-                  const rank = idx + 1;
-                  const unit = CHALLENGE_TYPE_UNIT[selectedChallengeDetail.type as ChallengeType] || '';
-                  const rankStyle = rank === 1
-                    ? 'bg-amber-100 dark:bg-amber-900/40 border-amber-200 dark:border-amber-700/50'
-                    : rank === 2
-                      ? 'bg-slate-100 dark:bg-slate-800/80 border-slate-200 dark:border-slate-600/50'
-                      : rank === 3
-                        ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-200/70 dark:border-amber-800/50'
-                        : 'bg-slate-50 dark:bg-slate-800/50 border-slate-100 dark:border-slate-700/50';
-                  const rankText = rank === 1
-                    ? 'text-amber-600 dark:text-amber-400'
-                    : rank === 2
-                      ? 'text-slate-500 dark:text-slate-400'
-                      : rank === 3
-                        ? 'text-amber-700 dark:text-amber-600'
-                        : 'text-slate-600 dark:text-slate-400';
-                  return (
-                    <div 
-                      key={p.userId} 
-                      className={cn(
-                        "flex items-center gap-4 p-3 rounded-xl border-2 transition-colors",
-                        rankStyle,
-                        p.userId === user.id && "ring-2 ring-indigo-400 dark:ring-indigo-500"
-                      )}
-                    >
-                      <span className={cn("text-lg font-black w-8 flex justify-center", rankText)}>{rank}</span>
-                      <Avatar src={p.avatar} name={p.name} className="w-10 h-10 rounded-full border-2 border-white dark:border-slate-700 shrink-0" />
-                      <div className="flex-1 min-w-0">
-                        <p className="font-bold text-slate-900 dark:text-slate-100 truncate">{p.name}</p>
-                        <p className="text-sm font-black text-slate-700 dark:text-slate-300">
-                          {selectedChallengeDetail.usePointsSystem !== false
-                            ? `${p.score} pts · ${p.value} ${unit}`
-                            : `${p.value} ${unit} · marca bruta`}
-                        </p>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {new Date(selectedChallengeDetail.endDate) > now && (
-                <div className="flex gap-3">
-                  {!selectedChallengeDetail.participants.some(p => p.userId === user.id) ? (
-                    <Button 
-                      variant="primary" 
-                      className="flex-1 rounded-xl"
-                      onClick={(e) => { e.stopPropagation(); setSelectedChallengeDetail(null); openJoinModal(selectedChallengeDetail); }}
-                    >
-                      Unirse al Torneo
-                    </Button>
+              <div className="px-3 py-2">
+                <p className="mb-3 flex items-center gap-1.5 text-[11px] text-slate-500">
+                  <Calendar size={12} />
+                  Hasta {new Date(selectedChallengeDetail.endDate).toLocaleDateString('es-ES')}
+                </p>
+                <p className="mb-3 rounded-xl border border-white/50 bg-white/40 px-3 py-2 text-[11px] leading-snug text-slate-500 dark:border-white/10 dark:bg-slate-800/40">
+                  {selectedChallengeDetail.usePointsSystem !== false ? (
+                    <>
+                      {selectedChallengeDetail.type === 'weight' && 'Puntos IPF GL: misma vara para hombres y mujeres según peso corporal.'}
+                      {selectedChallengeDetail.type === 'max_reps' &&
+                        'Las reps se igualan por género y, si lo eliges, por peso corporal.'}
+                      {selectedChallengeDetail.type === 'seconds' &&
+                        'El tiempo se iguala casi a la par; el peso corporal solo si lo eliges.'}
+                    </>
                   ) : (
-                    <Button 
-                      variant="outline" 
-                      className="flex-1 rounded-xl"
-                      onClick={(e) => { e.stopPropagation(); setSelectedChallengeDetail(null); openJoinModal(selectedChallengeDetail); }}
-                    >
-                      Actualizar mi marca
-                    </Button>
+                    'Clasificación solo por la mejor marca, sin puntos.'
                   )}
-                  <Button variant="outline" className="rounded-xl" onClick={() => setSelectedChallengeDetail(null)}>
-                    Cerrar
-                  </Button>
+                </p>
+
+                <p className="mb-2 text-[11px] font-medium text-slate-500">Clasificación</p>
+                <div className="space-y-1.5">
+                  {sortChallengeRanking(selectedChallengeDetail.participants, selectedChallengeDetail.usePointsSystem).map((p, idx) => {
+                    const rank = idx + 1;
+                    const unit = CHALLENGE_TYPE_UNIT[selectedChallengeDetail.type as ChallengeType] || '';
+                    return (
+                      <div 
+                        key={p.userId} 
+                        className={cn(
+                          'flex items-center gap-3 rounded-xl border px-2.5 py-2',
+                          rank === 1
+                            ? 'border-amber-200/80 bg-amber-50/70 dark:border-amber-700/40 dark:bg-amber-900/25'
+                            : rank === 2
+                              ? 'border-white/50 bg-white/50 dark:border-white/10 dark:bg-slate-800/50'
+                              : rank === 3
+                                ? 'border-amber-100/80 bg-amber-50/40 dark:border-amber-800/30 dark:bg-amber-950/20'
+                                : 'border-white/40 bg-white/30 dark:border-white/10 dark:bg-slate-800/30',
+                          sameUserId(p.userId, user.id) && 'ring-1 ring-indigo-400/70'
+                        )}
+                      >
+                        <span className={cn(
+                          'w-6 text-center text-sm font-semibold',
+                          rank === 1 ? 'text-amber-600 dark:text-amber-400' :
+                          rank === 2 ? 'text-slate-500' :
+                          rank === 3 ? 'text-amber-700 dark:text-amber-500' :
+                          'text-slate-400'
+                        )}>{rank}</span>
+                        <Avatar src={p.avatar} name={p.name} className="h-8 w-8 shrink-0 rounded-full border border-white/70 dark:border-slate-700" />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium text-slate-900 dark:text-slate-100">{p.name}</p>
+                          <p className="text-[11px] text-slate-500">
+                            {selectedChallengeDetail.usePointsSystem !== false
+                              ? `${p.score} pts · ${p.value} ${unit}`
+                              : `${p.value} ${unit}`}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {selectedChallengeDetail.participants.length === 0 && (
+                    <p className="rounded-xl border border-dashed border-white/50 px-3 py-4 text-center text-xs text-slate-400 dark:border-white/10">
+                      Nadie se ha unido todavía.
+                    </p>
+                  )}
                 </div>
+              {new Date(selectedChallengeDetail.endDate) > now && (
+                <button
+                  type="button"
+                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300/70 py-2.5 text-sm font-medium text-slate-600 hover:border-indigo-300 hover:text-indigo-600 dark:border-slate-600 dark:text-slate-300"
+                  onClick={(e) => { e.stopPropagation(); setSelectedChallengeDetail(null); openJoinModal(selectedChallengeDetail); }}
+                >
+                  {selectedChallengeDetail.participants.some(p => sameUserId(p.userId, user.id)) ? 'Actualizar marca' : 'Unirse'}
+                </button>
               )}
+              </div>
             </motion.div>
-          </div>
+          </motion.div>
+          )}
         </AnimatePresence>,
         document.body
       )}
 
-      {/* Join Challenge Modal */}
-      {showJoinChallengeModal && typeof document !== 'undefined' && createPortal(
-        <AnimatePresence>
-          <div key="join-challenge-modal" className="fixed inset-0 flex items-center justify-center px-4 min-h-[100dvh]" style={{ zIndex: 100000 }}>
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setShowJoinChallengeModal(null)}
-              className="absolute inset-0 min-h-[100dvh] bg-black/75 backdrop-blur-sm"
+      <GlassModal
+        open={!!showJoinChallengeModal}
+        onClose={() => setShowJoinChallengeModal(null)}
+        title={showJoinChallengeModal?.title}
+        subtitle={
+          showJoinChallengeModal
+            ? `${showJoinChallengeModal.exercise} · ${CHALLENGE_TYPE_UNIT[showJoinChallengeModal.type as ChallengeType]}`
+            : undefined
+        }
+      >
+        {showJoinChallengeModal && (
+          <div>
+            <label className="mb-1 block text-[11px] text-slate-400">Marca</label>
+            <Input
+              type="number"
+              placeholder={`Ej: 8 ${CHALLENGE_TYPE_UNIT[showJoinChallengeModal.type as ChallengeType]}`}
+              value={joinValue}
+              onChange={(e) => setJoinValue(e.target.value)}
+              min="0"
+              step={showJoinChallengeModal.type === 'weight' ? 0.5 : 1}
+              className="h-10 rounded-xl border-white/50 bg-white/60 shadow-none dark:border-white/10 dark:bg-slate-800/60"
             />
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.9, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              onClick={(e) => e.stopPropagation()}
-              className="relative bg-white dark:bg-slate-900 w-full max-w-md max-h-[90dvh] overflow-y-auto rounded-2xl sm:rounded-[2.5rem] p-5 sm:p-8 shadow-2xl dark:border dark:border-slate-700"
+            <button
+              type="button"
+              disabled={!joinValue || joinSubmitting}
+              onClick={handleJoinSubmit}
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300/70 py-2.5 text-sm font-medium text-slate-600 hover:border-indigo-300 hover:text-indigo-600 disabled:opacity-50 dark:border-slate-600 dark:text-slate-300"
             >
-              <h3 className="text-2xl font-black text-slate-900 mb-2 dark:text-slate-100">{showJoinChallengeModal.title}</h3>
-              <p className="text-sm text-slate-500 dark:text-slate-400 mb-6">
-                {showJoinChallengeModal.exercise} – Introduce tu marca en {CHALLENGE_TYPE_UNIT[showJoinChallengeModal.type as ChallengeType]}
-              </p>
-              <div className="space-y-4 mb-8">
-                <Input 
-                  type="number"
-                  placeholder={`Tu marca en ${CHALLENGE_TYPE_UNIT[showJoinChallengeModal.type as ChallengeType]}`}
-                  value={joinValue}
-                  onChange={(e) => setJoinValue(e.target.value)}
-                  min="0"
-                  step={showJoinChallengeModal.type === 'weight' ? 0.5 : 1}
-                />
-              </div>
-              <div className="flex gap-3">
-                <Button variant="outline" className="flex-1" onClick={() => setShowJoinChallengeModal(null)}>Cancelar</Button>
-                <Button 
-                  variant="primary" 
-                  className="flex-1"
-                  disabled={!joinValue || joinSubmitting}
-                  onClick={handleJoinSubmit}
-                >
-                  {joinSubmitting ? 'Uniendo...' : 'Confirmar'}
-                </Button>
-              </div>
-            </motion.div>
+              {joinSubmitting ? 'Guardando…' : 'Confirmar'}
+            </button>
           </div>
-        </AnimatePresence>,
-        document.body
-      )}
+        )}
+      </GlassModal>
 
       {/* Friend Detail Modal */}
       {viewingProfileId && viewingProfileId !== user.id && typeof document !== 'undefined' && createPortal(
@@ -1968,6 +1915,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
           <div className="mx-auto max-w-2xl px-4 py-5 pb-28">
             <ProfileScreen
               userId={viewingProfileId}
+              liveAvatar={viewingProfileId === user.id ? user.avatar : undefined}
               onBack={() => setViewingProfileId(null)}
               onOpenProfile={id => setViewingProfileId(id)}
               onOpenRoutine={() => {
@@ -2233,6 +2181,48 @@ export const SocialView: React.FC<SocialViewProps> = ({
         </AnimatePresence>,
         document.body
       )}
+
+      <HomeActivitySheet
+        open={showHomeActivity}
+        onClose={() => setShowHomeActivity(false)}
+        pendingRequests={pendingRequests}
+        chatAsks={chatAsks}
+        groupInvites={groupInvites}
+        coachRequests={coachRequests}
+        acceptRejectLoadingId={acceptRejectLoadingId}
+        chatAskBusyId={chatAskBusyId}
+        groupInviteBusyId={groupInviteBusyId}
+        coachRequestBusyId={coachRequestBusyId}
+        onAcceptFriend={id => void handleRequestAction(id, onAccept)}
+        onRejectFriend={id => void handleRequestAction(id, onReject)}
+        onAnswerChat={(id, decision) => {
+          void answerChatAsk(id, decision);
+          if (decision === 'accept') setShowHomeActivity(false);
+        }}
+        onAnswerGroup={(id, decision) => {
+          void answerGroup(id, decision);
+          if (decision === 'accept') setShowHomeActivity(false);
+        }}
+        onAnswerCoach={(id, decision) => void answerCoach(id, decision)}
+        onOpenProfile={id => {
+          setShowHomeActivity(false);
+          setViewingProfileId(id);
+        }}
+        onGoFriends={() => {
+          setShowHomeActivity(false);
+          setActiveTab('friends');
+        }}
+        onOpenChat={peerId => {
+          setShowHomeActivity(false);
+          setChatPeerId(peerId);
+          setActiveTab('chat');
+        }}
+        onGoChallenges={() => {
+          setShowHomeActivity(false);
+          setActiveTab('challenges');
+        }}
+        onNotificationsRead={markHomeNotifsRead}
+      />
     </motion.div>
   );
 };

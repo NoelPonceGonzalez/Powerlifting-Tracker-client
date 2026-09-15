@@ -35,8 +35,18 @@ function toPlannedExercise(
     reps: repsIsRange ? pe.reps : parseInt(pe.reps, 10) || 1,
     mode: pe.mode,
     ...(pe.mode === 'weight' && pe.weight !== undefined ? { weight: pe.weight } : {}),
+    // Carga relativa al maximal: la app calcula los kilos con el RM del atleta, así que
+    // el mismo plan sirve aunque el RM cambie.
+    ...(pe.pct !== undefined ? { pct: pe.pct } : {}),
+    ...(pe.pctPerSet?.length ? { pctPerSet: pe.pctPerSet } : {}),
+    // `resolveLinkedTMFromList` acepta la clave del básico, así que el ejercicio queda
+    // atado al RM correcto sin depender de cómo lo haya escrito el entrenador.
+    ...(pe.linkedLift ? { linkedTo: pe.linkedLift } : {}),
     ...(pe.rpe ? { targetRpe: pe.rpe } : {}),
     ...(pe.note ? { coachNote: pe.note } : {}),
+    ...(pe.setScheme ? { setScheme: pe.setScheme } : {}),
+    ...(pe.repsPerSet?.length ? { repsPerSet: pe.repsPerSet } : {}),
+    ...(pe.rpePerSet?.length ? { rpePerSet: pe.rpePerSet } : {}),
   };
 }
 

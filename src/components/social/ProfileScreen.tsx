@@ -53,6 +53,8 @@ interface ProfileScreenProps {
   /** Llevar a Inicio desde el perfil vacío para publicar la primera foto. */
   onGoToFeed?: () => void;
   onOpenChat?: (userId: string) => void;
+  /** Foto actual de la sesión: así Perfil y Progreso enseñan la misma. */
+  liveAvatar?: string | null;
 }
 
 function Stat({ value, label }: { value: number | string; label: string }) {
@@ -72,6 +74,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   onOpenProfile,
   onGoToFeed,
   onOpenChat,
+  liveAvatar,
 }) => {
   const [profile, setProfile] = useState<PublicProfile | null>(null);
   const [posts, setPosts] = useState<FeedPost[]>([]);
@@ -255,7 +258,11 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         <div className="flex items-center gap-5">
           <span className="rounded-full bg-gradient-to-tr from-indigo-500 to-violet-500 p-[3px]">
             <span className="block rounded-full border-[3px] border-white dark:border-slate-900">
-              <Avatar name={profile.name} avatar={profile.avatar} size={82} />
+              <Avatar
+                name={profile.name}
+                avatar={profile.isSelf && liveAvatar != null && liveAvatar !== '' ? liveAvatar : profile.avatar}
+                size={82}
+              />
             </span>
           </span>
           <div className="flex flex-1 justify-around">

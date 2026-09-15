@@ -32,12 +32,6 @@ function colorFor(name: string) {
   return '#6366f1';
 }
 
-function withZeroStart(data: Array<{ date: string; value: number }>) {
-  const values = data.map(p => p.value);
-  if (values.length >= 2 && new Set(values).size >= 2) return data;
-  if (data.length === 0) return data;
-  return [{ date: 'Inicio', value: 0 }, ...data];
-}
 
 interface TmHistoryModalProps {
   userId: string;
@@ -80,7 +74,7 @@ export const TmHistoryModal: React.FC<TmHistoryModalProps> = ({ userId, tm, onCl
 
   const chartData = useMemo(() => {
     const raw = (data?.points || []).map(p => ({ date: shortDate(p.dateISO), value: p.value }));
-    return withZeroStart(raw);
+    return raw;
   }, [data]);
 
   const firstReal = (data?.points || []).find(p => p.value > 0)?.value;
