@@ -14,35 +14,40 @@ interface FeedTabProps {
   openPublishSignal?: number;
 }
 
+let feedMemory: { posts: FeedPost[]; cursor: string | null; coach: FeedAuthor | null } | null = null;
+
 export const FeedTab: React.FC<FeedTabProps> = ({ onOpenAuthor, onOpenChat, openPublishSignal = 0 }) => {
-  const [posts, setPosts] = useState<FeedPost[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [posts, setPosts] = useState<FeedPost[]>(() => feedMemory?.posts ?? []);
+  const [cursor, setCursor] = useState<string | null>(() => feedMemory?.cursor ?? null);
+  const [loading, setLoading] = useState(!feedMemory);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [composing, setComposing] = useState(false);
-  const [coach, setCoach] = useState<FeedAuthor | null>(null);
+  const [coach, setCoach] = useState<FeedAuthor | null>(() => feedMemory?.coach ?? null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (silent = false) => {
+    if (!silent && !feedMemory) setLoading(true);
     setError(null);
     try {
       const [feed, me] = await Promise.all([
         fetchFeed(),
         fetchOwnProfile().catch(() => null),
       ]);
-      setPosts(feed.posts.filter(post => post.kind !== 'story'));
+      const nextPosts = feed.posts.filter(post => post.kind !== 'story');
+      const nextCoach = me?.coach ?? null;
+      setPosts(nextPosts);
       setCursor(feed.nextCursor);
-      setCoach(me?.coach ?? null);
+      setCoach(nextCoach);
+      feedMemory = { posts: nextPosts, cursor: feed.nextCursor, coach: nextCoach };
     } catch (e: any) {
-      setError(e?.message || 'No se han podido cargar las publicaciones');
+      if (!feedMemory) setError(e?.message || 'No se han podido cargar las publicaciones');
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    load();
+    void load(!!feedMemory);
   }, [load]);
 
   useIncrementSignal('publish', openPublishSignal, () => setComposing(true));

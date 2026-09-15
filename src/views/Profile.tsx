@@ -7,6 +7,7 @@ import { SettingsView } from '@/src/views/Settings';
 import type { AccountSummary } from '@/src/lib/savedAccounts';
 import type { User } from '@/src/types';
 import { SCREEN_TRANSITION, VIEW_TRANSITION } from '@/src/lib/motionPresets';
+import { cn } from '@/src/lib/utils';
 import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
 
 interface ProfileViewProps {
@@ -49,9 +50,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
   useIncrementSignal('profile-settings', openSettingsSignal, () => setShowSettings(true));
 
-  if (showSettings) {
-    return (
-      <div>
+  return (
+    <div>
+    <div className={showSettings ? undefined : 'hidden'} aria-hidden={!showSettings}>
         <div className="mx-auto max-w-2xl px-4 pt-6 sm:px-6 sm:pt-8">
           <button
             type="button"
@@ -71,17 +72,16 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           onAddAccount={onAddAccount}
           onRemoveSavedAccount={onRemoveSavedAccount}
         />
-      </div>
-    );
-  }
-
-  return (
+    </div>
     <motion.div
-      initial={{ opacity: 0 }}
+      aria-hidden={showSettings}
+      initial={false}
       animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
       transition={VIEW_TRANSITION}
-      className="mx-auto max-w-2xl px-4 py-6 pb-28 text-slate-900 sm:px-6 sm:py-8 sm:pb-32 dark:text-slate-100"
+      className={cn(
+        'mx-auto max-w-2xl px-4 py-6 pb-28 text-slate-900 sm:px-6 sm:py-8 sm:pb-32 dark:text-slate-100',
+        showSettings && 'hidden'
+      )}
     >
       <header className="mb-5 flex items-center justify-between">
         <h1 className="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">Perfil</h1>
@@ -157,5 +157,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           document.body
         )}
     </motion.div>
+    </div>
   );
 };

@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { flushSync } from 'react-dom';
-import { AnimatePresence, MotionConfig, motion } from 'motion/react';
+import { MotionConfig } from 'motion/react';
 import * as XLSX from 'xlsx';
 import { LayoutDashboard, Dumbbell, Users, UserRound, Plus, MessageCircle, Trophy } from 'lucide-react';
 import { ComposeSheet } from '@/src/components/ComposeSheet';
@@ -539,9 +539,17 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isCheckingSession, setIsCheckingSession] = useState(true);
   const [view, setView] = useState<ViewType>('dashboard');
-  /** Incrementa al volver a Progreso desde otra pestaña → remonta gráficos y replay de animación. */
-  const [dashboardEnterKey, setDashboardEnterKey] = useState(0);
-  const prevViewForDashboardRef = useRef<ViewType | null>(null);
+  /** Una vez visitada, la pantalla se queda montada: al volver no se recarga de cero. */
+  const [aliveViews, setAliveViews] = useState<Record<ViewType, boolean>>({
+    dashboard: true,
+    program: false,
+    social: false,
+    settings: false,
+  });
+  useEffect(() => {
+    setAliveViews((prev) => (prev[view] ? prev : { ...prev, [view]: true }));
+  }, [view]);
+  const [dashboardEnterKey] = useState(0);
 
   // State
   const [rms, setRms] = useState<RMData>(INITIAL_RMS);
@@ -1018,23 +1026,6 @@ export default function App() {
     });
   }, [user?.id, activeRoutineId, tms, rms, history]);
 
-  // Al volver a Rutina desde otra vista, resetear a presente
-  const prevViewRef = useRef<ViewType>(view);
-  useEffect(() => {
-    if (prevViewRef.current !== 'program' && view === 'program') {
-      setViewAsOfWeek(null);
-    }
-    prevViewRef.current = view;
-  }, [view]);
-
-  // Al volver al plan desde gestor de rutinas, resetear a presente (no al estar ya en plan)
-  const prevProgramScreenRef = useRef(programScreen);
-  useEffect(() => {
-    if (prevProgramScreenRef.current === 'routines' && programScreen === 'plan') {
-      setViewAsOfWeek(null);
-    }
-    prevProgramScreenRef.current = programScreen;
-  }, [programScreen]);
 
   /** Dónde empezó el último plan importado, para poder continuarlo cuando llega el documento ampliado. */
   const lastCoachImportKey = (routineId: string) => `pl:lastCoachImport:${routineId}`;
@@ -1502,20 +1493,12 @@ export default function App() {
     };
   }, [runPlanBulkSync]);
 
-  // Al abrir Progreso, Programa o Comunidad: refresco inmediato (torneos, gyms, amigos, TM, gráficas).
+  // Solo al entrar con una cuenta, no al cambiar de pestaña.
   useEffect(() => {
     if (!user) return;
-    if (view === 'dashboard' || view === 'social' || view === 'program') {
-      bumpSocialRefresh();
-      bumpRoutineDataRefresh();
-    }
-  }, [view, user?.id, bumpSocialRefresh, bumpRoutineDataRefresh]);
-
-  useEffect(() => {
-    const prev = prevViewForDashboardRef.current;
-    prevViewForDashboardRef.current = view;
-    // No remount de animaciones al volver a Progreso: es pesado y no aporta.
-  }, [view]);
+    bumpSocialRefresh();
+    bumpRoutineDataRefresh();
+  }, [user?.id, bumpSocialRefresh, bumpRoutineDataRefresh]);
 
   // Al volver a primer plano: refrescar datos, quedarse en la pantalla actual.
   useEffect(() => {
@@ -3688,13 +3671,17 @@ export default function App() {
           <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
         </div>
       )}
-      <motion.div
-        className="app-scroll h-full overflow-y-auto overflow-x-hidden overscroll-y-contain touch-pan-y bg-[var(--app-bg)]"
-      >
-        <AnimatePresence mode="wait">
-          {view === 'dashboard' && (
+      <div className="relative h-full bg-[var(--app-bg)]">
+        {aliveViews.dashboard && (
+          <div
+            className={cn(
+              'app-scroll h-full overflow-y-auto overflow-x-hidden overscroll-y-contain touch-pan-y',
+              view !== 'dashboard' && 'hidden'
+            )}
+            aria-hidden={view !== 'dashboard'}
+          >
             <DashboardView 
-              key={`dashboard-${activeRoutineId}`}
+              key={`dashboard-${user.id}`}
               chartEnterKey={dashboardEnterKey}
               user={user}
               history={sortedHistory}
@@ -3717,9 +3704,17 @@ export default function App() {
               onOpenSocial={goToSocial}
               onJoinFriendCheckIn={handleJoinFriendCheckIn}
             />
-          )}
-          {view === 'program' && (
-            programScreen === 'routines' ? (
+          </div>
+        )}
+        {aliveViews.program && (
+          <div
+            className={cn(
+              'app-scroll h-full overflow-y-auto overflow-x-hidden overscroll-y-contain touch-pan-y',
+              view !== 'program' && 'hidden'
+            )}
+            aria-hidden={view !== 'program'}
+          >
+            <div className={programScreen !== 'routines' ? 'hidden' : undefined} aria-hidden={programScreen !== 'routines'}>
               <RoutineManagerView
                 key="routine-manager"
                 routines={[...routines]
@@ -3740,7 +3735,8 @@ export default function App() {
                 onDeleteRoutine={handleDeleteRoutine}
                 onToggleHiddenRoutine={handleToggleHiddenRoutine}
               />
-            ) : (
+            </div>
+            <div className={programScreen !== 'plan' ? 'hidden' : undefined} aria-hidden={programScreen !== 'plan'}>
               <TrainingPlanView 
                 key="program"
                 activeRoutineName={activeRoutine?.name || 'Rutina activa'}
@@ -3804,9 +3800,17 @@ export default function App() {
                 }
                 routineProgressCheckpointLoading={routineCheckpointSaving}
               />
-            )
-          )}
-          {view === 'social' && (
+            </div>
+          </div>
+        )}
+        {aliveViews.social && (
+          <div
+            className={cn(
+              'app-scroll h-full overflow-y-auto overflow-x-hidden overscroll-y-contain touch-pan-y',
+              view !== 'social' && 'hidden'
+            )}
+            aria-hidden={view !== 'social'}
+          >
             <SocialView 
               key={user?.id ?? 'social'}
               user={user}
@@ -3842,8 +3846,16 @@ export default function App() {
               socialBackTo={socialBackTo}
               onChatConversationChange={setChatConversationOpen}
             />
-          )}
-          {view === 'settings' && (
+          </div>
+        )}
+        {aliveViews.settings && (
+          <div
+            className={cn(
+              'app-scroll h-full overflow-y-auto overflow-x-hidden overscroll-y-contain touch-pan-y',
+              view !== 'settings' && 'hidden'
+            )}
+            aria-hidden={view !== 'settings'}
+          >
             <ProfileView
               key="profile"
               user={user}
@@ -3859,9 +3871,9 @@ export default function App() {
               pendingFriendCount={friends.filter((r) => r.status === 'pending').length}
               openSettingsSignal={profileOpenSettingsSignal}
             />
-          )}
-        </AnimatePresence>
-      </motion.div>
+          </div>
+        )}
+      </div>
       
       {!chatConversationOpen && <nav
         className="app-tabbar fixed bottom-4 left-3 right-3 z-50 mx-auto flex max-w-lg items-center gap-0.5 px-1.5 py-1 sm:bottom-6"

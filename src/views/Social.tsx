@@ -30,7 +30,7 @@ import { Input } from '@/src/components/ui/Input';
 import { FriendRequest, Friend, Challenge, GymCheckIn, User, UserSearchResult, ChallengeType, TrainingWeek, BodyWeightScoringMode, RoutineProgressLeaderboardEntry } from '@/src/types';
 import { cn } from '@/src/lib/utils';
 import { apiGet, apiPut, mediaUrl } from '@/src/lib/api';
-import { SCREEN_TRANSITION, VIEW_TRANSITION } from '@/src/lib/motionPresets';
+import { VIEW_TRANSITION } from '@/src/lib/motionPresets';
 import { EQUITY_OPTIONS, equitySummary, suggestBodyWeightScoring } from '@/src/lib/challengeEquity';
 import { GlassModal } from '@/src/components/ui/GlassModal';
 import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
@@ -813,15 +813,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
         )}
       </header>
 
-      <AnimatePresence mode="wait">
-        {activeTab === 'feed' && (
-          <motion.div
-            key="feed"
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            transition={SCREEN_TRANSITION}
-          >
+      <div>
+        <div className={activeTab === 'feed' ? undefined : 'hidden'} aria-hidden={activeTab !== 'feed'}>
             <FeedTab
               myName={user.name}
               myAvatar={user.avatar ?? null}
@@ -832,17 +825,9 @@ export const SocialView: React.FC<SocialViewProps> = ({
                 setActiveTab('chat');
               }}
             />
-          </motion.div>
-        )}
+        </div>
 
-        {activeTab === 'chat' && (
-          <motion.div
-            key="chat"
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            transition={SCREEN_TRANSITION}
-          >
+        <div className={activeTab === 'chat' ? undefined : 'hidden'} aria-hidden={activeTab !== 'chat'}>
             <ChatTab
               myId={user.id}
               friends={friendsList}
@@ -852,18 +837,9 @@ export const SocialView: React.FC<SocialViewProps> = ({
               onConversationChange={onChatConversationChange}
               writeSignal={chatWriteSignal}
             />
-          </motion.div>
-        )}
+        </div>
 
-        {activeTab === 'friends' && (
-          <motion.div 
-            key="friends"
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            transition={SCREEN_TRANSITION}
-            className="space-y-8"
-          >
+        <div className={cn('space-y-8', activeTab !== 'friends' && 'hidden')} aria-hidden={activeTab !== 'friends'}>
             {friendActionError && (
               <motion.div
                 initial={{ opacity: 0, y: -6 }}
@@ -1022,18 +998,9 @@ export const SocialView: React.FC<SocialViewProps> = ({
                 </div>
               )}
             </section>
-          </motion.div>
-        )}
+        </div>
 
-        {activeTab === 'challenges' && (
-          <motion.div 
-            key="challenges"
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            transition={SCREEN_TRANSITION}
-            className="space-y-6"
-          >
+        <div className={cn('space-y-6', activeTab !== 'challenges' && 'hidden')} aria-hidden={activeTab !== 'challenges'}>
             <div className="flex rounded-2xl bg-white p-1.5 dark:bg-slate-900">
                 {([
                   { id: 'active' as const, label: 'Activos' },
@@ -1241,18 +1208,9 @@ export const SocialView: React.FC<SocialViewProps> = ({
                 )}
               </Card>
             )}
-          </motion.div>
-        )}
+        </div>
 
-        {activeTab === 'checkins' && (
-          <motion.div 
-            key="checkins"
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            transition={SCREEN_TRANSITION}
-            className="space-y-4"
-          >
+        <div className={cn('space-y-4', activeTab !== 'checkins' && 'hidden')} aria-hidden={activeTab !== 'checkins'}>
             {chatAsks.length > 0 && (
               <section className="space-y-3 pb-2">
                 <h2 className="text-[11px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-400">
@@ -1530,9 +1488,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
                 </div>
               );
             })()}
-          </motion.div>
-        )}
-      </AnimatePresence>
+        </div>
+      </div>
 
       <GlassModal
         open={showCheckInModal || !!editingCheckIn}

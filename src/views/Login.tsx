@@ -1,11 +1,14 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Trophy, Mail, Lock, User, ArrowLeft, Eye, EyeOff } from 'lucide-react';
+import { Trophy, Mail, Lock, User, ArrowLeft, Eye, EyeOff, Camera } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { Card } from '@/src/components/ui/Card';
+import { Avatar } from '@/src/components/ui/Avatar';
+import { AvatarCropModal } from '@/src/components/AvatarCropModal';
 import { User as AppUser } from '@/src/types';
 import { getApiBaseUrl, isLocalDevApiBase } from '@/src/lib/api';
+import { downscaleForCrop } from '@/src/lib/avatarCrop';
 
 /** Mensaje de conexión: en local menciona puerto 3000; en AWS/producción no. */
 function serverUnreachableHint(): string {
@@ -73,6 +76,9 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [avatar, setAvatar] = useState('');
+  const [cropImage, setCropImage] = useState<string | null>(null);
+  const avatarInputRef = React.useRef<HTMLInputElement | null>(null);
 
   // Limpiar errores al montar el componente
   React.useEffect(() => {
@@ -385,6 +391,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
           bodyWeight: bw,
           password,
           gender,
+          ...(avatar ? { avatar } : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -398,7 +405,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
         id: String(data.user.id),
         name: data.user.name || 'Atleta',
         email: data.user.email,
-        avatar: data.user.avatar || '',
+        avatar: data.user.avatar || avatar || '',
         bodyWeight: data.user.bodyWeight ?? bw,
         theme: (data.user.theme ?? (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) as 'light' | 'dark',
         progressMode:
@@ -628,6 +635,40 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
                 <p className="text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">
                   Completa tu registro en la app
                 </p>
+                <div className="flex flex-col items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => avatarInputRef.current?.click()}
+                    className="relative"
+                    aria-label="Añadir foto de perfil"
+                  >
+                    <Avatar
+                      src={avatar}
+                      name={name || 'Tú'}
+                      className="h-24 w-24 rounded-full border-2 border-slate-200 dark:border-slate-700"
+                    />
+                    <span className="absolute -bottom-1 -right-1 flex h-8 w-8 items-center justify-center rounded-full bg-indigo-600 text-white shadow">
+                      <Camera size={14} />
+                    </span>
+                  </button>
+                  <p className="text-[11px] font-semibold text-slate-400">Foto de perfil (opcional)</p>
+                  <input
+                    ref={avatarInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      e.target.value = '';
+                      if (!file || !file.type.startsWith('image/')) return;
+                      try {
+                        setCropImage(await downscaleForCrop(file));
+                      } catch {
+                        setError('No se ha podido abrir esa foto.');
+                      }
+                    }}
+                  />
+                </div>
                 <Input
                   label="Nombre"
                   placeholder="Tu nombre"
@@ -693,6 +734,14 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
           </Card>
         </motion.div>
       </motion.div>
+      <AvatarCropModal
+        image={cropImage}
+        onCancel={() => setCropImage(null)}
+        onConfirm={(dataUrl) => {
+          setAvatar(dataUrl);
+          setCropImage(null);
+        }}
+      />
     </div>
   );
 };
