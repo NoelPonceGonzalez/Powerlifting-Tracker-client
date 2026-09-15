@@ -31,9 +31,23 @@ function safePageOrigin(): string {
   return '';
 }
 
+function preferPageOriginOnMixedContent(apiBase: string): string {
+  const raw = String(apiBase || '').trim().replace(/\/$/, '');
+  if (!raw || typeof window === 'undefined') return raw;
+  try {
+    const apiU = new URL(raw.endsWith('/') ? raw : `${raw}/`);
+    if (window.location.protocol === 'https:' && apiU.protocol === 'http:') {
+      return safePageOrigin();
+    }
+  } catch {
+    /* ignore */
+  }
+  return raw;
+}
+
 export const API_URL =
   typeof window !== 'undefined'
-    ? injectedApiBase() || envApiUrl() || safePageOrigin()
+    ? preferPageOriginOnMixedContent(injectedApiBase() || envApiUrl()) || safePageOrigin()
     : envApiUrl();
 
 export const API_BASE_URL = API_URL;

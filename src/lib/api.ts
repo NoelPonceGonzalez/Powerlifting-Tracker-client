@@ -10,12 +10,34 @@ function isInvalidApiBase(s: string): boolean {
   }
 }
 
+/**
+ * HTTPS (Vercel) no puede llamar a `http://IP:3000` (mixed content).
+ * También aplica a `__API_BASE__`: main.tsx lo rellena con VITE_API_BASE_URL y
+ * si se devolvía tal cual, el fallback de más abajo nunca corría.
+ */
+function sameOriginIfMixedContent(apiBase: string): string {
+  const raw = String(apiBase || '').trim().replace(/\/$/, '');
+  if (!raw || typeof window === 'undefined') return raw;
+  try {
+    const apiU = new URL(raw.endsWith('/') ? raw : `${raw}/`);
+    if (window.location.protocol === 'https:' && apiU.protocol === 'http:') {
+      const o = window.location.origin;
+      if (o && o !== 'null' && !o.startsWith('file:')) {
+        return o.replace(/\/$/, '');
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return raw;
+}
+
 /** Resuelve la base de la API: WebView inyecta __API_BASE__; Vite usa VITE_/EXPO_PUBLIC_; si no, mismo origen que la página. */
 function getBaseUrl(): string {
   if (typeof window !== 'undefined') {
     const w = (window as unknown as { __API_BASE__?: string }).__API_BASE__;
     if (w != null && String(w).trim() !== '' && !isInvalidApiBase(String(w))) {
-      return String(w).replace(/\/$/, '');
+      return sameOriginIfMixedContent(String(w));
     }
     const vite = import.meta.env.VITE_API_BASE_URL as string | undefined;
     const expo = import.meta.env.EXPO_PUBLIC_API_URL as string | undefined;
@@ -23,27 +45,8 @@ function getBaseUrl(): string {
       (vite != null && String(vite).trim() !== '' ? String(vite).trim() : '') ||
       (expo != null && String(expo).trim() !== '' ? String(expo).trim() : '');
 
-    /**
-     * Web en HTTPS (p. ej. Vercel): una API en `http://…` incrustada en el bundle no puede llamarse
-     * desde el navegador (mixed content). Usar el mismo origen y proxy en vercel.json → AWS.
-     * EAS/APK (file:// o WebView sin HTTPS de la página) sigue usando `fromEnv` hacia el servidor.
-     */
     if (fromEnv) {
-      try {
-        const apiU = new URL(fromEnv.endsWith('/') ? fromEnv : `${fromEnv}/`);
-        if (window.location.protocol === 'https:' && apiU.protocol === 'http:') {
-          const o = window.location.origin;
-          if (o && o !== 'null' && !o.startsWith('file:')) {
-            return o.replace(/\/$/, '');
-          }
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-
-    if (fromEnv) {
-      return fromEnv.replace(/\/$/, '');
+      return sameOriginIfMixedContent(fromEnv);
     }
     try {
       // Mismo origen: en dev el proxy de Vite reenvía /api y /health al backend (:3000)

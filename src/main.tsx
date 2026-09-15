@@ -8,11 +8,21 @@ import { initInstallPrompt } from '@/src/pwa/installPrompt';
 import { registerServiceWorker } from '@/src/pwa/serviceWorker';
 
 // WebView (APK) inyecta __API_BASE__ antes; si queda vacío o la cadena "null" (origin file://), usar URL del bundle.
+// En HTTPS (Vercel) no inyectar un `http://…`: mixed content. api.ts usará el mismo origen + rewrites.
 if (typeof window !== 'undefined') {
   const w = (window as any).__API_BASE__;
   const bad = w == null || String(w).trim() === '' || String(w) === 'null';
   if (API_URL && bad) {
-    (window as any).__API_BASE__ = API_URL;
+    let skipHttpOnHttps = false;
+    try {
+      skipHttpOnHttps =
+        window.location.protocol === 'https:' && new URL(API_URL).protocol === 'http:';
+    } catch {
+      skipHttpOnHttps = false;
+    }
+    if (!skipHttpOnHttps) {
+      (window as any).__API_BASE__ = API_URL;
+    }
   }
 }
 
