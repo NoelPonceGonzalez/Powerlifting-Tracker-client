@@ -42,6 +42,7 @@ import {
   fetchChatRequests,
   fetchCoachRequests,
   fetchGroupInvites,
+  fetchProfile,
   coachRequestCopy,
   coachRequestPerson,
   type ChatAsk,
@@ -49,9 +50,9 @@ import {
   type CoachRequest,
 } from '@/src/lib/feedApi';
 import { TmHistoryModal } from '@/src/components/social/TmHistoryModal';
+import { InstagramCover } from '@/src/components/social/ProgressMiniProfile';
 import { FeedTab } from '@/src/components/social/FeedTab';
 import { ChatTab } from '@/src/components/social/ChatTab';
-import { ChatPeopleSheet } from '@/src/components/social/ChatPeopleSheet';
 import { HomeActivitySheet } from '@/src/components/social/HomeActivitySheet';
 import { ProfileScreen } from '@/src/components/social/ProfileScreen';
 import { Avatar as FeedAvatar } from '@/src/components/social/MediaPost';
@@ -226,6 +227,10 @@ export const SocialView: React.FC<SocialViewProps> = ({
     name: string;
     avatar: string;
     bio?: string;
+    username?: string | null;
+    postCount?: number;
+    followerCount?: number;
+    followingCount?: number;
     coach?: { id: string; name: string; avatar: string | null } | null;
     athleteCount?: number;
     trainingMaxes: { id?: string; name: string; value: number; mode: string }[];
@@ -273,8 +278,6 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [chatPeerId, setChatPeerId] = useState<string | null>(null);
   const [showHomeActivity, setShowHomeActivity] = useState(false);
   const [friendsFromChat, setFriendsFromChat] = useState(false);
-  const [chatFriendsOpen, setChatFriendsOpen] = useState(false);
-  const [peopleTick, setPeopleTick] = useState(0);
   const [unreadNotifCount, setUnreadNotifCount] = useState(0);
   const activityBadge = pendingRequests.length + coachRequests.length + groupInvites.length + chatAsks.length;
   const homeActivityCount = activityBadge + unreadNotifCount;
@@ -498,7 +501,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
     setOpenFriendTm(null);
     setFriendRoutineLoading(true);
     try {
-      const [routineRaw, profile] = await Promise.all([
+      const [routineRaw, profile, cover] = await Promise.all([
         apiGet<{
           name: string;
           weeks: TrainingWeek[];
@@ -520,9 +523,11 @@ export const SocialView: React.FC<SocialViewProps> = ({
           trainingMaxesAll?: { name: string; mode: string; linkedExercise?: string }[];
         }>(`/api/social/friends/${friend.id}/profile?includeAllTms=1`).catch(() => ({
           name: friend.name,
-                      avatar: friend.avatar || '',
-          trainingMaxes: [],
+          avatar: friend.avatar || '',
+          bio: '',
+          trainingMaxes: [] as { id?: string; name: string; value: number; mode: string }[],
         })),
+        fetchProfile(friend.id).catch(() => null),
       ]);
       if (routineRaw) {
         const { expandRoutineFromApi } = await import('@/src/lib/planMaterialize');
@@ -549,7 +554,14 @@ export const SocialView: React.FC<SocialViewProps> = ({
       } else {
         setFriendRoutine(null);
       }
-      setFriendProfile(profile);
+      setFriendProfile({
+        ...profile,
+        bio: cover?.bio ?? profile.bio ?? '',
+        username: cover?.username,
+        postCount: cover?.postCount ?? 0,
+        followerCount: cover?.followerCount ?? 0,
+        followingCount: cover?.followingCount ?? 0,
+      });
     } catch {
       setFriendRoutine(null);
       setFriendProfile({ name: friend.name, avatar: friend.avatar || '', trainingMaxes: [] });
@@ -690,7 +702,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                     ? 'Volver al perfil'
                     : socialBackTo === 'feed'
                       ? 'Volver al inicio'
-                      : 'Volver a progreso'
+                      : 'Volver al perfil'
               }
             >
               <ArrowRight className="rotate-180" size={16} />
@@ -835,15 +847,15 @@ export const SocialView: React.FC<SocialViewProps> = ({
         <div className={activeTab === 'chat' ? undefined : 'hidden'} aria-hidden={activeTab !== 'chat'}>
             <ChatTab
               myId={user.id}
-              myName={user.name}
-              myAvatar={user.avatar}
               friends={friendsList}
               startWith={chatPeerId}
-              pendingCount={pendingRequests.length}
-              peopleTick={peopleTick}
+              pending={pendingRequests}
               onOpened={() => setChatPeerId(null)}
               onOpenMini={person => openFriendModal({ id: person.id, name: person.name, avatar: person.avatar ?? undefined })}
-              onOpenPeople={() => setChatFriendsOpen(true)}
+              onAcceptRequest={id => void handleRequestAction(id, onAccept)}
+              onRejectRequest={id => void handleRequestAction(id, onReject)}
+              onSendRequest={onSendFriendRequest}
+              requestBusyId={acceptRejectLoadingId}
               onConversationChange={onChatConversationChange}
             />
         </div>
@@ -1503,23 +1515,6 @@ export const SocialView: React.FC<SocialViewProps> = ({
         </div>
       </div>
 
-      <ChatPeopleSheet
-        open={chatFriendsOpen}
-        onClose={() => {
-          setChatFriendsOpen(false);
-          setPeopleTick(n => n + 1);
-        }}
-        me={{ id: user.id, name: user.name, avatar: user.avatar }}
-        friends={friendsList}
-        pending={pendingRequests}
-        onAccept={id => void handleRequestAction(id, onAccept)}
-        onReject={id => void handleRequestAction(id, onReject)}
-        onSendRequest={onSendFriendRequest}
-        onOpenFriend={friend => void openFriendModal(friend)}
-        onOpenChat={id => setChatPeerId(id)}
-        busyId={acceptRejectLoadingId}
-      />
-
       <GlassModal
         open={showCheckInModal || !!editingCheckIn}
         onClose={() => { setShowCheckInModal(false); setEditingCheckIn(null); setGymName(''); setGymTime(''); }}
@@ -1965,30 +1960,28 @@ export const SocialView: React.FC<SocialViewProps> = ({
       >
         {showFriendModal && (
           <div>
-              <div className="flex items-center gap-4 mb-5">
-                <Avatar 
-                  src={friendProfile?.avatar || showFriendModal.avatar} 
-                  name={friendProfile?.name || showFriendModal.name} 
-                  className="w-20 h-20 rounded-full border-2 border-slate-200 dark:border-slate-600 shrink-0"
+              <div className="mb-5">
+                <InstagramCover
+                  name={friendProfile?.name || showFriendModal.name}
+                  username={friendProfile?.username}
+                  avatar={friendProfile?.avatar || showFriendModal.avatar}
+                  posts={friendProfile?.postCount ?? 0}
+                  followers={friendProfile?.followerCount ?? 0}
+                  following={friendProfile?.followingCount ?? 0}
+                  bio={friendProfile?.bio || ''}
                 />
-                <div className="flex-1 min-w-0">
-                  <h4 className="font-bold text-slate-900 dark:text-slate-100">{friendProfile?.name || showFriendModal.name}</h4>
-                  {friendProfile?.bio && (
-                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{friendProfile.bio}</p>
-                  )}
-                  {friendProfile?.coach && (
-                    <p className="mt-1.5 inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] font-bold text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300">
-                      <GraduationCap size={13} />
-                      Entrena con {friendProfile.coach.name}
-                    </p>
-                  )}
-                  {!!friendProfile?.athleteCount && friendProfile.athleteCount > 0 && (
-                    <p className="mt-1 text-[11px] font-bold text-amber-600 dark:text-amber-400">
-                      Entrenador de {friendProfile.athleteCount}{' '}
-                      {friendProfile.athleteCount === 1 ? 'persona' : 'personas'}
-                    </p>
-                  )}
-                </div>
+                {friendProfile?.coach && (
+                  <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] font-bold text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300">
+                    <GraduationCap size={13} />
+                    Entrena con {friendProfile.coach.name}
+                  </p>
+                )}
+                {!!friendProfile?.athleteCount && friendProfile.athleteCount > 0 && (
+                  <p className="mt-1.5 text-[11px] font-bold text-amber-600 dark:text-amber-400">
+                    Entrenador de {friendProfile.athleteCount}{' '}
+                    {friendProfile.athleteCount === 1 ? 'persona' : 'personas'}
+                  </p>
+                )}
               </div>
 
               <div className="border-t border-white/40 pt-4 pb-4 dark:border-white/10">

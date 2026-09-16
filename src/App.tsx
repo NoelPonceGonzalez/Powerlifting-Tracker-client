@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { flushSync } from 'react-dom';
 import { MotionConfig } from 'motion/react';
 import * as XLSX from 'xlsx';
-import { LayoutDashboard, Dumbbell, Plus, MessageCircle, Trophy } from 'lucide-react';
+import { User as UserIcon, Dumbbell, Plus, MessageCircle, Trophy } from 'lucide-react';
 import { ComposeSheet } from '@/src/components/ComposeSheet';
 import { PublishModal } from '@/src/components/social/PublishModal';
 
@@ -652,8 +652,6 @@ export default function App() {
   const [challenges, setChallenges] = useState<Challenge[]>(INITIAL_CHALLENGES);
   const [checkIns, setCheckIns] = useState<GymCheckIn[]>(INITIAL_CHECKINS);
   const [socialTab, setSocialTab] = useState<SocialTab>('feed');
-  /** Abrir los ajustes dentro de Perfil sin que el usuario tenga que buscar el engranaje. */
-  const [profileOpenSettingsSignal, setProfileOpenSettingsSignal] = useState(0);
   const [savedAccountsState, setSavedAccountsState] = useState<SavedAccount[]>(() => loadSavedAccounts());
   const [addAccountMode, setAddAccountMode] = useState(false);
   const [isSwitchingAccount, setIsSwitchingAccount] = useState(false);
@@ -3549,7 +3547,6 @@ export default function App() {
           handleLoginComplete(userData);
           setAddAccountMode(false);
           setView('settings');
-          setProfileOpenSettingsSignal((s) => s + 1);
         }}
       />
     );
@@ -3745,10 +3742,7 @@ export default function App() {
               onCreateRoutine={openCreateRoutine}
               onOpenSocial={goToSocial}
               onJoinFriendCheckIn={handleJoinFriendCheckIn}
-              onOpenSettings={() => {
-                setView('settings');
-                setProfileOpenSettingsSignal(s => s + 1);
-              }}
+              onOpenSettings={() => setView('settings')}
             />
           </div>
         )}
@@ -3883,7 +3877,7 @@ export default function App() {
                 void handleSelectRoutine(routineId);
               }}
               onUnfriend={handleUnfriend}
-              onGoToProfile={() => setView('settings')}
+              onGoToProfile={() => setView('dashboard')}
               onGoToDashboard={() => setView('dashboard')}
               socialBackTo={socialBackTo}
               onChatConversationChange={setChatConversationOpen}
@@ -3899,7 +3893,7 @@ export default function App() {
             aria-hidden={view !== 'settings'}
           >
             <ProfileView
-              key="profile"
+              key="settings"
               user={user}
               onUpdateUser={handleUpdateUser}
               onLogout={handleLogout}
@@ -3907,14 +3901,7 @@ export default function App() {
               onSwitchAccount={(id) => void switchToAccount(id)}
               onAddAccount={() => setAddAccountMode(true)}
               onRemoveSavedAccount={handleRemoveSavedAccount}
-              onGoToFeed={() => {
-                setView('dashboard');
-                setStoryComposerOpen(true);
-              }}
-              onGoToFriends={() => goToSocial('friends', { from: 'profile' })}
-              onGoToChallenges={() => goToSocial('challenges', { from: 'profile' })}
-              pendingFriendCount={friends.filter((r) => r.status === 'pending').length}
-              openSettingsSignal={profileOpenSettingsSignal}
+              onBackToProfile={() => setView('dashboard')}
             />
           </div>
         )}
@@ -3935,8 +3922,8 @@ export default function App() {
                 : "text-slate-400 dark:text-slate-500"
             )}
           >
-            <LayoutDashboard className="size-[17px]" strokeWidth={view === 'dashboard' ? 2.35 : 1.9} />
-            <span>Progreso</span>
+            <UserIcon className="size-[17px]" strokeWidth={view === 'dashboard' ? 2.35 : 1.9} />
+            <span>Perfil</span>
           </button>
           <button
             type="button"

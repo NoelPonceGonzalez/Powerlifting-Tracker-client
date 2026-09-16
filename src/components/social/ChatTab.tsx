@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
-import { ArrowLeft, Bell, BellOff, Dumbbell, GraduationCap, Image as ImageIcon, Loader2, LogOut, MessageCircle, Paperclip, Pencil, Pin, Search, Send, Trash2, User, UserMinus, Users } from 'lucide-react';
+import { ArrowLeft, Bell, BellOff, Dumbbell, GraduationCap, Heart, Image as ImageIcon, Loader2, LogOut, MessageCircle, Paperclip, Pencil, Pin, Search, Send, Trash2, User, UserMinus, Users } from 'lucide-react';
 import { Avatar } from '@/src/components/social/MediaPost';
 import { Button } from '@/src/components/ui/Button';
 import { GlassModal } from '@/src/components/ui/GlassModal';
@@ -9,7 +9,8 @@ import { cn } from '@/src/lib/utils';
 import { apiGet, mediaUrl } from '@/src/lib/api';
 import { isRealtimeOpen, subscribeChatRealtime } from '@/src/lib/chatRealtime';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
-import type { Friend, UserSearchResult } from '@/src/types';
+import type { Friend, FriendRequest, UserSearchResult } from '@/src/types';
+import { ChatPeoplePanel } from '@/src/components/social/ChatPeoplePanel';
 import {
   addChatGroupMembers,
   deleteChat,
@@ -29,7 +30,6 @@ import {
   type ChatLine,
   type ChatThread,
   type FeedAuthor,
-  type PublicProfile,
 } from '@/src/lib/feedApi';
 
 type PendingDelete =
@@ -38,15 +38,15 @@ type PendingDelete =
 
 interface ChatTabProps {
   myId: string;
-  myName?: string;
-  myAvatar?: string | null;
   friends: Friend[];
   startWith?: string | null;
-  pendingCount?: number;
-  peopleTick?: number;
+  pending?: FriendRequest[];
   onOpened?: () => void;
   onOpenMini?: (person: FeedAuthor) => void;
-  onOpenPeople?: () => void;
+  onAcceptRequest?: (id: string) => void;
+  onRejectRequest?: (id: string) => void;
+  onSendRequest?: (userId: string) => Promise<void>;
+  requestBusyId?: string | null;
   onConversationChange?: (open: boolean) => void;
 }
 
@@ -351,15 +351,15 @@ function Face({
 
 export const ChatTab: React.FC<ChatTabProps> = ({
   myId,
-  myName,
-  myAvatar,
   friends,
   startWith,
-  pendingCount = 0,
-  peopleTick = 0,
+  pending = [],
   onOpened,
   onOpenMini,
-  onOpenPeople,
+  onAcceptRequest,
+  onRejectRequest,
+  onSendRequest,
+  requestBusyId,
   onConversationChange,
 }) => {
   const [threads, setThreads] = useState<ChatThread[]>([]);
@@ -384,7 +384,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [actionRow, setActionRow] = useState<ChatThread | null>(null);
-  const [meCard, setMeCard] = useState<PublicProfile | null>(null);
+  const [peopleOpen, setPeopleOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const lastTyped = useRef(0);
@@ -395,6 +395,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   }, [open, onConversationChange]);
 
   useEscapeClose(!!actionRow, () => setActionRow(null));
+  useEscapeClose(peopleOpen && !open, () => setPeopleOpen(false));
 
   useEffect(() => {
     setPrefs(readPrefs(myId));
@@ -465,18 +466,6 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   }, []);
 
   useEffect(() => {
-    let live = true;
-    fetchProfile(myId)
-      .then(p => {
-        if (live) setMeCard(p);
-      })
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [myId, peopleTick]);
-
-  useEffect(() => {
     void loadInbox();
     const id = window.setInterval(() => {
       void loadInbox();
@@ -487,6 +476,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   const openDm = useCallback(async (author: FeedAuthor) => {
     setOpen({ kind: 'dm', peer: author });
     setActionRow(null);
+    setPeopleOpen(false);
     setGroupPanel(false);
     setAttach(null);
     setTypingLabel('');
@@ -504,6 +494,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   const openGroup = useCallback(async (group: ChatGroupCard) => {
     setOpen({ kind: 'group', group });
     setActionRow(null);
+    setPeopleOpen(false);
     setGroupPanel(false);
     setAttach(null);
     setTypingLabel('');
@@ -1194,34 +1185,51 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   return (
     <>
     <div className="space-y-5">
-      {onOpenPeople && (
+      <div className="flex items-center justify-between">
+        {peopleOpen ? (
+          <button
+            type="button"
+            onClick={() => setPeopleOpen(false)}
+            className="flex items-center gap-2 rounded-full py-1 text-slate-500"
+            aria-label="Volver a chats"
+          >
+            <ArrowLeft size={18} />
+            <span className="text-sm font-semibold text-slate-800 dark:text-slate-100">Actividad</span>
+          </button>
+        ) : (
+          <span />
+        )}
         <button
           type="button"
-          onClick={onOpenPeople}
-          className="flex w-full items-center gap-3 rounded-3xl bg-white px-3.5 py-3 text-left shadow-sm dark:bg-slate-900"
+          onClick={() => setPeopleOpen(v => !v)}
+          className="relative flex h-10 w-10 items-center justify-center rounded-full text-slate-500 hover:bg-white dark:hover:bg-slate-900"
+          aria-label={peopleOpen ? 'Volver a chats' : 'Solicitudes y buscar gente'}
         >
-          <Face name={meCard?.name || myName || 'Tú'} avatar={meCard?.avatar ?? myAvatar ?? null} size={52} />
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-[15px] font-semibold text-slate-900 dark:text-slate-100">
-              {meCard?.name || myName || 'Tú'}
-            </span>
-            <span className="block text-[13px] text-slate-400">
-              {meCard?.followingCount ?? friends.length} siguiendo · {meCard?.followerCount ?? friends.length} seguidores
-            </span>
-            {(meCard?.bio || '').trim() ? (
-              <span className="mt-0.5 block truncate text-[12px] text-slate-500">{meCard!.bio}</span>
-            ) : (
-              <span className="mt-0.5 block text-[12px] text-indigo-500">Añade un mini texto · busca amigos</span>
-            )}
-          </span>
-          {pendingCount > 0 && (
-            <span className="rounded-full bg-indigo-600 px-2 py-0.5 text-[11px] font-bold text-white">
-              {pendingCount}
-            </span>
+          <Heart
+            size={22}
+            strokeWidth={2.1}
+            className={peopleOpen || pending.length > 0 ? 'text-rose-500' : undefined}
+            fill={peopleOpen ? 'currentColor' : 'none'}
+          />
+          {pending.length > 0 && (
+            <span className="absolute right-0.5 top-0.5 h-2 w-2 rounded-full bg-rose-500 ring-2 ring-slate-50 dark:ring-slate-950" />
           )}
-          <Users size={16} className="shrink-0 text-slate-400" />
         </button>
-      )}
+      </div>
+
+      {peopleOpen ? (
+        <ChatPeoplePanel
+          myId={myId}
+          pending={pending}
+          friendIds={friends.map(f => f.id)}
+          onAccept={id => onAcceptRequest?.(id)}
+          onReject={id => onRejectRequest?.(id)}
+          onSendRequest={onSendRequest}
+          onOpenPerson={person => onOpenMini?.({ id: person.id, name: person.name, avatar: person.avatar ?? null })}
+          busyId={requestBusyId}
+        />
+      ) : (
+      <>
       <div className="relative">
         <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
         <input
@@ -1239,7 +1247,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
             {inboxQ.trim() ? 'Nadie con ese nombre' : 'Aún no hay chats'}
           </p>
           <p className="mt-1 text-xs text-slate-400">
-            {inboxQ.trim() ? 'Prueba otro nombre.' : 'Toca tu perfil para buscar amigos o escribe a quien ya sigues.'}
+            {inboxQ.trim() ? 'Prueba otro nombre.' : 'El corazón de arriba es para seguir gente. Aquí solo salen tus chats.'}
           </p>
         </div>
       ) : (
@@ -1300,6 +1308,8 @@ export const ChatTab: React.FC<ChatTabProps> = ({
             </section>
           )}
         </div>
+      )}
+      </>
       )}
     </div>
     {deleteModal}

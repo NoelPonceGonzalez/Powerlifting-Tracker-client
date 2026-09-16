@@ -25,6 +25,7 @@ import { Button } from '@/src/components/ui/Button';
 import { GlassModal } from '@/src/components/ui/GlassModal';
 import { HistoryEntry, LogEntry, RMData, TrainingMax, TrainingWeek, Challenge, GymCheckIn, User, RoutineProgressKind } from '@/src/types';
 import { StrengthInsights } from '@/src/components/StrengthInsights';
+import { ProgressMiniProfile } from '@/src/components/social/ProgressMiniProfile';
 import { computeSessionStats } from '@/src/lib/sessionStats';
 import { entryDateISO } from '@/src/lib/calendarWeekDate';
 import { cn } from '@/src/lib/utils';
@@ -467,6 +468,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
   onOpenSocial,
   onJoinFriendCheckIn,
   onOpenSettings,
+  friendCount = 0,
   hasRoutine: hasRoutineProp,
   chartEnterKey = 0,
 }) => {
@@ -1054,96 +1056,36 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
       className="mx-auto w-full max-w-6xl bg-[var(--app-bg)] px-3 pt-3 pb-[calc(8.5rem+env(safe-area-inset-bottom))] max-[360px]:px-2 max-[360px]:pt-2 max-[400px]:pt-3 sm:px-5 sm:pt-5 sm:pb-[calc(9.5rem+env(safe-area-inset-bottom))] md:px-6 md:pt-6"
     >
       <motion.header variants={ENTER_ITEM} initial={false} className="mb-3 max-[360px]:mb-2 sm:mb-4">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-2 max-[360px]:gap-1.5">
-            <button
-              type="button"
-              onClick={onOpenSettings}
-              className="shrink-0 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
-              aria-label="Ajustes"
-            >
-              <Avatar
-                src={user.avatar}
-                name={user.name}
-                className="h-10 w-10 flex-shrink-0 rounded-full border-2 border-slate-100 shadow-lg max-[360px]:h-9 max-[360px]:w-9 sm:h-12 sm:w-12 dark:border-slate-700"
-              />
-            </button>
-            <div className="min-w-0">
-              <p className="truncate text-lg font-semibold text-slate-900 dark:text-white">{user.name || 'Atleta'}</p>
-              {canTotal && (
-                <button
-                  type="button"
-                  onClick={() => setTotalOpen(true)}
-                  className="mt-0.5 flex max-w-full items-baseline gap-1.5 text-left"
+        <ProgressMiniProfile
+          user={user}
+          friendCount={friendCount}
+          onOpenSettings={onOpenSettings}
+          onUpdateUser={onUpdateUser}
+          aside={
+            canTotal ? (
+              <button
+                type="button"
+                onClick={() => setTotalOpen(true)}
+                className="flex max-w-full shrink-0 items-baseline gap-1.5 text-left"
+              >
+                <span className="text-[13px] font-black text-indigo-600 dark:text-indigo-300">
+                  <ModalCount value={Math.round(routineProgressMeta.value)} replayKey={`header-total-${chartEnterKey}`} />
+                  <span className="ml-0.5 text-[10px] font-semibold">kg</span>
+                </span>
+                <span
+                  className={cn(
+                    'truncate text-[11px] font-semibold',
+                    mainStatDisplay.abs.tone === 'positive' && 'text-emerald-600 dark:text-emerald-400',
+                    mainStatDisplay.abs.tone === 'negative' && 'text-rose-500',
+                    mainStatDisplay.abs.tone === 'neutral' && 'text-slate-400'
+                  )}
                 >
-                  <span className="text-[13px] font-black text-indigo-600 dark:text-indigo-300">
-                    <ModalCount value={Math.round(routineProgressMeta.value)} replayKey={`header-total-${chartEnterKey}`} />
-                    <span className="ml-0.5 text-[10px] font-semibold">kg</span>
-                  </span>
-                  <span
-                    className={cn(
-                      'truncate text-[11px] font-semibold',
-                      mainStatDisplay.abs.tone === 'positive' && 'text-emerald-600 dark:text-emerald-400',
-                      mainStatDisplay.abs.tone === 'negative' && 'text-rose-500',
-                      mainStatDisplay.abs.tone === 'neutral' && 'text-slate-400'
-                    )}
-                  >
-                    {mainStatDisplay.abs.value}
-                  </span>
-                </button>
-              )}
-            </div>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              onClick={() => onOpenSocial('challenges', { from: 'dashboard' })}
-              className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-50 text-amber-600 shadow-sm ring-1 ring-amber-100 transition-transform active:scale-95 dark:bg-amber-950/50 dark:text-amber-300 dark:ring-amber-900/60"
-              aria-label="Torneos"
-            >
-              <Trophy size={18} strokeWidth={2.2} />
-            </button>
-            <button
-              type="button"
-              onClick={() => onOpenSocial('checkins', { from: 'dashboard' })}
-              className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 shadow-sm ring-1 ring-emerald-100 transition-transform active:scale-95 dark:bg-emerald-950/50 dark:text-emerald-300 dark:ring-emerald-900/60"
-              aria-label="Voy al gym"
-            >
-              <MapPin size={18} strokeWidth={2.2} />
-            </button>
-          </div>
-        </div>
-        {hasRoutine && trainingMaxes.length > 0 && (
-          <div className="mt-3 flex flex-wrap items-center gap-1.5 max-[360px]:gap-1">
-            <ProgressModeSwitch mode={progressMode} onChange={handleProgressModeChange} />
-            {(progressMode === 'year' || progressMode === 'week') && (
-              <>
-                <select
-                  value={selectedYear}
-                  onChange={(e) => setSelectedYear(Number(e.target.value))}
-                  className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 max-[360px]:h-7 max-[360px]:px-1.5 max-[360px]:text-[10px] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                  style={{ WebkitTapHighlightColor: 'transparent' }}
-                >
-                  {availableYears.map(year => (
-                    <option key={year} value={year}>{year}</option>
-                  ))}
-                </select>
-                {progressMode === 'week' && sameTemplateAllWeeksProp && (
-                  <select
-                    value={selectedMonth}
-                    onChange={(e) => setSelectedMonth(Number(e.target.value))}
-                    className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 max-[360px]:h-7 max-[360px]:px-1.5 max-[360px]:text-[10px] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                    style={{ WebkitTapHighlightColor: 'transparent' }}
-                  >
-                    {MONTH_LABELS_SHORT.map((month, idx) => (
-                      <option key={month} value={idx}>{month}</option>
-                    ))}
-                  </select>
-                )}
-              </>
-            )}
-          </div>
-        )}
+                  {mainStatDisplay.abs.value}
+                </span>
+              </button>
+            ) : null
+          }
+        />
       </motion.header>
 
       {hasRoutine && todayCheckInGroups.length > 0 && (
@@ -1222,6 +1164,35 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
       ) : (
       <>
       <motion.div variants={ENTER_ITEM} initial={false} className="mb-4 sm:mb-5">
+        <div className="mb-2.5 flex flex-wrap items-center justify-end gap-1.5 max-[360px]:gap-1">
+          <ProgressModeSwitch mode={progressMode} onChange={handleProgressModeChange} />
+          {(progressMode === 'year' || progressMode === 'week') && (
+            <>
+              <select
+                value={selectedYear}
+                onChange={(e) => setSelectedYear(Number(e.target.value))}
+                className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 max-[360px]:h-7 max-[360px]:px-1.5 max-[360px]:text-[10px] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                style={{ WebkitTapHighlightColor: 'transparent' }}
+              >
+                {availableYears.map(year => (
+                  <option key={year} value={year}>{year}</option>
+                ))}
+              </select>
+              {progressMode === 'week' && sameTemplateAllWeeksProp && (
+                <select
+                  value={selectedMonth}
+                  onChange={(e) => setSelectedMonth(Number(e.target.value))}
+                  className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 max-[360px]:h-7 max-[360px]:px-1.5 max-[360px]:text-[10px] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  style={{ WebkitTapHighlightColor: 'transparent' }}
+                >
+                  {MONTH_LABELS_SHORT.map((month, idx) => (
+                    <option key={month} value={idx}>{month}</option>
+                  ))}
+                </select>
+              )}
+            </>
+          )}
+        </div>
         <div className={cn(
           'grid gap-2',
           trainingMaxes.length <= 2 ? 'grid-cols-2' : 'grid-cols-3'
