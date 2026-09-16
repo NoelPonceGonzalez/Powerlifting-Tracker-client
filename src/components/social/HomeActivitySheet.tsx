@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { Dumbbell, GraduationCap, Heart, Loader2, MessageCircle, Trophy, UserCheck, Users, UserX, X } from 'lucide-react';
 import { apiGet, apiPut } from '@/src/lib/api';
-import { timeAgo, type ChatAsk, type ChatGroupInvite, type CoachRequest } from '@/src/lib/feedApi';
+import { coachRequestCopy, coachRequestPerson, timeAgo, type ChatAsk, type ChatGroupInvite, type CoachRequest } from '@/src/lib/feedApi';
 import type { FriendRequest } from '@/src/types';
 import { Avatar } from '@/src/components/ui/Avatar';
 
@@ -208,7 +208,9 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
                         </button>
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{inv.from.name}</p>
-                          <p className="truncate text-[11px] text-slate-400">Te invita a «{inv.groupName}»</p>
+                          <p className="truncate text-[11px] text-slate-400">
+                            {inv.kind === 'team' ? `Te invita al equipo «${inv.groupName}»` : `Te invita a «${inv.groupName}»`}
+                          </p>
                         </div>
                         <div className="flex shrink-0 gap-1.5">
                           <button
@@ -232,14 +234,16 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
                         </div>
                       </div>
                     ))}
-                    {coachRequests.map(req => (
+                    {coachRequests.map(req => {
+                      const person = coachRequestPerson(req);
+                      return (
                       <div key={req.id} className="flex items-center gap-3 rounded-2xl bg-white/70 px-3 py-2.5 dark:bg-slate-800/50">
-                        <button type="button" onClick={() => onOpenProfile(req.athlete.id)} className="shrink-0">
-                          <Avatar src={req.athlete.avatar || undefined} name={req.athlete.name} className="h-10 w-10 rounded-full" />
+                        <button type="button" onClick={() => onOpenProfile(person.id)} className="shrink-0">
+                          <Avatar src={person.avatar || undefined} name={person.name} className="h-10 w-10 rounded-full" />
                         </button>
                         <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{req.athlete.name}</p>
-                          <p className="text-[11px] text-slate-400">Quiere que seas su entrenador</p>
+                          <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{person.name}</p>
+                          <p className="text-[11px] text-slate-400">{coachRequestCopy(req)}</p>
                         </div>
                         <div className="flex shrink-0 gap-1.5">
                           <button
@@ -262,7 +266,8 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
                           </button>
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </>
                 )}
               </section>

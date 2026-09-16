@@ -10,6 +10,12 @@ export type ChatRealtimeEvent =
         mine: boolean;
         mediaKey?: string | null;
         mediaType?: 'image' | 'video' | null;
+        storyReply?: {
+          postId: string;
+          mediaKey: string;
+          mediaType: 'image' | 'video';
+          caption?: string;
+        } | null;
         author?: { id: string; name: string; avatar: string | null };
       };
     }

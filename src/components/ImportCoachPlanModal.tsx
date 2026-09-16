@@ -341,7 +341,9 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
                                     {e.mode === 'seconds' ? '"' : ''}
                                     {e.pct !== undefined
                                       ? ` · ${e.pct}%`
-                                      : e.weight !== undefined && ` · ${e.weight} kg`}
+                                      : e.weight !== undefined
+                                        ? ` · ${String(e.weight).replace('.', ',')} kg`
+                                        : ''}
                                     {e.rpe && ` · RPE ${e.rpe}`}
                                   </span>
                                 </li>

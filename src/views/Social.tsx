@@ -29,7 +29,7 @@ import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { FriendRequest, Friend, Challenge, GymCheckIn, User, UserSearchResult, ChallengeType, TrainingWeek, BodyWeightScoringMode, RoutineProgressLeaderboardEntry } from '@/src/types';
 import { cn } from '@/src/lib/utils';
-import { apiGet, apiPut, mediaUrl } from '@/src/lib/api';
+import { apiGet, apiPut } from '@/src/lib/api';
 import { VIEW_TRANSITION } from '@/src/lib/motionPresets';
 import { EQUITY_OPTIONS, equitySummary, suggestBodyWeightScoring } from '@/src/lib/challengeEquity';
 import { GlassModal } from '@/src/components/ui/GlassModal';
@@ -42,14 +42,16 @@ import {
   fetchChatRequests,
   fetchCoachRequests,
   fetchGroupInvites,
-  fetchUserPosts,
+  coachRequestCopy,
+  coachRequestPerson,
   type ChatAsk,
   type ChatGroupInvite,
   type CoachRequest,
-  type FeedPost,
 } from '@/src/lib/feedApi';
+import { TmHistoryModal } from '@/src/components/social/TmHistoryModal';
 import { FeedTab } from '@/src/components/social/FeedTab';
 import { ChatTab } from '@/src/components/social/ChatTab';
+import { ChatPeopleSheet } from '@/src/components/social/ChatPeopleSheet';
 import { HomeActivitySheet } from '@/src/components/social/HomeActivitySheet';
 import { ProfileScreen } from '@/src/components/social/ProfileScreen';
 import { Avatar as FeedAvatar } from '@/src/components/social/MediaPost';
@@ -217,7 +219,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
     skippedWeeks?: number[];
   } | null>(null);
   const [friendRoutineLoading, setFriendRoutineLoading] = useState(false);
-  const [friendPosts, setFriendPosts] = useState<FeedPost[]>([]);
+  const [openFriendTm, setOpenFriendTm] = useState<{ id?: string; name: string; value: number; mode: string } | null>(null);
   /** Perfil abierto a pantalla completa (amigo, resultado de búsqueda o entrenador). */
   const [viewingProfileId, setViewingProfileId] = useState<string | null>(null);
   const [friendProfile, setFriendProfile] = useState<{
@@ -226,7 +228,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
     bio?: string;
     coach?: { id: string; name: string; avatar: string | null } | null;
     athleteCount?: number;
-    trainingMaxes: { name: string; value: number; mode: string }[];
+    trainingMaxes: { id?: string; name: string; value: number; mode: string }[];
     trainingMaxesAll?: { name: string; mode: string; linkedExercise?: string }[];
   } | null>(null);
   const [copyingFriendRoutine, setCopyingFriendRoutine] = useState(false);
@@ -269,8 +271,10 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [chatAsks, setChatAsks] = useState<ChatAsk[]>([]);
   const [chatAskBusyId, setChatAskBusyId] = useState<string | null>(null);
   const [chatPeerId, setChatPeerId] = useState<string | null>(null);
-  const [chatWriteSignal, setChatWriteSignal] = useState(0);
   const [showHomeActivity, setShowHomeActivity] = useState(false);
+  const [friendsFromChat, setFriendsFromChat] = useState(false);
+  const [chatFriendsOpen, setChatFriendsOpen] = useState(false);
+  const [peopleTick, setPeopleTick] = useState(0);
   const [unreadNotifCount, setUnreadNotifCount] = useState(0);
   const activityBadge = pendingRequests.length + coachRequests.length + groupInvites.length + chatAsks.length;
   const homeActivityCount = activityBadge + unreadNotifCount;
@@ -382,6 +386,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
     setFriendRoutine(null);
     setFriendProfile(null);
     setShowHomeActivity(false);
+    setFriendsFromChat(false);
     setViewingProfileId(null);
     setShowCheckInModal(false);
     setEditingCheckIn(null);
@@ -490,11 +495,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
     setShowFriendModal(friend);
     setFriendRoutine(null);
     setFriendProfile(null);
-    setFriendPosts([]);
+    setOpenFriendTm(null);
     setFriendRoutineLoading(true);
-    fetchUserPosts(friend.id)
-      .then(res => setFriendPosts(res.posts))
-      .catch(() => setFriendPosts([]));
     try {
       const [routineRaw, profile] = await Promise.all([
         apiGet<{
@@ -514,7 +516,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
           bio?: string;
           coach?: { id: string; name: string; avatar: string | null } | null;
           athleteCount?: number;
-          trainingMaxes: { name: string; value: number; mode: string }[];
+          trainingMaxes: { id?: string; name: string; value: number; mode: string }[];
           trainingMaxesAll?: { name: string; mode: string; linkedExercise?: string }[];
         }>(`/api/social/friends/${friend.id}/profile?includeAllTms=1`).catch(() => ({
           name: friend.name,
@@ -554,6 +556,13 @@ export const SocialView: React.FC<SocialViewProps> = ({
     } finally {
       setFriendRoutineLoading(false);
     }
+  }, []);
+
+  const closeFriendSheet = useCallback(() => {
+    setShowFriendModal(null);
+    setFriendRoutine(null);
+    setFriendProfile(null);
+    setOpenFriendTm(null);
   }, []);
 
   const handleCopyAndActivate = useCallback(async () => {
@@ -651,34 +660,40 @@ export const SocialView: React.FC<SocialViewProps> = ({
       transition={VIEW_TRANSITION}
       className="mx-auto max-w-5xl px-4 pb-28 pt-5 text-slate-900 sm:px-6 sm:pb-32 sm:pt-7 dark:text-slate-100"
     >
-      <header className="mb-5 space-y-4">
+      <header className={cn('space-y-4', activeTab === 'chat' ? 'mb-0' : 'mb-5')}>
+        {activeTab !== 'chat' && (
         <div className="flex items-center gap-3">
           {activeTab !== 'feed' ? (
             <button
               type="button"
               onClick={() => {
-                if (activeTab === 'chat' || socialBackTo === 'feed') {
-                  setActiveTab('feed');
+                if (activeTab === 'friends' && friendsFromChat) {
+                  setFriendsFromChat(false);
+                  setActiveTab('chat');
                   return;
                 }
                 if (socialBackTo === 'profile') {
                   onGoToProfile?.();
                   return;
                 }
-                if (socialBackTo === 'dashboard') {
-                  onGoToDashboard?.();
+                if (socialBackTo === 'feed') {
+                  setActiveTab('feed');
                   return;
                 }
-                setActiveTab('feed');
+                onGoToDashboard?.();
               }}
-              className="flex items-center gap-1.5 text-sm font-semibold text-slate-500"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-slate-500"
+              aria-label={
+                activeTab === 'friends' && friendsFromChat
+                  ? 'Volver al chat'
+                  : socialBackTo === 'profile'
+                    ? 'Volver al perfil'
+                    : socialBackTo === 'feed'
+                      ? 'Volver al inicio'
+                      : 'Volver a progreso'
+              }
             >
               <ArrowRight className="rotate-180" size={16} />
-              {activeTab === 'chat' || socialBackTo === 'feed'
-                ? 'Inicio'
-                : socialBackTo === 'dashboard'
-                  ? 'Progreso'
-                  : 'Perfil'}
             </button>
           ) : (
             <button
@@ -746,18 +761,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
               Crear
             </button>
           )}
-          {activeTab === 'chat' && (
-            <button
-              type="button"
-              onClick={() => setChatWriteSignal(s => s + 1)}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/50 bg-white/70 text-slate-800 shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-slate-800/70 dark:text-slate-100"
-              aria-label="Nuevo mensaje"
-              title="Nuevo mensaje"
-            >
-              <Plus size={20} strokeWidth={2.25} />
-            </button>
-          )}
         </div>
+        )}
 
         {activeTab === 'friends' && (
         <div className="relative">
@@ -792,7 +797,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                     key={u.id}
                     type="button"
                     onClick={() => {
-                      setViewingProfileId(u.id);
+                      void openFriendModal({ id: u.id, name: u.name, avatar: u.avatar });
                       setSearch('');
                     }}
                     className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left transition-colors hover:bg-slate-50 dark:hover:bg-slate-800"
@@ -819,7 +824,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
               myName={user.name}
               myAvatar={user.avatar ?? null}
               openPublishSignal={openPublishSignal}
-              onOpenAuthor={authorId => setViewingProfileId(authorId)}
+              onOpenAuthor={authorId => void openFriendModal({ id: authorId, name: 'Atleta' })}
               onOpenChat={peerId => {
                 setChatPeerId(peerId);
                 setActiveTab('chat');
@@ -830,12 +835,16 @@ export const SocialView: React.FC<SocialViewProps> = ({
         <div className={activeTab === 'chat' ? undefined : 'hidden'} aria-hidden={activeTab !== 'chat'}>
             <ChatTab
               myId={user.id}
+              myName={user.name}
+              myAvatar={user.avatar}
               friends={friendsList}
               startWith={chatPeerId}
+              pendingCount={pendingRequests.length}
+              peopleTick={peopleTick}
               onOpened={() => setChatPeerId(null)}
-              onOpenProfile={id => setViewingProfileId(id)}
+              onOpenMini={person => openFriendModal({ id: person.id, name: person.name, avatar: person.avatar ?? undefined })}
+              onOpenPeople={() => setChatFriendsOpen(true)}
               onConversationChange={onChatConversationChange}
-              writeSignal={chatWriteSignal}
             />
         </div>
 
@@ -985,7 +994,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                       padding="md" 
                       rounded="xl" 
                       className="flex items-center gap-4 cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors"
-                      onClick={() => setViewingProfileId(f.id)}
+                      onClick={() => void openFriendModal(f)}
                     >
                       <Avatar src={f.avatar} name={f.name} className="w-12 h-12 rounded-full border-2 border-slate-100 dark:border-slate-700" />
                       <div className="flex-1 min-w-0">
@@ -1225,7 +1234,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   >
                     <button
                       type="button"
-                      onClick={() => setViewingProfileId(ask.from.id)}
+                      onClick={() => void openFriendModal({ id: ask.from.id, name: ask.from.name, avatar: ask.from.avatar ?? undefined })}
                       className="flex min-w-0 flex-1 items-center gap-3 text-left"
                     >
                       <FeedAvatar name={ask.from.name} avatar={ask.from.avatar} size={42} />
@@ -1268,7 +1277,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
             {groupInvites.length > 0 && (
               <section className="space-y-3 pb-2">
                 <h2 className="text-[11px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-400">
-                  Te invitan a un grupo
+                  Te invitan a un grupo o equipo
                 </h2>
                 {groupInvites.map(inv => (
                   <Card
@@ -1279,7 +1288,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   >
                     <button
                       type="button"
-                      onClick={() => setViewingProfileId(inv.from.id)}
+                      onClick={() => void openFriendModal({ id: inv.from.id, name: inv.from.name, avatar: inv.from.avatar ?? undefined })}
                       className="flex min-w-0 flex-1 items-center gap-3 text-left"
                     >
                       <FeedAvatar name={inv.from.name} avatar={inv.from.avatar} size={42} />
@@ -1289,7 +1298,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                         </span>
                         <span className="flex items-center gap-1 text-[11px] font-medium text-slate-500">
                           <Users size={12} />
-                          «{inv.groupName}»
+                          {inv.kind === 'team' ? 'equipo' : 'grupo'} «{inv.groupName}»
                         </span>
                       </span>
                     </button>
@@ -1323,9 +1332,11 @@ export const SocialView: React.FC<SocialViewProps> = ({
             {coachRequests.length > 0 && (
               <section className="space-y-3 pb-2">
                 <h2 className="text-[11px] font-black uppercase tracking-widest text-amber-600 dark:text-amber-400">
-                  Te piden ser su entrenador
+                  Entrenador
                 </h2>
-                {coachRequests.map(req => (
+                {coachRequests.map(req => {
+                  const person = coachRequestPerson(req);
+                  return (
                   <Card
                     key={req.id}
                     padding="md"
@@ -1334,17 +1345,17 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   >
                     <button
                       type="button"
-                      onClick={() => setViewingProfileId(req.athlete.id)}
+                      onClick={() => void openFriendModal({ id: person.id, name: person.name, avatar: person.avatar ?? undefined })}
                       className="flex min-w-0 flex-1 items-center gap-3 text-left"
                     >
-                      <FeedAvatar name={req.athlete.name} avatar={req.athlete.avatar} size={42} />
+                      <FeedAvatar name={person.name} avatar={person.avatar} size={42} />
                       <span className="min-w-0">
                         <span className="block truncate text-sm font-bold text-slate-900 dark:text-slate-100">
-                          {req.athlete.name}
+                          {person.name}
                         </span>
                         <span className="flex items-center gap-1 text-[11px] font-medium text-slate-500">
                           <GraduationCap size={12} />
-                          quiere que le entrenes
+                          {coachRequestCopy(req).toLowerCase()}
                         </span>
                       </span>
                     </button>
@@ -1371,7 +1382,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
                       </Button>
                     </div>
                   </Card>
-                ))}
+                  );
+                })}
               </section>
             )}
 
@@ -1490,6 +1502,23 @@ export const SocialView: React.FC<SocialViewProps> = ({
             })()}
         </div>
       </div>
+
+      <ChatPeopleSheet
+        open={chatFriendsOpen}
+        onClose={() => {
+          setChatFriendsOpen(false);
+          setPeopleTick(n => n + 1);
+        }}
+        me={{ id: user.id, name: user.name, avatar: user.avatar }}
+        friends={friendsList}
+        pending={pendingRequests}
+        onAccept={id => void handleRequestAction(id, onAccept)}
+        onReject={id => void handleRequestAction(id, onReject)}
+        onSendRequest={onSendFriendRequest}
+        onOpenFriend={friend => void openFriendModal(friend)}
+        onOpenChat={id => setChatPeerId(id)}
+        busyId={acceptRejectLoadingId}
+      />
 
       <GlassModal
         open={showCheckInModal || !!editingCheckIn}
@@ -1893,47 +1922,50 @@ export const SocialView: React.FC<SocialViewProps> = ({
         document.body
       )}
 
-      {showFriendModal && typeof document !== 'undefined' && createPortal(
-        <AnimatePresence>
-          <div key="friend-detail-modal" className="fixed inset-0 flex items-center justify-center px-4 min-h-[100dvh]" style={{ zIndex: 100000 }}>
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => { setShowFriendModal(null); setFriendRoutine(null); setFriendProfile(null); }}
-              className="absolute inset-0 min-h-[100dvh] bg-black/75 backdrop-blur-sm"
-            />
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.9, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9, y: 20 }}
-              onClick={(e) => e.stopPropagation()}
-              className="relative bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl sm:rounded-[2.5rem] p-5 sm:p-8 shadow-2xl dark:border dark:border-slate-700 max-h-[90dvh] overflow-y-auto"
-            >
-              <div className="flex items-center justify-between gap-2 mb-6 pr-1">
-                <h3 className="text-xl font-black text-slate-900 dark:text-slate-100 truncate flex-1 min-w-0">
-                  {friendProfile?.name || showFriendModal.name}
-                </h3>
-                <div className="flex items-center gap-2 shrink-0">
-                  {onUnfriend && (
-                    <button
-                      onClick={() => setUnfriendConfirmFriend(showFriendModal)}
-                      className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-900/50 transition-colors"
-                      title="Dejar de ser amigo"
-                    >
-                      <UserMinus size={18} />
-                    </button>
-                  )}
-                  <button 
-                    onClick={() => { setShowFriendModal(null); setFriendRoutine(null); setFriendProfile(null); }}
-                    className="p-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                    title="Cerrar"
-                  >
-                    <X size={20} />
-                  </button>
-                </div>
-              </div>
-              <div className="flex items-center gap-4 mb-6">
+      <GlassModal
+        open={!!showFriendModal}
+        onClose={closeFriendSheet}
+        rise
+        sheet
+        title={friendProfile?.name || showFriendModal?.name || 'Perfil'}
+        subtitle={
+          friendProfile?.coach
+            ? `Entrena con ${friendProfile.coach.name}`
+            : friendProfile?.athleteCount
+              ? `Entrenador de ${friendProfile.athleteCount}`
+              : 'Marcas y rutina'
+        }
+        footer={
+          showFriendModal ? (
+            <div className="flex gap-2">
+              {onUnfriend && (
+                <Button
+                  variant="outline"
+                  className="rounded-xl"
+                  onClick={() => setUnfriendConfirmFriend(showFriendModal)}
+                >
+                  <UserMinus size={16} />
+                </Button>
+              )}
+              <Button
+                variant="primary"
+                className="flex-1 rounded-xl"
+                onClick={() => {
+                  const id = showFriendModal.id;
+                  closeFriendSheet();
+                  setChatPeerId(id);
+                  setActiveTab('chat');
+                }}
+              >
+                Escribir
+              </Button>
+            </div>
+          ) : undefined
+        }
+      >
+        {showFriendModal && (
+          <div>
+              <div className="flex items-center gap-4 mb-5">
                 <Avatar 
                   src={friendProfile?.avatar || showFriendModal.avatar} 
                   name={friendProfile?.name || showFriendModal.name} 
@@ -1959,40 +1991,31 @@ export const SocialView: React.FC<SocialViewProps> = ({
                 </div>
               </div>
 
-              {friendPosts.length > 0 && (
-                <div className="border-t border-slate-200 pt-5 pb-2 dark:border-slate-700">
-                  <h4 className="mb-3 text-[10px] font-black uppercase tracking-widest text-slate-400">
-                    Publicaciones
-                  </h4>
-                  <div className="grid grid-cols-3 gap-1.5">
-                    {friendPosts.slice(0, 9).map(p => (
-                      <div key={p.id} className="aspect-square overflow-hidden rounded-lg bg-slate-950">
-                        {p.mediaType === 'video' ? (
-                          <video src={mediaUrl(p.mediaKey)} muted playsInline preload="metadata" className="h-full w-full object-cover" />
-                        ) : (
-                          <img src={mediaUrl(p.mediaKey)} alt={p.caption || ''} loading="lazy" className="h-full w-full object-cover" />
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {friendProfile?.trainingMaxes && friendProfile.trainingMaxes.length > 0 && (
-                <div className="border-t border-slate-200 dark:border-slate-700 pt-6 pb-6">
-                  <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">Marcas compartidas</h4>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              <div className="border-t border-white/40 pt-4 pb-4 dark:border-white/10">
+                <h4 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Marcas</h4>
+                {friendProfile?.trainingMaxes && friendProfile.trainingMaxes.length > 0 ? (
+                  <div className="grid grid-cols-3 gap-2">
                     {friendProfile.trainingMaxes.map((tm, i) => (
-                      <div key={i} className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-600">
-                        <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase truncate">{tm.name}</p>
-                        <p className="text-lg font-black text-slate-900 dark:text-slate-100">
-                          {tm.value} <span className="text-xs font-medium text-slate-400">{tm.mode === 'weight' ? 'kg' : tm.mode === 'reps' ? 'reps' : 's'}</span>
+                      <button
+                        key={tm.id || `${tm.name}-${i}`}
+                        type="button"
+                        onClick={() => setOpenFriendTm(tm)}
+                        className="rounded-2xl bg-white/70 px-2.5 py-2.5 text-left shadow-sm ring-1 ring-black/[0.04] dark:bg-white/5 dark:ring-white/[0.06]"
+                      >
+                        <p className="truncate text-[10px] font-semibold uppercase tracking-wide text-slate-400">{tm.name}</p>
+                        <p className="mt-0.5 text-lg font-semibold text-slate-900 dark:text-slate-100">
+                          {tm.value}
+                          <span className="ml-0.5 text-[11px] font-medium text-slate-400">
+                            {tm.mode === 'weight' ? 'kg' : tm.mode === 'reps' ? 'reps' : 's'}
+                          </span>
                         </p>
-                      </div>
+                      </button>
                     ))}
                   </div>
-                </div>
-              )}
+                ) : (
+                  <p className="py-3 text-center text-sm text-slate-400">Aún no tiene marcas.</p>
+                )}
+              </div>
 
               <div className="border-t border-slate-200 dark:border-slate-700 pt-6">
                 <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">Rutina activa</h4>
@@ -2077,67 +2100,53 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   </p>
                 )}
               </div>
-            </motion.div>
           </div>
-        </AnimatePresence>,
-        document.body
+        )}
+      </GlassModal>
+
+      {openFriendTm && showFriendModal && (
+        <TmHistoryModal
+          userId={showFriendModal.id}
+          tm={openFriendTm}
+          onClose={() => setOpenFriendTm(null)}
+        />
       )}
 
-      {/* Confirmar dejar de ser amigo */}
-      {unfriendConfirmFriend && typeof document !== 'undefined' && createPortal(
-        <AnimatePresence>
-          <div key="unfriend-confirm-modal" className="fixed inset-0 flex items-center justify-center px-4 min-h-[100dvh]" style={{ zIndex: 100001 }}>
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setUnfriendConfirmFriend(null)}
-              className="absolute inset-0 min-h-[100dvh] bg-black/75 backdrop-blur-sm"
-            />
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95, y: 10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 10 }}
-              onClick={(e) => e.stopPropagation()}
-              className="relative bg-white dark:bg-slate-900 w-full max-w-sm rounded-2xl sm:rounded-[2rem] p-6 sm:p-8 shadow-2xl dark:border dark:border-slate-700 text-center z-10"
+      <GlassModal
+        open={!!unfriendConfirmFriend}
+        onClose={() => setUnfriendConfirmFriend(null)}
+        rise
+        zIndexClass="z-[100050]"
+        title="¿Dejar de ser amigo?"
+        subtitle={unfriendConfirmFriend?.name}
+        footer={
+          <div className="flex gap-2">
+            <Button variant="outline" className="flex-1 rounded-xl" onClick={() => setUnfriendConfirmFriend(null)}>
+              Cancelar
+            </Button>
+            <Button
+              variant="danger"
+              className="flex-1 rounded-xl"
+              onClick={async () => {
+                if (!unfriendConfirmFriend) return;
+                try {
+                  await onUnfriend?.(unfriendConfirmFriend.id);
+                } catch (e: any) {
+                  setFriendActionError(e?.message || 'No se pudo eliminar la amistad.');
+                }
+                setUnfriendConfirmFriend(null);
+                closeFriendSheet();
+              }}
             >
-              <div className="w-14 h-14 mx-auto mb-4 rounded-full bg-rose-100 dark:bg-rose-900/40 flex items-center justify-center">
-                <UserMinus size={28} className="text-rose-600 dark:text-rose-400" />
-              </div>
-              <h3 className="text-lg font-black text-slate-900 dark:text-slate-100 mb-2">¿Dejar de ser amigo?</h3>
-              <p className="text-sm text-slate-500 dark:text-slate-400 mb-6">
-                Dejarás de ser amigo de <span className="font-semibold text-slate-700 dark:text-slate-300">{unfriendConfirmFriend.name}</span>. Podéis volver a enviaros solicitud cuando queráis.
-              </p>
-              <div className="flex gap-3">
-                <Button 
-                  variant="outline" 
-                  className="flex-1 rounded-xl" 
-                  onClick={() => setUnfriendConfirmFriend(null)}
-                >
-                  Cancelar
-                </Button>
-                <Button 
-                  variant="primary"
-                  className="flex-1 rounded-xl bg-rose-600 hover:bg-rose-700 border-rose-600"
-                  onClick={async () => {
-                    try {
-                      await onUnfriend?.(unfriendConfirmFriend.id);
-                    } catch (e: any) {
-                      setFriendActionError(e?.message || 'No se pudo eliminar la amistad.');
-                    }
-                    setUnfriendConfirmFriend(null);
-                    setShowFriendModal(null);
-                    setFriendRoutine(null);
-                  }}
-                >
-                  Dejar de ser amigo
-                </Button>
-              </div>
-            </motion.div>
+              Dejar de ser amigo
+            </Button>
           </div>
-        </AnimatePresence>,
-        document.body
-      )}
+        }
+      >
+        <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+          Dejáis de ser amigos. Podéis volver a enviaros solicitud cuando queráis.
+        </p>
+      </GlassModal>
 
       <HomeActivitySheet
         open={showHomeActivity}
@@ -2163,7 +2172,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
         onAnswerCoach={(id, decision) => void answerCoach(id, decision)}
         onOpenProfile={id => {
           setShowHomeActivity(false);
-          setViewingProfileId(id);
+          const friend = friendsList.find(f => f.id === id);
+          void openFriendModal(friend || { id, name: 'Atleta' });
         }}
         onGoFriends={() => {
           setShowHomeActivity(false);

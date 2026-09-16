@@ -20,6 +20,7 @@ export interface FeedPost {
   expiresAt: string | null;
   author: FeedAuthor;
   mine: boolean;
+  viewedByMe?: boolean;
   /** Solo en tus propias historias: quién las ha visto. */
   viewCount?: number;
   viewers?: FeedAuthor[];
@@ -63,6 +64,8 @@ export interface PublicProfile {
   followerCount: number;
   followingCount: number;
   coachRequestStatus: 'none' | 'pending' | 'accepted' | 'rejected';
+  /** Yo le he invitado a entrenarle (yo coach, él alumno). */
+  athleteInviteStatus?: 'none' | 'pending' | 'accepted' | 'rejected';
   /** El que mira es el entrenador de esta persona. */
   iAmTheirCoach?: boolean;
   routineName: string | null;
@@ -78,7 +81,9 @@ export interface ProfileTmHistory {
 export interface CoachRequest {
   id: string;
   createdAt: string;
-  athlete: FeedAuthor;
+  kind?: 'they_want_me_coach' | 'they_want_to_coach_me';
+  person?: FeedAuthor;
+  athlete?: FeedAuthor;
 }
 
 export const MAX_UPLOAD_BYTES = 80 * 1024 * 1024;
@@ -147,9 +152,12 @@ export function saveBio(bio: string) {
   return apiPut<{ bio: string }>('/api/social/me/profile', { bio });
 }
 
-/** Pedir a un amigo que te entrene: queda pendiente hasta que él lo acepte. */
-export function requestCoach(coachId: string) {
-  return apiPost<{ status: 'pending' }>('/api/social/coach-requests', { coachId });
+/** Pedir que te entrenen (`ask`) o invitar a entrenarle (`invite`). El otro tiene que aceptar. */
+export function requestCoach(id: string, role: 'ask' | 'invite' = 'ask') {
+  return apiPost<{ status: 'pending' }>(
+    '/api/social/coach-requests',
+    role === 'invite' ? { athleteId: id } : { coachId: id }
+  );
 }
 
 export function removeCoach() {
@@ -164,10 +172,21 @@ export function answerCoachRequest(id: string, decision: 'accept' | 'reject') {
   return apiPut<{ status: string }>(`/api/social/coach-requests/${id}/${decision}`, {});
 }
 
+export function coachRequestPerson(req: CoachRequest): FeedAuthor {
+  return req.person || req.athlete || { id: '', name: 'Usuario', avatar: null };
+}
+
+export function coachRequestCopy(req: CoachRequest): string {
+  return req.kind === 'they_want_to_coach_me'
+    ? 'Quiere ser tu entrenador'
+    : 'Quiere que seas su entrenador';
+}
+
 export interface ChatGroupCard {
   id: string;
   name: string;
   createdBy?: string;
+  kind?: 'group' | 'team';
   members: FeedAuthor[];
   pending?: FeedAuthor[];
 }
@@ -176,6 +195,7 @@ export interface ChatGroupInvite {
   id: string;
   groupId: string;
   groupName: string;
+  kind?: 'group' | 'team';
   from: FeedAuthor;
   createdAt: string;
 }
@@ -190,6 +210,8 @@ export interface ChatThread {
   isCoach?: boolean;
   /** Chat enviado a alguien que aún no te sigue / no ha aceptado. */
   waiting?: boolean;
+  pinned?: boolean;
+  muted?: boolean;
 }
 
 export interface ChatAsk {
@@ -197,6 +219,13 @@ export interface ChatAsk {
   from: FeedAuthor;
   preview: string;
   createdAt: string;
+}
+
+export interface StoryReply {
+  postId: string;
+  mediaKey: string;
+  mediaType: 'image' | 'video';
+  caption?: string;
 }
 
 export interface ChatLine {
@@ -207,6 +236,9 @@ export interface ChatLine {
   author?: FeedAuthor;
   mediaKey?: string | null;
   mediaType?: 'image' | 'video' | null;
+  mediaExpiresAt?: string | null;
+  mediaExpired?: boolean;
+  storyReply?: StoryReply | null;
   requested?: boolean;
   waiting?: boolean;
 }
@@ -254,8 +286,8 @@ export function answerChatRequest(id: string, decision: 'accept' | 'reject') {
   return apiPut<{ ok: boolean; peerId?: string }>(`/api/social/chats/chat-requests/${id}/${decision}`, {});
 }
 
-export function createChatGroup(name: string, memberIds: string[]) {
-  return apiPost<ChatThread>('/api/social/chats/groups', { name, memberIds });
+export function createChatGroup(name: string, memberIds: string[], kind: 'group' | 'team' = 'group') {
+  return apiPost<ChatThread>('/api/social/chats/groups', { name, memberIds, kind });
 }
 
 export function fetchGroupMessages(groupId: string) {
@@ -282,6 +314,14 @@ export function addChatGroupMembers(groupId: string, memberIds: string[]) {
 
 export function removeChatGroupMember(groupId: string, userId: string) {
   return apiDelete(`/api/social/chats/groups/${groupId}/members/${userId}`);
+}
+
+export function deleteChat(peerId: string) {
+  return apiDelete(`/api/social/chats/${peerId}`);
+}
+
+export function deleteGroupChat(groupId: string) {
+  return apiDelete(`/api/social/chats/groups/${groupId}`);
 }
 
 export function fetchGroupInvites() {

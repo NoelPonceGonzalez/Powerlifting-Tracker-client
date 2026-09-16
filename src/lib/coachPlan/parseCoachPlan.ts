@@ -13,6 +13,8 @@ export interface ParsedExercise {
   /** "6", "10-12" o "AMRAP": se conserva tal cual lo escribió el entrenador. */
   reps: string;
   weight?: number;
+  /** Kilos de cada serie cuando el top y las descargas no pesan lo mismo. */
+  weightPerSet?: number[];
   /** Porcentaje del maximal ("al 75%"). El peso lo calcula la app desde el RM. */
   pct?: number;
   rpe?: string;
@@ -80,17 +82,17 @@ const MAX_ALIASES: Record<string, string> = {
   deadlift: 'Deadlift', dl: 'Deadlift', 'peso muerto': 'Deadlift',
 };
 
-const REST_WORDS = /\b(rest|descanso|off|libre)\b/i;
+const REST_WORDS = /\b(rest|descanso|off|libre|movilidad|mobility|recovery|recovery\s*day)\b/i;
 
 /** Reps que no son un número: "3xAMRAP", "4x máx", "3 x fallo". */
 const REPS_WORD = String.raw`amrap|m[aá]x(?:imo)?|fallo`;
 /** `x`, `×` o `*` (Excel a veces escribe 3*8). */
 const SET_PATTERN = new RegExp(
-  String.raw`(\d+)\s*[x×*]\s*(\d+(?:\s*[-–/]\s*\d+)?|${REPS_WORD})\s*(["'”]?)`,
+  String.raw`(\d+)\s*[x×*c]\s*(\d+(?:\s*[-–/]\s*\d+)?|${REPS_WORD})\s*(["'”″′]?)`,
   'gi'
 );
 /** "4x8x80" / "4 x 8 x 80kg": series × reps × kilos, el formato que más se pierde. */
-const SETS_REPS_WEIGHT = /(\d+)\s*[x×*]\s*(\d+(?:\s*[-–/]\s*\d+)?)\s*[x×*]\s*(\d+(?:[,.]\d+)?)\s*(?:kg|kgs)?/gi;
+const SETS_REPS_WEIGHT = /(\d+)\s*[x×*c]\s*(\d+(?:\s*[-–/]\s*\d+)?)\s*[x×*c]\s*(\d+(?:[,.]\d+)?)\s*(?:kg|kgs)?/gi;
 /** "3 series de 8", "4 sets x 10". */
 const SERIES_DE = /(\d+)\s*(?:series?|sets?)\s*(?:de|x|×|a)?\s*(\d+(?:\s*[-–/]\s*\d+)?|amrap|m[aá]x(?:imo)?|fallo)/gi;
 
@@ -111,7 +113,7 @@ const REST_SEGMENT = /\b(?:rest|descanso|desc)\b\s*[:.]?\s*\d+(?:[,.]\d+)?\s*(?:
 const PCT_PATTERN = /(\d{1,3}(?:[,.]\d+)?)\s*%/;
 
 /** Peso suelto tras las series: "100", "132,5 kg", "@80kg". */
-const WEIGHT_PATTERN = /(?:^|[\s+@]|al\s+)(\d{1,3}(?:[,.]\d+)?)\s*(?:kg|kgs)?(?=$|[\s?)]|\b)/i;
+const WEIGHT_PATTERN = /(?:^|[\s+@]|al\s+)(\d{1,3}(?:[,.]\d+)?)\s*(?:kg|kgs)?(?=$|[\s?)]|[x×*c]|\b)/i;
 
 function stripAccents(s: string): string {
   return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -123,7 +125,11 @@ function toNumber(raw: string): number | undefined {
 }
 
 function normalizeLine(line: string): string {
-  return line.replace(/\s+/g, ' ').trim();
+  return line
+    .replace(/[“”″]/g, '"')
+    .replace(/(\d)\s*[cC]\s*(\d)/g, '$1x$2')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /** "Semana 1", "SEMANA 3:", "Week 2" → 1, 3, 2 */
@@ -299,9 +305,9 @@ function parsePrescriptions(text: string): Prescription[] {
     // no se confunda con él. Lo que quede al final, si es un número, es el peso.
     let rest = tail;
 
-    const rpeMatch = /(?:@|\brpe)\s*(\d+(?:[,.]\d+)?)(?!\s*%)/i.exec(rest);
+    const rpeMatch = /(?:@|\brpe)\s*(\d+(?:[,.]\d+)?(?:\s*[-–]\s*\d+(?:[,.]\d+)?)?)(?!\s*%)/i.exec(rest);
     if (rpeMatch) {
-      rpe = rpeMatch[1].replace(',', '.');
+      rpe = rpeMatch[1].replace(',', '.').replace(/\s+/g, '');
       rest = rest.replace(rpeMatch[0], ' ');
     }
 
@@ -445,12 +451,70 @@ function exerciseNameKey(name: string): string {
  */
 const LIFT_KEYS: Record<string, 'squat' | 'bench' | 'deadlift'> = {
   sentadilla: 'squat', sentadillatrasera: 'squat', squat: 'squat', backsquat: 'squat', sq: 'squat',
+  sqlb: 'squat', sentadillalowbar: 'squat',
   pressbanca: 'bench', banca: 'bench', bench: 'bench', benchpress: 'bench', bp: 'bench',
   pesomuerto: 'deadlift', deadlift: 'deadlift', dl: 'deadlift', pm: 'deadlift',
+  pesomuertoconvencional: 'deadlift', conventionaldl: 'deadlift',
 };
 
 function matchLinkedLift(name: string): 'squat' | 'bench' | 'deadlift' | undefined {
-  return LIFT_KEYS[exerciseNameKey(name)];
+  const key = exerciseNameKey(name);
+  if (/bulgar|hack|goblet|frontal|frontsquat|legpress|hipthrust|extension|curl|remo|row|facepull|ohp|militar|unilateral|contralateral/.test(key)) {
+    return undefined;
+  }
+  if (LIFT_KEYS[key]) return LIFT_KEYS[key];
+  if (/(?:^|pause|pin|tempo|spoto|larsen)/.test(key) && /(?:sqlb|squat|sentadilla)/.test(key)) return 'squat';
+  if (/(?:pause|spoto|larsen|tempo|pin)/.test(key) && /(?:bp|banca|bench)/.test(key)) return 'bench';
+  if (/(?:pause|deficit|convencional|conventional|sumo)/.test(key) && /(?:dl|deadlift|pesomuerto)/.test(key)) {
+    return 'deadlift';
+  }
+  if (/\bsqlb\b|^sq\b|sentadilla/.test(key)) return 'squat';
+  if (/\bbp\b|pressbanca|bench/.test(key)) return 'bench';
+  if (/\bdl\b|deadlift|pesomuerto/.test(key)) return 'deadlift';
+  return undefined;
+}
+
+/** Abreviaturas habituales del entrenador → nombre que se lee en la app. */
+function prettyExerciseName(raw: string): string {
+  let name = raw.replace(/[:：]+\s*$/, '').trim();
+  const rules: Array<[RegExp, string]> = [
+    [/pause\s+sq\s*lb/i, 'Sentadilla low bar con pausa'],
+    [/pin\s+sq\s*lb/i, 'Sentadilla low bar a pins'],
+    [/\bsq\s*lb\b/i, 'Sentadilla low bar'],
+    [/deficit\s+conventional\s+dl/i, 'Peso muerto convencional a déficit'],
+    [/pause\s+conventional\s+dl/i, 'Peso muerto convencional con pausa'],
+    [/conventional\s+dl/i, 'Peso muerto convencional'],
+    [/tempo\s+\d+"\s*\+\s*pause\s+bp/i, 'Press banca tempo + pausa'],
+    [/spoto\s+\d+"\s*bp/i, 'Press banca Spoto'],
+    [/larsen\s+bp/i, 'Press banca Larsen'],
+    [/pause\s+bp/i, 'Press banca con pausa'],
+    [/\bdb\s+ohp\b/i, 'Press militar con mancuernas'],
+    [/\bohp\b/i, 'Press militar'],
+    [/\bdb\s+contralateral\s+bulgarian\s+sq\b/i, 'Sentadilla búlgara contralateral con mancuerna'],
+    [/\bunilateral\s+db\s+bp\b/i, 'Press banca unilateral con mancuerna'],
+    [/\bunilateral\s+db\s+row\b/i, 'Remo unilateral con mancuerna'],
+    [/pause\s+\d+"\s+hamstring\s+curl/i, 'Curl femoral con pausa'],
+    [/curl\s+up\s+mcguill/i, 'Curl-up McGill'],
+    [/mini\s+band\s+hip\s+thrust/i, 'Hip thrust con miniband'],
+    [/pause\s+adductor\s+machine/i, 'Aductor en máquina con pausa'],
+    [/unilateral\s+half\s+kneeling\s+(?:kb|kettlebell)\s+bottom\s+up\s+military\s+press/i, 'Press militar arrodillado unilateral con kettlebell'],
+    [/unilateral\s+leg\s+extension/i, 'Extensión de cuádriceps unilateral'],
+    [/row\s+machine/i, 'Remo en máquina'],
+    [/face\s+pull/i, 'Face pull'],
+    [/rope\s+triceps\s+extension/i, 'Extensión de tríceps con cuerda'],
+    [/triceps\s+kickback/i, 'Patada de tríceps'],
+    [/lumbar\s+hyperextension/i, 'Hiperextensión lumbar'],
+    [/leg\s+press/i, 'Prensa de piernas'],
+  ];
+  for (const [re, pretty] of rules) {
+    if (re.test(name)) return pretty;
+  }
+  return name
+    .replace(/\bDB\b/g, 'mancuerna')
+    .replace(/\bKB\b/g, 'kettlebell')
+    .replace(/\bBP\b/g, 'press banca')
+    .replace(/\bDL\b/g, 'peso muerto')
+    .replace(/\bSQ\b/g, 'sentadilla');
 }
 
 function prescriptionsToExercise(
@@ -466,11 +530,13 @@ function prescriptionsToExercise(
   const repsPerSet: string[] = [];
   const rpePerSet: string[] = [];
   const pctPerSet: number[] = [];
+  const weightPerSet: number[] = [];
   for (const p of prescriptions) {
     for (let i = 0; i < p.sets; i++) {
       repsPerSet.push(p.reps);
       rpePerSet.push(p.rpe || '');
       pctPerSet.push(p.pct ?? 0);
+      weightPerSet.push(p.weight ?? 0);
     }
   }
   const multi = prescriptions.length > 1;
@@ -478,39 +544,38 @@ function prescriptionsToExercise(
   // Solo tiene sentido guardar el porcentaje por serie si los bloques no coinciden.
   const anyPct = pctPerSet.some(p => p > 0);
   const variesPct = anyPct && pctPerSet.some(p => p !== pctPerSet[0]);
+  const anyWeight = weightPerSet.some(w => w > 0);
 
-  // `weight` es un único valor, así que en un top + descargas ("1x6 132,5 3x6 107,5")
-  // solo cabe el primero. El resto se escribe en el esquema para que el atleta lo vea
-  // en lugar de perderse.
-  const weights = prescriptions.map(p => p.weight);
-  const variesWeight = weights.some(w => w !== undefined && w !== weights[0]);
-
-  const linkedLift = matchLinkedLift(name);
+  const displayName = prettyExerciseName(name);
+  const linkedLift = matchLinkedLift(name) ?? matchLinkedLift(displayName);
 
   return {
-    name,
+    name: displayName,
     sets,
     reps: first.reps,
     weight: first.weight,
+    ...(anyWeight ? { weightPerSet } : {}),
     ...(first.pct !== undefined ? { pct: first.pct } : {}),
     ...(linkedLift ? { linkedLift } : {}),
     rpe: uniqueRpes.length ? uniqueRpes.join(' · ') : first.rpe,
     mode: first.mode,
     note,
     raw,
+    repsPerSet,
+    rpePerSet,
     ...(multi
       ? {
           setScheme: prescriptions
             .map(p => {
-              const load = variesWeight && p.weight !== undefined ? ` (${formatKg(p.weight)})` : '';
+              const load = p.weight !== undefined ? ` (${formatKg(p.weight)})` : '';
               return `${p.sets}×${p.reps}${load}`;
             })
             .join(' + '),
-          repsPerSet,
-          rpePerSet,
           ...(variesPct ? { pctPerSet } : {}),
         }
-      : {}),
+      : variesPct
+        ? { pctPerSet }
+        : {}),
   };
 }
 
@@ -543,16 +608,18 @@ function collapseToPrescriptions(ex: ParsedExercise): Prescription[] {
     const perRpe = (ex.rpePerSet?.[i] || '').trim();
     const rpe = perRpe || (ex.rpe && !/[·/,]/.test(ex.rpe) ? ex.rpe : undefined);
     const pct = ex.pctPerSet?.[i] || ex.pct;
+    const weight = ex.weightPerSet?.[i] || ex.weight;
     let count = 1;
     while (
       i + count < n &&
       (ex.repsPerSet?.[i + count] ?? ex.reps) === reps &&
       (ex.rpePerSet?.[i + count] || ex.rpe) === rpe &&
-      (ex.pctPerSet?.[i + count] || ex.pct) === pct
+      (ex.pctPerSet?.[i + count] || ex.pct) === pct &&
+      (ex.weightPerSet?.[i + count] || ex.weight) === weight
     ) {
       count++;
     }
-    out.push({ sets: count, reps, rpe, pct, mode: ex.mode, weight: ex.weight });
+    out.push({ sets: count, reps, rpe, pct, mode: ex.mode, weight });
     i += count;
   }
   return out;
@@ -702,9 +769,23 @@ export function parseCoachPlan(rawText: string): ParsedPlan {
     if (/\d/.test(line) && line.length < 120) unparsedLines.push(line);
   }
 
+  const kept: ParsedWeek[] = [];
   for (const w of weeks) {
     w.days.sort((a, b) => a.dayIndex - b.dayIndex);
-    if (w.days.length === 0) warnings.push(`${w.label} no tenía ningún día con ejercicios.`);
+    w.days = w.days.filter((d) => d.exercises.length > 0);
+    if (w.days.length === 0) {
+      warnings.push(`${w.label} no tenía ningún día con ejercicios; se ha omitido.`);
+      continue;
+    }
+    kept.push(w);
+  }
+  weeks.length = 0;
+  weeks.push(...kept);
+
+  for (let dayIdx = 0; dayIdx < 7; dayIdx++) {
+    const hasWork = weeks.some((w) => w.days.some((d) => d.dayIndex === dayIdx && d.exercises.length > 0));
+    if (hasWork) dayTypes[dayIdx] = 'workout';
+    else if (dayTypes[dayIdx] === 'workout' || dayTypes[dayIdx] == null) dayTypes[dayIdx] = 'rest';
   }
 
   if (weeks.length === 0) {

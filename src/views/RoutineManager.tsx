@@ -20,6 +20,7 @@ import { Input } from '@/src/components/ui/Input';
 import { cn } from '@/src/lib/utils';
 import { VIEW_TRANSITION } from '@/src/lib/motionPresets';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
+import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
 
 /** Al crear: una semana que se copia, o un ciclo de N semanas distintas. */
 type PlanShape = 'repeat' | 'cycle';
@@ -47,6 +48,8 @@ interface RoutineManagerViewProps {
   onRenameRoutine: (routineId: string, name: string) => void;
   onDeleteRoutine: (routineId: string) => void | Promise<void>;
   onToggleHiddenRoutine?: (routineId: string) => void;
+  /** Tick desde Progreso: abre el modal de crear. */
+  openCreateSignal?: number;
 }
 
 export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
@@ -60,6 +63,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
   onRenameRoutine,
   onDeleteRoutine,
   onToggleHiddenRoutine,
+  openCreateSignal = 0,
 }) => {
   const deleteInFlight = deleteRoutineLoadingId != null;
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -69,6 +73,13 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
   const [importAfter, setImportAfter] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
+
+  useIncrementSignal('routine-create', openCreateSignal, () => {
+    setPlanShape('cycle');
+    setCycleWeeks(4);
+    setImportAfter(false);
+    setShowCreateModal(true);
+  });
 
   const handleCreate = async () => {
     if (createRoutineLoading) return;
@@ -110,54 +121,83 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
   };
   useEscapeClose(showCreateModal && !createRoutineLoading, closeCreateModal);
 
+  const openCreate = () => {
+    setPlanShape('cycle');
+    setCycleWeeks(4);
+    setImportAfter(false);
+    setShowCreateModal(true);
+  };
+
   return (
     <motion.div
       initial={{ opacity: 0, x: 20 }}
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: -20 }}
       transition={VIEW_TRANSITION}
-      className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-28 sm:pb-32"
+      className="mx-auto max-w-5xl px-4 pb-28 pt-6 sm:px-6 sm:pb-32 sm:pt-8"
     >
-      <header className="mb-6 sm:mb-8 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onBack}
-            disabled={createRoutineLoading || deleteInFlight}
-            className="rounded-xl border-2"
-          >
-            <ArrowLeft size={14} />
-          </Button>
-          <div>
-            <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">Rutinas</h1>
-            <p className="text-sm text-slate-500 dark:text-slate-400">
-              Al crear, elige cuántas semanas dura el ciclo. Luego la rellenas a mano o con un archivo.
-            </p>
-          </div>
+      <header className="mb-6 flex items-center gap-3 sm:mb-8">
+        <button
+          type="button"
+          onClick={onBack}
+          disabled={createRoutineLoading || deleteInFlight}
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/50 bg-white/70 text-slate-600 shadow-sm backdrop-blur-xl disabled:opacity-40 dark:border-white/10 dark:bg-slate-800/70 dark:text-slate-200"
+          aria-label="Volver"
+        >
+          <ArrowLeft size={16} />
+        </button>
+        <div className="min-w-0 flex-1">
+          <h1 className="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">Rutinas</h1>
         </div>
+        {routines.length > 0 && (
+          <button
+            type="button"
+            onClick={openCreate}
+            disabled={createRoutineLoading || deleteInFlight}
+            className="inline-flex h-10 items-center gap-1.5 rounded-full bg-indigo-600 px-3.5 text-sm font-semibold text-white disabled:opacity-40"
+          >
+            {createRoutineLoading ? <Loader2 size={14} className="animate-spin" /> : <Plus size={16} />}
+            Nueva
+          </button>
+        )}
       </header>
 
-      <section className="mb-6">
-        <Button
-          variant="primary"
-          onClick={() => {
-            setPlanShape('cycle');
-            setCycleWeeks(4);
-            setImportAfter(false);
-            setShowCreateModal(true);
-          }}
-          disabled={createRoutineLoading || deleteInFlight}
-          className="w-full sm:w-auto rounded-xl"
-        >
-          {createRoutineLoading ? (
-            <Loader2 size={14} className="animate-spin shrink-0" />
-          ) : (
-            <Plus size={14} className="mr-1" />
-          )}
-          {createRoutineLoading ? 'Creando…' : 'Crear rutina'}
-        </Button>
-      </section>
+      {routines.length === 0 && (
+        <div className="flex min-h-[calc(100dvh-16rem)] items-center justify-center">
+            <div className="relative w-full overflow-hidden rounded-[28px] border border-white/50 bg-white/70 px-6 py-12 text-center shadow-xl shadow-slate-900/10 backdrop-blur-2xl dark:border-white/10 dark:bg-slate-900/65">
+            <div className="pointer-events-none absolute -left-16 -top-16 h-44 w-44 rounded-full bg-indigo-400/25 blur-3xl" />
+            <div className="pointer-events-none absolute -bottom-20 -right-12 h-48 w-48 rounded-full bg-violet-400/20 blur-3xl" />
+            <span className="relative mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-[22px] bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-lg shadow-indigo-500/35">
+              <Dumbbell size={28} />
+            </span>
+            <h2 className="relative text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">
+              Empieza tu primera rutina
+            </h2>
+            <p className="relative mx-auto mt-2 max-w-[16.5rem] text-sm leading-relaxed text-slate-500 dark:text-slate-400">
+              Elige cuántas semanas dura el ciclo. Luego la rellenas a mano o con un archivo.
+            </p>
+            <Button
+              variant="primary"
+              className="relative mx-auto mt-6 h-12 w-full max-w-xs rounded-2xl"
+              onClick={openCreate}
+              disabled={createRoutineLoading || deleteInFlight}
+            >
+              {createRoutineLoading ? <Loader2 size={16} className="animate-spin" /> : <Plus size={18} />}
+              {createRoutineLoading ? 'Creando…' : 'Crear rutina'}
+            </Button>
+            <div className="relative mt-6 flex flex-wrap items-center justify-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-white/70 bg-white/70 px-3 py-1 text-[11px] font-semibold text-slate-500 dark:border-white/10 dark:bg-slate-800/70 dark:text-slate-400">
+                <Layers size={12} />
+                Ciclo de semanas
+              </span>
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-white/70 bg-white/70 px-3 py-1 text-[11px] font-semibold text-slate-500 dark:border-white/10 dark:bg-slate-800/70 dark:text-slate-400">
+                <FileUp size={12} />
+                O un archivo
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal crear rutina */}
       {showCreateModal && typeof document !== 'undefined' && createPortal(
@@ -349,20 +389,21 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
         document.body
       )}
 
-      <section className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      {routines.length > 0 && (
+      <section className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {routines.map((routine) => (
           <Card
             key={routine.id}
             padding="md"
-            rounded="xl"
+            rounded="2xl"
             className={cn(
-              'relative overflow-hidden border-2 transition-all',
+              'relative overflow-hidden border transition-all',
               deleteRoutineLoadingId === routine.id
                 ? 'cursor-wait'
-                : 'cursor-pointer hover:scale-[1.02] active:scale-[0.98]',
+                : 'cursor-pointer active:scale-[0.99]',
               routine.isActive
-                ? 'border-indigo-500 bg-indigo-600 text-white shadow-lg shadow-indigo-200 dark:shadow-lg dark:shadow-indigo-900/50'
-                : 'border-slate-100 bg-white dark:border-slate-700 dark:bg-slate-800 hover:border-indigo-300 dark:hover:border-indigo-500 dark:shadow-lg dark:shadow-black/30'
+                ? 'border-indigo-200 bg-indigo-50/90 shadow-sm dark:border-indigo-800 dark:bg-indigo-950/40'
+                : 'border-slate-200/80 bg-white/90 hover:border-indigo-200 dark:border-slate-700 dark:bg-slate-800/70 dark:hover:border-indigo-700'
             )}
             onClick={(e) => {
               if (deleteInFlight || activateRoutineLoadingId != null) return;
@@ -397,9 +438,12 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                 </p>
               </div>
             )}
-            <div className="flex items-start justify-between gap-3 mb-3">
-              <div className="flex-1">
-                <span className={cn('text-[10px] font-black uppercase tracking-widest', routine.isActive ? 'text-indigo-100' : 'text-slate-400 dark:text-slate-500')}>
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <span className={cn(
+                  'text-[11px] font-medium',
+                  routine.isActive ? 'text-indigo-600 dark:text-indigo-300' : 'text-slate-400 dark:text-slate-500'
+                )}>
                   {routine.isActive ? 'Activa' : 'Rutina'}
                 </span>
                 {editingId === routine.id ? (
@@ -407,10 +451,10 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                     value={editingName}
                     onChange={(e) => setEditingName(e.target.value)}
                     onClick={(e) => e.stopPropagation()}
-                    className="mt-1 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100"
+                    className="mt-1 bg-white text-slate-900 dark:bg-slate-700 dark:text-slate-100"
                   />
                 ) : (
-                  <h3 className={cn('text-xl font-black mt-1', routine.isActive ? 'text-white' : 'text-slate-900 dark:text-slate-100')}>{routine.name}</h3>
+                  <h3 className="mt-0.5 truncate text-lg font-semibold text-slate-900 dark:text-slate-100">{routine.name}</h3>
                 )}
               </div>
             </div>
@@ -421,14 +465,10 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                   onClick={() => onToggleHiddenRoutine(routine.id)}
                   disabled={deleteInFlight}
                   className={cn(
-                    "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold border-2 transition-colors",
-                    routine.isActive
-                      ? routine.hiddenFromSocial
-                        ? "border-amber-300/80 bg-amber-400/30 text-amber-100 dark:border-amber-400/80 dark:bg-amber-500/30 dark:text-amber-100"
-                        : "border-white/40 bg-white/20 text-white hover:bg-white/30 dark:border-white/50 dark:bg-white/20 dark:text-white dark:hover:bg-white/30"
-                      : routine.hiddenFromSocial
-                        ? "border-amber-300 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400"
-                        : "border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:border-slate-300 dark:hover:border-slate-500"
+                    'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-medium ring-1 transition-colors',
+                    routine.hiddenFromSocial
+                      ? 'bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-800'
+                      : 'bg-white text-slate-500 ring-slate-200 hover:text-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-600'
                   )}
                   title={routine.hiddenFromSocial ? "Ocultar en perfil social (activado)" : "Mostrar en perfil social"}
                 >
@@ -442,7 +482,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                   size="sm"
                   onClick={() => onActivateRoutine(routine.id)}
                   disabled={deleteInFlight || activateRoutineLoadingId != null}
-                  className="rounded-lg border-2"
+                  className="rounded-full"
                 >
                   {activateRoutineLoadingId === routine.id ? <><Loader2 size={14} className="animate-spin mr-1" /> Activando…</> : 'Activar'}
                 </Button>
@@ -460,10 +500,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                     setEditingName('');
                   }}
                   disabled={deleteInFlight}
-                  className={cn(
-                    'rounded-lg border-2',
-                    routine.isActive && '!bg-white/20 !border-white/50 text-white hover:!bg-white/30 dark:!bg-white/20 dark:!border-white/50 dark:hover:!bg-white/30'
-                  )}
+                  className="rounded-full"
                 >
                   Guardar
                 </Button>
@@ -476,10 +513,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                     setEditingName(routine.name);
                   }}
                   disabled={deleteInFlight}
-                  className={cn(
-                    'rounded-lg border-2',
-                    routine.isActive && '!bg-white/20 !border-white/50 text-white hover:!bg-white/30 dark:!bg-white/20 dark:!border-white/50 dark:hover:!bg-white/30'
-                  )}
+                  className="rounded-full"
                 >
                   <Pencil size={12} className="mr-1" />
                   Renombrar
@@ -491,12 +525,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                 size="sm"
                 onClick={() => void onDeleteRoutine(routine.id)}
                 disabled={deleteInFlight}
-                className={cn(
-                  'rounded-lg',
-                  routine.isActive
-                    ? '!bg-transparent text-white/90 hover:!bg-white/20 hover:text-white dark:text-white/90 dark:hover:!bg-white/20 dark:hover:text-white'
-                    : 'text-rose-500 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-900/30'
-                )}
+                className="rounded-full text-rose-500 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-900/30"
               >
                 {deleteRoutineLoadingId === routine.id ? (
                   <Loader2 size={12} className="mr-1 animate-spin shrink-0" />
@@ -509,6 +538,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
           </Card>
         ))}
       </section>
+      )}
     </motion.div>
   );
 };

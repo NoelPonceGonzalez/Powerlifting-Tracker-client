@@ -35,6 +35,7 @@ function toPlannedExercise(
     reps: repsIsRange ? pe.reps : parseInt(pe.reps, 10) || 1,
     mode: pe.mode,
     ...(pe.mode === 'weight' && pe.weight !== undefined ? { weight: pe.weight } : {}),
+    ...(pe.mode === 'weight' && pe.weightPerSet?.some((w) => w > 0) ? { weightPerSet: pe.weightPerSet } : {}),
     // Carga relativa al maximal: la app calcula los kilos con el RM del atleta, así que
     // el mismo plan sirve aunque el RM cambie.
     ...(pe.pct !== undefined ? { pct: pe.pct } : {}),
@@ -132,13 +133,30 @@ export function buildEmptyWeekTemplate(reference: TrainingWeek, plan: ParsedPlan
  * Las posiciones del ciclo que el plan no cubre (documento de 2 semanas en un ciclo de 4)
  * conservan lo que hubiera en la plantilla anterior.
  */
+function weekHasExercises(week: TrainingWeek | undefined): boolean {
+  return !!week?.days.some((d) => (d.exercises?.length ?? 0) > 0);
+}
+
+function restOnlyWeek(reference: TrainingWeek, plan: ParsedPlan): TrainingWeek {
+  return {
+    ...reference,
+    days: reference.days.map((day, dayIdx) => ({
+      ...day,
+      type: plan.dayTypes[dayIdx] ?? ('rest' as DayType),
+      exercises: [],
+    })),
+  };
+}
+
 export function buildCycleTemplateFromImport(
   appliedWeeks: TrainingWeek[],
   targetWeekNumbers: number[],
   cycleLength: number,
-  previousTemplate: TrainingWeek[]
+  previousTemplate: TrainingWeek[],
+  plan?: ParsedPlan
 ): TrainingWeek[] {
   const cl = Math.max(1, cycleLength);
+  const importedSlots = new Set<number>();
   const bySlot = new Map<number, TrainingWeek>();
 
   previousTemplate.forEach((week) => {
@@ -148,15 +166,21 @@ export function buildCycleTemplateFromImport(
 
   targetWeekNumbers.forEach((weekNumber) => {
     const week = appliedWeeks.find((w) => w.number === weekNumber);
-    if (week) bySlot.set(getWeekTypeSlot(weekNumber, cl), week);
+    if (week) {
+      const slot = getWeekTypeSlot(weekNumber, cl);
+      bySlot.set(slot, week);
+      importedSlots.add(slot);
+    }
   });
 
+  const fallback = appliedWeeks[0] || previousTemplate[0];
   return Array.from({ length: cl }, (_, i) => i + 1).map((slot) => {
-    const week =
-      bySlot.get(slot) ||
-      appliedWeeks.find((w) => getWeekTypeSlot(w.number, cl) === slot) ||
-      appliedWeeks[0];
-    return normalizeTemplateWeek(week, slot);
+    const imported = importedSlots.has(slot) ? bySlot.get(slot) : undefined;
+    if (imported) return normalizeTemplateWeek(imported, slot);
+    const prev = bySlot.get(slot);
+    if (weekHasExercises(prev)) return normalizeTemplateWeek(prev!, slot);
+    const empty = plan && fallback ? restOnlyWeek(fallback, plan) : prev || fallback;
+    return normalizeTemplateWeek(empty, slot);
   });
 }
 
@@ -213,7 +237,13 @@ export function mergeCoachImportIntoRoutine<T extends CoachImportRoutineSlice>(
   const previousTemplate = r.baseTemplate?.length
     ? r.baseTemplate
     : deriveBaseTemplateFromWeeks(base, prevCycleLength);
-  const baseTemplate = buildCycleTemplateFromImport(weeks, targetWeekNumbers, cycleLength, previousTemplate);
+  const baseTemplate = buildCycleTemplateFromImport(
+    weeks,
+    targetWeekNumbers,
+    cycleLength,
+    previousTemplate,
+    opts.plan
+  );
 
   return {
     ...r,

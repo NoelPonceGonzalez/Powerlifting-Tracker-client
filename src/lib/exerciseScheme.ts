@@ -48,23 +48,32 @@ export function totalSets(blocks: ExerciseBlock[]): number {
   return blocks.reduce((n, b) => n + Math.max(1, b.sets), 0);
 }
 
+function weightAt(ex: PlannedExercise, setIndex: number): number | undefined {
+  const per = ex.weightPerSet?.[setIndex];
+  if (per != null && per > 0) return per;
+  if (ex.weight != null && ex.weight > 0) return ex.weight;
+  return undefined;
+}
+
 export function blocksFromPlanned(ex: PlannedExercise): ExerciseBlock[] {
-  if (ex.rpePerSet?.length || ex.repsPerSet?.length) {
+  if (ex.rpePerSet?.length || ex.repsPerSet?.length || ex.weightPerSet?.length) {
     const n = Math.max(1, ex.sets || 1);
     const blocks: ExerciseBlock[] = [];
     let i = 0;
     while (i < n) {
       const reps = String(ex.repsPerSet?.[i] ?? ex.reps ?? '');
       const rpe = (ex.rpePerSet?.[i] || '').trim() || undefined;
+      const weight = weightAt(ex, i);
       let count = 1;
       while (
         i + count < n &&
         String(ex.repsPerSet?.[i + count] ?? ex.reps ?? '') === reps &&
-        ((ex.rpePerSet?.[i + count] || '').trim() || undefined) === rpe
+        ((ex.rpePerSet?.[i + count] || '').trim() || undefined) === rpe &&
+        weightAt(ex, i + count) === weight
       ) {
         count++;
       }
-      blocks.push({ sets: count, reps, rpe });
+      blocks.push({ sets: count, reps, rpe, weight });
       i += count;
     }
     return blocks;
@@ -73,9 +82,14 @@ export function blocksFromPlanned(ex: PlannedExercise): ExerciseBlock[] {
     const parts = ex.setScheme.split(/\s*\+\s*/);
     const parsed = parts
       .map((p) => {
-        const m = /(\d+)\s*[x×]\s*(.+)/i.exec(p.trim());
+        const m = /(\d+)\s*[x×]\s*([^\s(]+)\s*(?:\((\d+(?:[,.]\d+)?)\s*kg\))?/i.exec(p.trim());
         if (!m) return null;
-        return { sets: parseInt(m[1], 10), reps: m[2].trim() } as ExerciseBlock;
+        const kg = m[3] ? parseFloat(m[3].replace(',', '.')) : undefined;
+        return {
+          sets: parseInt(m[1], 10),
+          reps: m[2].trim(),
+          weight: Number.isFinite(kg) ? kg : undefined,
+        } as ExerciseBlock;
       })
       .filter((b): b is ExerciseBlock => !!b);
     if (parsed.length) {
@@ -88,6 +102,7 @@ export function blocksFromPlanned(ex: PlannedExercise): ExerciseBlock[] {
       sets: Math.max(1, ex.sets || 1),
       reps: String(ex.reps ?? ''),
       rpe: ex.targetRpe,
+      weight: ex.weight,
     },
   ];
 }
@@ -103,6 +118,8 @@ export function combinePlannedExercises(a: PlannedExercise, b: PlannedExercise):
     setScheme: formatSetScheme(blocks),
     rpePerSet: expandRpePerSet(blocks),
     repsPerSet: expandRepsPerSet(blocks),
+    weightPerSet: blocks.flatMap((b) => Array.from({ length: b.sets }, () => b.weight ?? 0)),
+    weight: blocks.find((b) => b.weight && b.weight > 0)?.weight,
     targetRpe: formatRpeSequence(blocks),
     coachNote: notes.length ? notes.join(' · ') : a.coachNote,
     mergedFromIds: extraIds.length ? extraIds : undefined,
@@ -129,13 +146,23 @@ export function exerciseSchemeLabel(ex: PlannedExercise): string | undefined {
   return undefined;
 }
 
+/** Fila de rutina: 1×3+4×4. Si hay más de 2 bloques, 1×3+4×4 +2. */
+export function compactSchemeLabel(ex: PlannedExercise): string | undefined {
+  const blocks = blocksFromPlanned(ex);
+  if (blocks.length < 2) return undefined;
+  const shown = blocks.slice(0, 2).map(b => `${b.sets}×${b.reps}`);
+  const extra = blocks.length - 2;
+  return extra > 0 ? `${shown.join('+')} +${extra}` : shown.join('+');
+}
+
 /** Varios bloques del mismo movimiento (1×2 @8.5 y luego 3×4 @6.5). */
 export function isMultiBlock(ex: PlannedExercise): boolean {
   return blocksFromPlanned(ex).length > 1;
 }
 
 export function formatBlockChip(block: ExerciseBlock): string {
-  return block.rpe ? `${block.sets}×${block.reps} @${block.rpe}` : `${block.sets}×${block.reps}`;
+  const load = block.weight && block.weight > 0 ? ` ${String(block.weight).replace('.', ',')}kg` : '';
+  return block.rpe ? `${block.sets}×${block.reps}${load} @${block.rpe}` : `${block.sets}×${block.reps}${load}`;
 }
 
 export function exerciseRpeLabel(ex: PlannedExercise): string | undefined {
@@ -150,14 +177,40 @@ export function exerciseRpeLabel(ex: PlannedExercise): string | undefined {
   return ex.targetRpe || undefined;
 }
 
-export function plannedRepsForSet(ex: PlannedExercise, setIndex: number): number {
-  const per = ex.repsPerSet?.[setIndex];
-  if (per != null && String(per).trim() !== '') {
-    const n = parseInt(String(per), 10);
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-  const n = parseInt(String(ex.reps ?? ''), 10);
+function firstRepsNumber(raw: string): number {
+  const n = parseInt(String(raw).replace(',', '.'), 10);
   return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** Texto del plan para esa serie: "6", "10-12" o "AMRAP". */
+export function plannedRepsLabelForSet(ex: PlannedExercise, setIndex: number): string {
+  const per = ex.repsPerSet?.[setIndex];
+  if (per != null && String(per).trim() !== '' && String(per).trim() !== '—') return String(per).trim();
+  const fallback = String(ex.reps ?? '').trim();
+  return fallback && fallback !== '—' ? fallback : '';
+}
+
+export function plannedRepsForSet(ex: PlannedExercise, setIndex: number): number {
+  return firstRepsNumber(plannedRepsLabelForSet(ex, setIndex));
+}
+
+/**
+ * Kilos que escribió el entrenador para esa serie.
+ * Si el Word trae 142,5 no se sustituye por RM × 75 %.
+ */
+export function plannedWeightForSet(ex: PlannedExercise, setIndex: number): number {
+  const per = ex.weightPerSet?.[setIndex];
+  if (per != null && per > 0) return per;
+  if (ex.weight != null && ex.weight > 0) return ex.weight;
+  if (ex.setScheme) {
+    const blocks = blocksFromPlanned(ex);
+    let cursor = 0;
+    for (const b of blocks) {
+      if (setIndex < cursor + b.sets) return b.weight && b.weight > 0 ? b.weight : 0;
+      cursor += b.sets;
+    }
+  }
+  return 0;
 }
 
 /** RPE prescrito de esa serie; no usa el texto combinado («8.5 · 6.5»). */

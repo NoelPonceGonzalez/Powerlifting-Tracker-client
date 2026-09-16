@@ -1,17 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
-import { ArrowLeft, GraduationCap, Image as ImageIcon, Loader2, LogOut, MessageCircle, Paperclip, Pencil, Plus, Search, Send, UserMinus, Users, X } from 'lucide-react';
+import { ArrowLeft, Bell, BellOff, Dumbbell, GraduationCap, Image as ImageIcon, Loader2, LogOut, MessageCircle, Paperclip, Pencil, Pin, Search, Send, Trash2, User, UserMinus, Users } from 'lucide-react';
 import { Avatar } from '@/src/components/social/MediaPost';
+import { Button } from '@/src/components/ui/Button';
+import { GlassModal } from '@/src/components/ui/GlassModal';
 import { cn } from '@/src/lib/utils';
 import { apiGet, mediaUrl } from '@/src/lib/api';
 import { isRealtimeOpen, subscribeChatRealtime } from '@/src/lib/chatRealtime';
-import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 import type { Friend, UserSearchResult } from '@/src/types';
 import {
   addChatGroupMembers,
-  createChatGroup,
+  deleteChat,
+  deleteGroupChat,
   fetchChatMessages,
   fetchChats,
   fetchGroupMessages,
@@ -27,86 +29,302 @@ import {
   type ChatLine,
   type ChatThread,
   type FeedAuthor,
+  type PublicProfile,
 } from '@/src/lib/feedApi';
+
+type PendingDelete =
+  | { kind: 'dm'; peerId: string; name: string }
+  | { kind: 'group'; groupId: string; name: string; team?: boolean };
 
 interface ChatTabProps {
   myId: string;
+  myName?: string;
+  myAvatar?: string | null;
   friends: Friend[];
   startWith?: string | null;
+  pendingCount?: number;
+  peopleTick?: number;
   onOpened?: () => void;
-  onOpenProfile?: (userId: string) => void;
+  onOpenMini?: (person: FeedAuthor) => void;
+  onOpenPeople?: () => void;
   onConversationChange?: (open: boolean) => void;
-  writeSignal?: number;
 }
 
 type OpenChat =
   | { kind: 'dm'; peer: FeedAuthor }
   | { kind: 'group'; group: ChatGroupCard };
 
-type Composer = 'closed' | 'menu' | 'dm' | 'group';
-
 function threadKey(thread: ChatThread): string {
   return thread.kind === 'group' ? `g:${thread.group?.id}` : `d:${thread.peer?.id}`;
 }
 
+type ChatPref = { pinned?: boolean; muted?: boolean };
+
+function prefsStore(myId: string) {
+  return `pl-chat-prefs:${myId}`;
+}
+
+function readPrefs(myId: string): Record<string, ChatPref> {
+  try {
+    const raw = localStorage.getItem(prefsStore(myId));
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writePrefs(myId: string, next: Record<string, ChatPref>) {
+  localStorage.setItem(prefsStore(myId), JSON.stringify(next));
+}
+
+function hoursLeftLabel(expiresAt: string): string {
+  const ms = new Date(expiresAt).getTime() - Date.now();
+  if (ms <= 0) return 'caducó';
+  const h = Math.max(1, Math.round(ms / 3600000));
+  return `${h} h`;
+}
+
+function inboxPreview(text?: string): string {
+  if (!text) return 'Aún no habéis hablado';
+  if (/^e2e/i.test(text)) return 'Chat listo';
+  return text;
+}
+
+const STICKY = { type: 'spring' as const, stiffness: 220, damping: 14, mass: 0.95 };
+
 function InboxRow({
   row,
   onOpen,
+  highlighted,
+  onLongPress,
+  onDismiss,
+  onPin,
+  onMute,
+  onProfile,
+  onDelete,
 }: {
   row: ChatThread;
   onOpen: () => void;
+  highlighted?: boolean;
+  onLongPress?: () => void;
+  onDismiss?: () => void;
+  onPin?: () => void;
+  onMute?: () => void;
+  onProfile?: () => void;
+  onDelete?: () => void;
 }) {
   const isGroup = row.kind === 'group' && row.group;
   const name = isGroup ? row.group!.name : row.peer?.name || 'Chat';
+  const unread = row.unread > 0 && !row.muted;
+  const preview = inboxPreview(row.lastText);
+  const hold = useRef<number | null>(null);
+  const held = useRef(false);
+  const start = useRef<{ x: number; y: number } | null>(null);
+  const [pressing, setPressing] = useState(false);
+  const [sure, setSure] = useState(false);
+
+  useEffect(() => {
+    if (!highlighted) setSure(false);
+  }, [highlighted]);
+
+  const clearHold = () => {
+    if (hold.current != null) {
+      window.clearTimeout(hold.current);
+      hold.current = null;
+    }
+  };
+
+  const startHold = () => {
+    held.current = false;
+    hold.current = window.setTimeout(() => {
+      held.current = true;
+      setPressing(false);
+      onLongPress?.();
+    }, 380);
+  };
+
   return (
-    <motion.button
-      type="button"
-      onClick={onOpen}
+    <motion.div
       initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
+      animate={{
+        opacity: 1,
+        scaleX: pressing ? 1.055 : 1,
+        scaleY: pressing ? 0.9 : 1,
+        borderRadius: pressing || highlighted ? 22 : 0,
+      }}
+      exit={{ opacity: 0, height: 0 }}
+      transition={STICKY}
       className={cn(
-        'flex w-full items-center gap-3.5 rounded-2xl bg-white px-4 py-3.5 text-left shadow-sm dark:bg-slate-900',
-        row.isCoach && 'ring-1 ring-amber-200/80 dark:ring-amber-800/50'
+        'group origin-center border-b border-slate-100 last:border-0 dark:border-slate-800',
+        unread && !highlighted && 'bg-indigo-50/70 dark:bg-indigo-950/25',
+        highlighted && 'relative z-10 bg-white shadow-[0_10px_28px_-12px_rgba(15,23,42,0.28)] dark:bg-slate-800'
       )}
     >
-      {isGroup ? (
-        <span className="flex h-12 w-12 items-center justify-center rounded-full bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300">
-          <Users size={18} />
-        </span>
-      ) : (
-        <Face name={row.peer!.name} avatar={row.peer!.avatar} size={48} online={row.peer!.online} />
-      )}
-      <span className="min-w-0 flex-1">
-        <span className="flex items-center gap-2">
-          <span className="truncate text-[15px] font-semibold text-slate-900 dark:text-slate-100">{name}</span>
-          {row.isCoach && (
-            <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
-              <GraduationCap size={11} />
-              Entrenador
-            </span>
-          )}
-          {isGroup && (
-            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-              Grupo
-            </span>
-          )}
-          {row.waiting && (
-            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
-              Esperando
-            </span>
-          )}
-        </span>
-        <span className="mt-1 block truncate text-[13px] text-slate-400">{row.lastText || 'Aún no habéis hablado'}</span>
-      </span>
-      <span className="flex shrink-0 flex-col items-end gap-1.5">
-        {row.lastAt && <span className="text-[11px] text-slate-400">{timeAgo(row.lastAt)}</span>}
-        {row.unread > 0 && (
-          <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-indigo-600 px-1.5 text-[10px] font-semibold text-white">
-            {row.unread}
+      <button
+        type="button"
+        onClick={() => {
+          if (held.current) {
+            held.current = false;
+            return;
+          }
+          if (highlighted) {
+            onDismiss?.();
+            return;
+          }
+          onOpen();
+        }}
+        onPointerDown={e => {
+          start.current = { x: e.clientX, y: e.clientY };
+          setPressing(true);
+          startHold();
+        }}
+        onPointerMove={e => {
+          if (!start.current) return;
+          const dx = e.clientX - start.current.x;
+          const dy = e.clientY - start.current.y;
+          if (dx * dx + dy * dy > 100) {
+            clearHold();
+            setPressing(false);
+          }
+        }}
+        onPointerUp={() => {
+          clearHold();
+          setPressing(false);
+        }}
+        onPointerCancel={() => {
+          clearHold();
+          setPressing(false);
+        }}
+        onPointerLeave={() => {
+          clearHold();
+          setPressing(false);
+        }}
+        onContextMenu={e => {
+          e.preventDefault();
+        }}
+        className="flex min-w-0 w-full items-center gap-3 px-3.5 py-3 text-left"
+      >
+        {isGroup ? (
+          <span className={cn(
+            'flex h-[52px] w-[52px] shrink-0 items-center justify-center rounded-2xl',
+            row.group?.kind === 'team'
+              ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
+              : 'bg-indigo-100 text-indigo-600 dark:bg-indigo-950/60 dark:text-indigo-300'
+          )}>
+            {row.group?.kind === 'team' ? <Dumbbell size={20} /> : <Users size={20} />}
           </span>
+        ) : (
+          <Face name={row.peer!.name} avatar={row.peer!.avatar} size={52} online={row.peer!.online} />
         )}
-      </span>
-    </motion.button>
+        <span className="min-w-0 flex-1">
+          <span className="flex items-baseline justify-between gap-2">
+            <span className={cn(
+              'truncate text-[15px] text-slate-900 dark:text-slate-100',
+              unread ? 'font-bold' : 'font-semibold'
+            )}>
+              {name}
+            </span>
+            <span className="flex shrink-0 items-center gap-1">
+              {row.pinned && <Pin size={11} className="text-indigo-500" />}
+              {row.muted && <BellOff size={11} className="text-slate-400" />}
+              {row.lastAt && (
+                <span className={cn(
+                  'text-[11px]',
+                  unread ? 'font-semibold text-indigo-600 dark:text-indigo-300' : 'text-slate-400'
+                )}>
+                  {timeAgo(row.lastAt)}
+                </span>
+              )}
+            </span>
+          </span>
+          <span className="mt-0.5 flex items-center gap-1.5">
+            {row.isCoach && <GraduationCap size={12} className="shrink-0 text-amber-500" />}
+            {isGroup && (
+              <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                {row.group?.kind === 'team' ? 'Equipo' : 'Grupo'}
+              </span>
+            )}
+            {row.waiting && (
+              <span className="shrink-0 text-[10px] font-semibold text-amber-600">Esperando</span>
+            )}
+            <span className={cn(
+              'min-w-0 truncate text-[13px]',
+              unread ? 'font-medium text-slate-700 dark:text-slate-200' : 'text-slate-400'
+            )}>
+              {preview}
+            </span>
+            {unread && (
+              <span className="ml-auto flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-indigo-600 px-1.5 text-[10px] font-bold text-white">
+                {row.unread}
+              </span>
+            )}
+          </span>
+        </span>
+      </button>
+      <AnimatePresence>
+        {highlighted && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={STICKY}
+            className="overflow-hidden"
+          >
+            <div className="flex flex-wrap justify-end gap-2 px-3.5 pb-2.5">
+              {row.peer && (
+                <button
+                  type="button"
+                  onClick={() => onProfile?.()}
+                  className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1.5 text-[12px] font-semibold text-slate-700 dark:bg-slate-700 dark:text-slate-100"
+                >
+                  <User size={12} />
+                  Perfil
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => onPin?.()}
+                className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1.5 text-[12px] font-semibold text-slate-700 dark:bg-slate-700 dark:text-slate-100"
+              >
+                <Pin size={12} />
+                {row.pinned ? 'Fijado' : 'Fijar'}
+              </button>
+              <button
+                type="button"
+                onClick={() => onMute?.()}
+                className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1.5 text-[12px] font-semibold text-slate-700 dark:bg-slate-700 dark:text-slate-100"
+              >
+                {row.muted ? <Bell size={12} /> : <BellOff size={12} />}
+                {row.muted ? 'Sonar' : 'Silenciar'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!sure) {
+                    setSure(true);
+                    return;
+                  }
+                  onDelete?.();
+                }}
+                className={cn(
+                  'inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-[12px] font-semibold',
+                  sure
+                    ? 'bg-rose-600 text-white'
+                    : 'bg-rose-50 text-rose-600 dark:bg-rose-950/50 dark:text-rose-300'
+                )}
+              >
+                <Trash2 size={12} />
+                {sure
+                  ? '¿Seguro?'
+                  : isGroup
+                    ? (row.group?.kind === 'team' ? 'Salir' : 'Salir')
+                    : 'Eliminar'}
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
   );
 }
 
@@ -131,7 +349,19 @@ function Face({
   );
 }
 
-export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOpened, onOpenProfile, onConversationChange, writeSignal = 0 }) => {
+export const ChatTab: React.FC<ChatTabProps> = ({
+  myId,
+  myName,
+  myAvatar,
+  friends,
+  startWith,
+  pendingCount = 0,
+  peopleTick = 0,
+  onOpened,
+  onOpenMini,
+  onOpenPeople,
+  onConversationChange,
+}) => {
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [coach, setCoach] = useState<FeedAuthor | null>(null);
   const [athletes, setAthletes] = useState<FeedAuthor[]>([]);
@@ -140,15 +370,10 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
   const [draft, setDraft] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
-  const [composer, setComposer] = useState<Composer>('closed');
-  const [groupName, setGroupName] = useState('');
-  const [pickedIds, setPickedIds] = useState<string[]>([]);
-  const [inviteExtras, setInviteExtras] = useState<FeedAuthor[]>([]);
   const [searchQ, setSearchQ] = useState('');
   const [searchHits, setSearchHits] = useState<FeedAuthor[]>([]);
-  const [creating, setCreating] = useState(false);
   const [waitingPeer, setWaitingPeer] = useState(false);
-  const [dmSearchQ, setDmSearchQ] = useState('');
+  const [prefs, setPrefs] = useState<Record<string, ChatPref>>(() => readPrefs(myId));
   const [peerOnline, setPeerOnline] = useState(false);
   const [typingLabel, setTypingLabel] = useState('');
   const [attach, setAttach] = useState<File | null>(null);
@@ -156,6 +381,10 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
   const [groupPanel, setGroupPanel] = useState(false);
   const [groupNameDraft, setGroupNameDraft] = useState('');
   const [addPick, setAddPick] = useState<string[]>([]);
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [actionRow, setActionRow] = useState<ChatThread | null>(null);
+  const [meCard, setMeCard] = useState<PublicProfile | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const lastTyped = useRef(0);
@@ -165,17 +394,21 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
     return () => onConversationChange?.(false);
   }, [open, onConversationChange]);
 
-  const closeComposer = useCallback(() => {
-    setComposer('closed');
-    setGroupName('');
-    setPickedIds([]);
-    setInviteExtras([]);
-    setSearchQ('');
-    setDmSearchQ('');
-  }, []);
+  useEscapeClose(!!actionRow, () => setActionRow(null));
 
-  useIncrementSignal('chat-write', writeSignal, () => setComposer('dm'));
-  useEscapeClose(composer !== 'closed', closeComposer);
+  useEffect(() => {
+    setPrefs(readPrefs(myId));
+  }, [myId]);
+
+  const patchPref = (row: ChatThread, patch: ChatPref) => {
+    const key = threadKey(row);
+    setPrefs(prev => {
+      const next = { ...prev, [key]: { ...prev[key], ...patch } };
+      writePrefs(myId, next);
+      return next;
+    });
+    setActionRow(prev => (prev && threadKey(prev) === key ? { ...prev, ...patch } : prev));
+  };
 
   const people = useMemo(() => {
     const byId = new Map<string, FeedAuthor>();
@@ -215,12 +448,6 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
     return () => window.clearTimeout(t);
   }, [searchQ, myId, friendIds]);
 
-  const visiblePeople = useMemo(() => {
-    const q = dmSearchQ.trim().toLowerCase();
-    if (!q) return people;
-    return people.filter(p => p.name.toLowerCase().includes(q));
-  }, [people, dmSearchQ]);
-
   const loadInbox = useCallback(async () => {
     try {
       const [inbox, me] = await Promise.all([
@@ -238,6 +465,18 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
   }, []);
 
   useEffect(() => {
+    let live = true;
+    fetchProfile(myId)
+      .then(p => {
+        if (live) setMeCard(p);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [myId, peopleTick]);
+
+  useEffect(() => {
     void loadInbox();
     const id = window.setInterval(() => {
       void loadInbox();
@@ -247,8 +486,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
 
   const openDm = useCallback(async (author: FeedAuthor) => {
     setOpen({ kind: 'dm', peer: author });
-    setComposer('closed');
-    setDmSearchQ('');
+    setActionRow(null);
     setGroupPanel(false);
     setAttach(null);
     setTypingLabel('');
@@ -265,7 +503,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
 
   const openGroup = useCallback(async (group: ChatGroupCard) => {
     setOpen({ kind: 'group', group });
-    setComposer('closed');
+    setActionRow(null);
     setGroupPanel(false);
     setAttach(null);
     setTypingLabel('');
@@ -359,52 +597,44 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
   }, [messages.length, open]);
 
   const rows = useMemo(() => {
-    const list: ChatThread[] = threads.map(t => ({
-      ...t,
-      kind: t.kind || (t.group ? 'group' : 'dm'),
-      isCoach: t.isCoach || (!!coach && t.peer?.id === coach.id),
-      waiting: !!t.waiting,
-    }));
-    const seenDm = new Set(list.filter(t => t.kind !== 'group').map(t => t.peer?.id));
-    if (coach && !seenDm.has(coach.id)) {
-      list.unshift({
-        kind: 'dm',
-        peer: coach,
-        lastText: 'Habla de la sesión, las marcas o el plan',
-        lastAt: '',
-        unread: 0,
-        isCoach: true,
+    const list: ChatThread[] = threads
+      .filter(t => !!t.lastAt)
+      .map(t => {
+        const kind = t.kind || (t.group ? 'group' : 'dm');
+        const key = kind === 'group' ? `g:${t.group?.id}` : `d:${t.peer?.id}`;
+        const pref = prefs[key] || {};
+        return {
+          ...t,
+          kind,
+          isCoach: t.isCoach || (!!coach && t.peer?.id === coach.id),
+          waiting: !!t.waiting,
+          pinned: !!pref.pinned,
+          muted: !!pref.muted,
+        };
       });
-      seenDm.add(coach.id);
-    }
-    for (const person of people) {
-      if (seenDm.has(person.id)) continue;
-      list.push({
-        kind: 'dm',
-        peer: person,
-        lastText: 'Aún no habéis hablado',
-        lastAt: '',
-        unread: 0,
-        isCoach: coach?.id === person.id,
-      });
-    }
     return list.sort((a, b) => {
-      if (a.isCoach && !b.isCoach) return -1;
-      if (!a.isCoach && b.isCoach) return 1;
+      if (a.pinned && !b.pinned) return -1;
+      if (!a.pinned && b.pinned) return 1;
       return (b.lastAt || '').localeCompare(a.lastAt || '');
     });
-  }, [threads, people, coach]);
+  }, [threads, coach, prefs]);
 
   const visibleRows = useMemo(() => {
     const q = inboxQ.trim().toLowerCase();
     if (!q) return rows;
     return rows.filter(row => {
       const name = row.kind === 'group' && row.group ? row.group.name : row.peer?.name || '';
-      return name.toLowerCase().includes(q);
+      const preview = inboxPreview(row.lastText).toLowerCase();
+      return name.toLowerCase().includes(q) || preview.includes(q);
     });
   }, [rows, inboxQ]);
-  const conversationRows = visibleRows.filter(row => !!row.lastAt);
-  const contactRows = visibleRows.filter(row => !row.lastAt);
+
+  const searchPeople = useMemo(() => {
+    const q = inboxQ.trim().toLowerCase();
+    if (!q) return [];
+    const inInbox = new Set(rows.filter(r => r.peer).map(r => r.peer!.id));
+    return people.filter(p => !inInbox.has(p.id) && p.name.toLowerCase().includes(q));
+  }, [inboxQ, people, rows]);
 
   const pingTyping = useCallback(() => {
     if (!open || waitingPeer) return;
@@ -444,23 +674,6 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
     }
   }, [draft, attach, open, sending, loadInbox]);
 
-  const createGroup = useCallback(async () => {
-    const name = groupName.trim();
-    if (!name || pickedIds.length < 1 || creating) return;
-    setCreating(true);
-    try {
-      const created = await createChatGroup(name, pickedIds);
-      setGroupName('');
-      setPickedIds([]);
-      setInviteExtras([]);
-      setSearchQ('');
-      setComposer('closed');
-      void loadInbox();
-      if (created.group) void openGroup(created.group);
-    } finally {
-      setCreating(false);
-    }
-  }, [groupName, pickedIds, creating, loadInbox, openGroup]);
 
   const renameOpenGroup = async () => {
     if (open?.kind !== 'group') return;
@@ -488,10 +701,56 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
     }
   };
 
+  const askDeleteThread = (row: ChatThread) => {
+    if (row.kind === 'group' && row.group) {
+      setPendingDelete({ kind: 'group', groupId: row.group.id, name: row.group.name, team: row.group.kind === 'team' });
+      return;
+    }
+    if (row.peer) setPendingDelete({ kind: 'dm', peerId: row.peer.id, name: row.peer.name });
+  };
+
+  const wipeThread = async (row: ChatThread) => {
+    if (deleting) return;
+    setDeleting(true);
+    try {
+      if (row.kind === 'group' && row.group) await deleteGroupChat(row.group.id);
+      else if (row.peer) await deleteChat(row.peer.id);
+      setActionRow(null);
+      void loadInbox();
+    } catch (e: any) {
+      window.alert(e?.message || 'No se ha podido eliminar el chat');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!pendingDelete || deleting) return;
+    setDeleting(true);
+    try {
+      if (pendingDelete.kind === 'dm') await deleteChat(pendingDelete.peerId);
+      else await deleteGroupChat(pendingDelete.groupId);
+      const closed =
+        (open?.kind === 'dm' && pendingDelete.kind === 'dm' && open.peer.id === pendingDelete.peerId) ||
+        (open?.kind === 'group' && pendingDelete.kind === 'group' && open.group.id === pendingDelete.groupId);
+      if (closed) {
+        setOpen(null);
+        setGroupPanel(false);
+        setMessages([]);
+      }
+      setPendingDelete(null);
+      void loadInbox();
+    } catch (e: any) {
+      window.alert(e?.message || 'No se ha podido eliminar el chat');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const kickOrLeave = async (userId: string) => {
     if (open?.kind !== 'group') return;
     const leaving = userId === myId;
-    if (!window.confirm(leaving ? '¿Salir del grupo?' : '¿Echar a esta persona?')) return;
+    if (!window.confirm(leaving ? (open.group.kind === 'team' ? '¿Salir del equipo?' : '¿Salir del grupo?') : '¿Echar a esta persona?')) return;
     try {
       await removeChatGroupMember(open.group.id, userId);
       if (leaving) {
@@ -512,16 +771,45 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
     }
   };
 
-  const togglePick = (person: FeedAuthor, viaInvite?: boolean) => {
-    setPickedIds(prev => (prev.includes(person.id) ? prev.filter(x => x !== person.id) : [...prev, person.id]));
-    if (viaInvite) {
-      setInviteExtras(prev =>
-        prev.some(p => p.id === person.id) ? prev.filter(p => p.id !== person.id) : [...prev, person]
-      );
-    } else {
-      setInviteExtras(prev => prev.filter(p => p.id !== person.id));
-    }
-  };
+  const deleteModal = (
+    <GlassModal
+      open={!!pendingDelete}
+      onClose={() => { if (!deleting) setPendingDelete(null); }}
+      persist={deleting}
+      rise
+      title="Eliminar chat"
+      subtitle={pendingDelete ? pendingDelete.name : undefined}
+      footer={
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            className="flex-1 rounded-xl"
+            disabled={deleting}
+            onClick={() => setPendingDelete(null)}
+          >
+            Cancelar
+          </Button>
+          <Button
+            variant="danger"
+            className="flex-1 rounded-xl"
+            disabled={deleting}
+            onClick={() => void confirmDelete()}
+          >
+            {deleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+            {deleting ? 'Eliminando…' : 'Eliminar'}
+          </Button>
+        </div>
+      }
+    >
+      <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+        {pendingDelete?.kind === 'group'
+          ? pendingDelete.team
+            ? 'Sales del equipo y desaparece de tu lista. Los demás siguen.'
+            : 'Sales del grupo y desaparece de tu lista. Los demás siguen.'
+          : 'Se quita de tu lista. El otro no lo nota. Si te escribe, vuelve a salir.'}
+      </p>
+    </GlassModal>
+  );
 
   if (loading) {
     return (
@@ -546,7 +834,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
               ? 'En línea'
               : 'Chat'
         : [
-            `${open.group.members.length} en el grupo`,
+            `${open.group.members.length} en el ${open.group.kind === 'team' ? 'equipo' : 'grupo'}`,
             open.group.pending?.length ? `${open.group.pending.length} pendiente${open.group.pending.length === 1 ? '' : 's'}` : '',
           ].filter(Boolean).join(' · ');
     const iCreatedGroup = open.kind === 'group' && open.group.createdBy === myId;
@@ -568,7 +856,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
           {open.kind === 'dm' ? (
             <button
               type="button"
-              onClick={() => onOpenProfile?.(open.peer.id)}
+              onClick={() => onOpenMini?.(open.peer)}
               className="flex min-w-0 flex-1 items-center gap-3 text-left"
             >
               <Face name={open.peer.name} avatar={open.peer.avatar} size={40} online={peerOnline} />
@@ -583,8 +871,13 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
               onClick={() => setGroupPanel(v => !v)}
               className="flex min-w-0 flex-1 items-center gap-3 text-left"
             >
-              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300">
-                <Users size={18} />
+              <span className={cn(
+                'flex h-10 w-10 items-center justify-center rounded-full',
+                open.group.kind === 'team'
+                  ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300'
+                  : 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300'
+              )}>
+                {open.group.kind === 'team' ? <Dumbbell size={18} /> : <Users size={18} />}
               </span>
               <span className="min-w-0">
                 <span className="block truncate text-sm font-black text-slate-900 dark:text-slate-100">{title}</span>
@@ -595,6 +888,20 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
               <Pencil size={14} className="shrink-0 text-slate-400" />
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => {
+              if (open.kind === 'dm') {
+                setPendingDelete({ kind: 'dm', peerId: open.peer.id, name: open.peer.name });
+              } else {
+                setPendingDelete({ kind: 'group', groupId: open.group.id, name: open.group.name, team: open.group.kind === 'team' });
+              }
+            }}
+            className="rounded-xl p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-500 dark:hover:bg-rose-950/40 dark:hover:text-rose-300"
+            aria-label="Eliminar chat"
+          >
+            <Trash2 size={18} />
+          </button>
         </div>
 
         {open.kind === 'group' && groupPanel && (
@@ -613,7 +920,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
                 Nombre
               </button>
             </div>
-            <p className="text-[11px] font-black uppercase tracking-wider text-slate-400">En el grupo</p>
+            <p className="text-[11px] font-black uppercase tracking-wider text-slate-400">
+              {open.group.kind === 'team' ? 'En el equipo' : 'En el grupo'}
+            </p>
             <div className="space-y-1">
               {open.group.members.map(member => (
                 <div key={member.id} className="flex items-center gap-2">
@@ -643,7 +952,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
               className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800"
             />
             <div className="max-h-28 space-y-1 overflow-y-auto">
-              {[...people, ...searchHits, ...inviteExtras]
+              {[...people, ...searchHits]
                 .filter((p, i, arr) => arr.findIndex(x => x.id === p.id) === i)
                 .filter(p => !alreadyInGroup.has(p.id))
                 .map(person => {
@@ -678,7 +987,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
               className="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-rose-200 py-2 text-[11px] font-black uppercase text-rose-600"
             >
               <LogOut size={13} />
-              Salir del grupo
+              {open.group.kind === 'team' ? 'Salir del equipo' : 'Salir del grupo'}
             </button>
           </div>
         )}
@@ -694,7 +1003,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
               {talkingToCoach
                 ? 'Pregúntale por la sesión o envíale cómo te ha ido.'
                 : open.kind === 'group'
-                  ? 'Primer mensaje del grupo.'
+                  ? open.group.kind === 'team'
+                    ? 'Primer mensaje del equipo.'
+                    : 'Primer mensaje del grupo.'
                   : waitingPeer
                     ? 'Cuando acepte verá este mensaje.'
                     : friends.some(f => f.id === open.peer.id)
@@ -717,6 +1028,43 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
                     {line.author.name}
                   </span>
                 )}
+                {line.storyReply?.mediaKey && (
+                  <div className={cn(
+                    'mb-1.5 flex overflow-hidden rounded-xl',
+                    line.mine ? 'bg-black/20' : 'bg-slate-100 dark:bg-slate-900'
+                  )}>
+                    {line.storyReply.mediaType === 'video' ? (
+                      <video
+                        src={mediaUrl(line.storyReply.mediaKey)}
+                        muted
+                        playsInline
+                        className="h-16 w-12 shrink-0 object-cover"
+                      />
+                    ) : (
+                      <img
+                        src={mediaUrl(line.storyReply.mediaKey)}
+                        alt=""
+                        className="h-16 w-12 shrink-0 object-cover"
+                      />
+                    )}
+                    <span className="min-w-0 px-2 py-1.5">
+                      <span className={cn(
+                        'block text-[10px] font-black uppercase tracking-wider',
+                        line.mine ? 'text-white/70' : 'text-indigo-500'
+                      )}>
+                        {line.mine ? 'Respondiste a la historia' : 'Respondió a tu historia'}
+                      </span>
+                      {line.storyReply.caption && (
+                        <span className={cn(
+                          'mt-0.5 block truncate text-[11px]',
+                          line.mine ? 'text-white/80' : 'text-slate-500'
+                        )}>
+                          {line.storyReply.caption}
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                )}
                 {line.mediaKey && line.mediaType === 'image' && (
                   <a href={mediaUrl(line.mediaKey)} target="_blank" rel="noreferrer" className="mb-1 block">
                     <img
@@ -734,9 +1082,15 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
                     className="mb-1 max-h-56 max-w-full rounded-xl"
                   />
                 )}
+                {line.mediaExpired && !line.mediaKey && (
+                  <p className={cn('mb-1 text-[11px]', line.mine ? 'text-white/75' : 'text-slate-400')}>
+                    Foto o vídeo caducado
+                  </p>
+                )}
                 {line.text}
                 <span className={cn('mt-1 block text-[10px]', line.mine ? 'text-white/70' : 'text-slate-400')}>
                   {timeAgo(line.createdAt)}
+                  {line.mediaKey && line.mediaExpiresAt ? ` · ${hoursLeftLabel(line.mediaExpiresAt)}` : ''}
                 </span>
               </div>
             </div>
@@ -750,7 +1104,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
         {attach && (
           <div className="flex items-center gap-2 border-t border-slate-100 px-3 pt-2 text-xs text-slate-500 dark:border-slate-800">
             {attach.type.startsWith('video/') ? <ImageIcon size={14} /> : <ImageIcon size={14} />}
-            <span className="min-w-0 flex-1 truncate">{attach.name}</span>
+            <span className="min-w-0 flex-1 truncate">{attach.name} · se borra en 24 h</span>
             <button type="button" onClick={() => setAttach(null)} className="text-rose-500">
               Quitar
             </button>
@@ -779,7 +1133,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
             disabled={waitingPeer}
             onClick={() => fileRef.current?.click()}
             className="flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 text-slate-500 disabled:opacity-30 dark:border-slate-700"
-            aria-label="Foto o vídeo"
+            aria-label="Foto o vídeo · 24 h"
           >
             <Paperclip size={16} />
           </button>
@@ -818,274 +1172,137 @@ export const ChatTab: React.FC<ChatTabProps> = ({ myId, friends, startWith, onOp
       </div>
     );
 
-    if (typeof document === 'undefined') return conversation;
-    return createPortal(
-      <div className="fixed inset-0 z-[80] flex flex-col bg-slate-50 dark:bg-slate-950">{conversation}</div>,
-      document.body
+    if (typeof document === 'undefined') {
+      return (
+        <>
+          {conversation}
+          {deleteModal}
+        </>
+      );
+    }
+    return (
+      <>
+        {createPortal(
+          <div className="fixed inset-0 z-[80] flex flex-col bg-slate-50 dark:bg-slate-950">{conversation}</div>,
+          document.body
+        )}
+        {deleteModal}
+      </>
     );
   }
 
   return (
+    <>
     <div className="space-y-5">
+      {onOpenPeople && (
+        <button
+          type="button"
+          onClick={onOpenPeople}
+          className="flex w-full items-center gap-3 rounded-3xl bg-white px-3.5 py-3 text-left shadow-sm dark:bg-slate-900"
+        >
+          <Face name={meCard?.name || myName || 'Tú'} avatar={meCard?.avatar ?? myAvatar ?? null} size={52} />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[15px] font-semibold text-slate-900 dark:text-slate-100">
+              {meCard?.name || myName || 'Tú'}
+            </span>
+            <span className="block text-[13px] text-slate-400">
+              {meCard?.followingCount ?? friends.length} siguiendo · {meCard?.followerCount ?? friends.length} seguidores
+            </span>
+            {(meCard?.bio || '').trim() ? (
+              <span className="mt-0.5 block truncate text-[12px] text-slate-500">{meCard!.bio}</span>
+            ) : (
+              <span className="mt-0.5 block text-[12px] text-indigo-500">Añade un mini texto · busca amigos</span>
+            )}
+          </span>
+          {pendingCount > 0 && (
+            <span className="rounded-full bg-indigo-600 px-2 py-0.5 text-[11px] font-bold text-white">
+              {pendingCount}
+            </span>
+          )}
+          <Users size={16} className="shrink-0 text-slate-400" />
+        </button>
+      )}
       <div className="relative">
         <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
         <input
           value={inboxQ}
           onChange={e => setInboxQ(e.target.value)}
-          placeholder="Buscar un chat"
+          placeholder="Busca chats o a quien sigues"
           className="h-11 w-full rounded-2xl bg-white pl-10 pr-4 text-sm text-slate-800 shadow-sm placeholder:text-slate-400 focus:outline-none dark:bg-slate-900 dark:text-slate-100"
         />
       </div>
 
-      {typeof document !== 'undefined' && createPortal(
-        <AnimatePresence>
-          {composer !== 'closed' && (
-          <motion.div
-            key="chat-composer"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100000] flex items-end justify-center p-0 min-h-[100dvh] sm:items-center sm:p-4"
-          >
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={closeComposer}
-              className="fixed inset-0 min-h-[100dvh] bg-slate-900/25 backdrop-blur-md dark:bg-black/45"
-            />
-            <motion.div
-              initial={{ opacity: 0, y: 24 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 16 }}
-              onClick={e => e.stopPropagation()}
-              className="relative z-10 w-full max-w-sm max-h-[78vh] overflow-y-auto rounded-t-[28px] border border-white/50 bg-white/70 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl sm:rounded-[28px] dark:border-white/10 dark:bg-slate-900/65"
-            >
-              <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/40 bg-white/40 px-4 py-3 backdrop-blur-xl dark:border-white/10 dark:bg-slate-900/40">
-                <div>
-                  <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                    {composer === 'group' ? 'Nuevo grupo' : 'Nuevo mensaje'}
-                  </p>
-                  <p className="text-[11px] text-slate-500">
-                    {composer === 'group'
-                      ? 'Elige un nombre y a quién entra'
-                      : 'Busca a quien sigues o te sigue y selecciona'}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={closeComposer}
-                  className="rounded-full p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                  aria-label="Cerrar"
-                >
-                  <X size={18} />
-                </button>
-              </div>
-
-              <div className="px-3 py-2">
-                {composer === 'dm' && (
-                  <div>
-                    <input
-                      value={dmSearchQ}
-                      onChange={e => setDmSearchQ(e.target.value)}
-                      placeholder="Busca a quien sigues o te sigue…"
-                      className="mb-1 h-10 w-full rounded-xl border border-white/50 bg-white/60 px-3 text-sm text-slate-900 shadow-none outline-none dark:border-white/10 dark:bg-slate-800/60 dark:text-slate-100"
-                    />
-                    <div className="space-y-0.5">
-                      {visiblePeople.map(person => (
-                        <button
-                          key={person.id}
-                          type="button"
-                          onClick={() => void openDm(person)}
-                          className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left hover:bg-white/60 dark:hover:bg-white/5"
-                        >
-                          <span className="flex min-w-0 items-center gap-3">
-                            <Avatar name={person.name} avatar={person.avatar} size={36} />
-                            <span className="min-w-0">
-                              <span className="block truncate text-[13px] font-medium text-slate-800 dark:text-slate-100">
-                                {person.name}
-                              </span>
-                              <span className="text-[11px] text-slate-400">
-                                {coach?.id === person.id ? 'Entrenador' : 'Te sigue o le sigues'}
-                              </span>
-                            </span>
-                          </span>
-                        </button>
-                      ))}
-                      {dmSearchQ.trim() && visiblePeople.length === 0 && (
-                        <p className="px-2 py-6 text-center text-sm text-slate-400">Nadie con ese nombre entre quien sigues.</p>
-                      )}
-                      {!dmSearchQ.trim() && people.length === 0 && (
-                        <p className="px-2 py-6 text-center text-sm text-slate-400">Aún no sigues a nadie. Añade amigos para escribirles.</p>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setComposer('group')}
-                      className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300/70 py-2.5 text-sm font-medium text-slate-600 hover:border-indigo-300 hover:text-indigo-600 dark:border-slate-600 dark:text-slate-300"
-                    >
-                      <Users size={15} />
-                      Crear un grupo
-                    </button>
-                  </div>
-                )}
-
-                {composer === 'group' && (
-                  <div className="space-y-2">
-                    <button
-                      type="button"
-                      onClick={() => setComposer('dm')}
-                      className="text-[11px] font-medium text-slate-500"
-                    >
-                      ← Volver a un chat
-                    </button>
-                    <input
-                      value={groupName}
-                      onChange={e => setGroupName(e.target.value.slice(0, 40))}
-                      placeholder="Nombre del grupo"
-                      className="h-10 w-full rounded-xl border border-white/50 bg-white/60 px-3 text-sm font-medium text-slate-900 shadow-none outline-none dark:border-white/10 dark:bg-slate-800/60 dark:text-slate-100"
-                    />
-                    <p className="px-1 text-[11px] text-slate-400">Amigos — entran ya</p>
-                    <div className="max-h-40 space-y-0.5 overflow-y-auto">
-                      {people.length === 0 ? (
-                        <p className="px-2 py-3 text-sm text-slate-400">Aún no tienes amigos. Búscalos abajo.</p>
-                      ) : (
-                        people.map(person => {
-                          const on = pickedIds.includes(person.id);
-                          return (
-                            <button
-                              key={person.id}
-                              type="button"
-                              onClick={() => togglePick(person)}
-                              className={cn(
-                                'flex w-full items-center justify-between rounded-xl px-3 py-2 text-left',
-                                on ? 'bg-white/60 dark:bg-white/5' : 'hover:bg-white/40 dark:hover:bg-white/5'
-                              )}
-                            >
-                              <span className="flex min-w-0 items-center gap-3">
-                                <Avatar name={person.name} avatar={person.avatar} size={36} />
-                                <span className="min-w-0">
-                                  <span className="block truncate text-[13px] font-medium text-slate-800 dark:text-slate-100">
-                                    {person.name}
-                                  </span>
-                                  <span className="text-[11px] text-slate-400">Entra al crear</span>
-                                </span>
-                              </span>
-                              <span className={cn('text-[13px] font-semibold', on ? 'text-indigo-600' : 'text-slate-300')}>
-                                {on ? 'Sí' : ''}
-                              </span>
-                            </button>
-                          );
-                        })
-                      )}
-                    </div>
-                    <p className="px-1 text-[11px] text-slate-400">Si no sois amigos — solo invitación</p>
-                    <input
-                      value={searchQ}
-                      onChange={e => setSearchQ(e.target.value)}
-                      placeholder="Buscar a alguien…"
-                      className="h-10 w-full rounded-xl border border-white/50 bg-white/60 px-3 text-sm text-slate-900 shadow-none outline-none dark:border-white/10 dark:bg-slate-800/60 dark:text-slate-100"
-                    />
-                    <div className="max-h-36 space-y-0.5 overflow-y-auto">
-                      {(searchHits.length ? searchHits : inviteExtras).map(person => {
-                        const on = pickedIds.includes(person.id);
-                        return (
-                          <button
-                            key={person.id}
-                            type="button"
-                            onClick={() => togglePick(person, true)}
-                            className={cn(
-                              'flex w-full items-center justify-between rounded-xl px-3 py-2 text-left',
-                              on ? 'bg-white/60 dark:bg-white/5' : 'hover:bg-white/40 dark:hover:bg-white/5'
-                            )}
-                          >
-                            <span className="flex min-w-0 items-center gap-3">
-                              <Avatar name={person.name} avatar={person.avatar} size={36} />
-                              <span className="min-w-0">
-                                <span className="block truncate text-[13px] font-medium text-slate-800 dark:text-slate-100">
-                                  {person.name}
-                                </span>
-                                <span className="text-[11px] text-slate-400">Tiene que aceptar</span>
-                              </span>
-                            </span>
-                          </button>
-                        );
-                      })}
-                      {searchQ.trim().length >= 2 && searchHits.length === 0 && (
-                        <p className="px-2 py-3 text-sm text-slate-400">Nadie con ese nombre.</p>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      disabled={!groupName.trim() || pickedIds.length < 1 || creating}
-                      onClick={() => void createGroup()}
-                      className="mt-1 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300/70 py-2.5 text-sm font-medium text-slate-600 hover:border-indigo-300 hover:text-indigo-600 disabled:opacity-50 dark:border-slate-600 dark:text-slate-300"
-                    >
-                      <Plus size={15} />
-                      {creating ? 'Creando…' : 'Crear grupo'}
-                    </button>
-                  </div>
-                )}
-              </div>
-            </motion.div>
-          </motion.div>
-          )}
-        </AnimatePresence>,
-        document.body
-      )}
-
-      {visibleRows.length === 0 ? (
+      {visibleRows.length === 0 && searchPeople.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-5 py-14 text-center dark:border-slate-700 dark:bg-slate-900">
           <MessageCircle size={26} className="mx-auto mb-3 text-slate-300" />
           <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
             {inboxQ.trim() ? 'Nadie con ese nombre' : 'Aún no hay chats'}
           </p>
           <p className="mt-1 text-xs text-slate-400">
-            {inboxQ.trim() ? 'Prueba otro nombre.' : 'Pulsa + para buscar a alguien y mandarle un mensaje.'}
+            {inboxQ.trim() ? 'Prueba otro nombre.' : 'Toca tu perfil para buscar amigos o escribe a quien ya sigues.'}
           </p>
         </div>
       ) : (
-        <div className="space-y-6">
-          {conversationRows.length > 0 && (
-            <section className="space-y-2.5">
-              {contactRows.length > 0 && (
-                <p className="px-1 text-xs font-medium text-slate-400">Conversaciones</p>
-              )}
-              <AnimatePresence initial={false}>
-                {conversationRows.map(row => (
-                  <InboxRow
-                    key={threadKey(row)}
-                    row={row}
-                    onOpen={() => {
-                      if (row.kind === 'group' && row.group) void openGroup(row.group);
-                      else if (row.peer) void openDm(row.peer);
-                    }}
-                  />
-                ))}
-              </AnimatePresence>
+        <div className="space-y-5">
+          {visibleRows.length > 0 && (
+            <section>
+              <div className="rounded-3xl bg-white shadow-sm dark:bg-slate-900">
+                <AnimatePresence initial={false}>
+                  {visibleRows.map(row => (
+                    <InboxRow
+                      key={threadKey(row)}
+                      row={row}
+                      highlighted={!!actionRow && threadKey(actionRow) === threadKey(row)}
+                      onLongPress={() => setActionRow(row)}
+                      onDismiss={() => setActionRow(null)}
+                      onPin={() => {
+                        patchPref(row, { pinned: !row.pinned });
+                        setActionRow(null);
+                      }}
+                      onMute={() => {
+                        patchPref(row, { muted: !row.muted });
+                        setActionRow(null);
+                      }}
+                      onProfile={row.peer ? () => {
+                        setActionRow(null);
+                        onOpenMini?.(row.peer!);
+                      } : undefined}
+                      onDelete={() => void wipeThread(row)}
+                      onOpen={() => {
+                        if (row.kind === 'group' && row.group) void openGroup(row.group);
+                        else if (row.peer) void openDm(row.peer);
+                      }}
+                    />
+                  ))}
+                </AnimatePresence>
+              </div>
             </section>
           )}
-          {contactRows.length > 0 && (
-            <section className="space-y-2.5">
-              {conversationRows.length > 0 && (
-                <p className="px-1 text-xs font-medium text-slate-400">Contactos</p>
-              )}
-              <AnimatePresence initial={false}>
-                {contactRows.map(row => (
-                  <InboxRow
-                    key={threadKey(row)}
-                    row={row}
-                    onOpen={() => {
-                      if (row.kind === 'group' && row.group) void openGroup(row.group);
-                      else if (row.peer) void openDm(row.peer);
-                    }}
-                  />
+          {searchPeople.length > 0 && (
+            <section>
+              <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Personas</p>
+              <div className="rounded-3xl bg-white shadow-sm dark:bg-slate-900">
+                {searchPeople.map(person => (
+                  <button
+                    key={person.id}
+                    type="button"
+                    onClick={() => void openDm(person)}
+                    className="flex w-full items-center gap-3 border-b border-slate-100 px-3.5 py-3 text-left last:border-0 dark:border-slate-800"
+                  >
+                    <Face name={person.name} avatar={person.avatar} size={52} />
+                    <span className="min-w-0">
+                      <span className="block truncate text-[15px] font-semibold text-slate-900 dark:text-slate-100">{person.name}</span>
+                      <span className="text-[13px] text-slate-400">Escribir</span>
+                    </span>
+                  </button>
                 ))}
-              </AnimatePresence>
+              </div>
             </section>
           )}
         </div>
       )}
     </div>
+    {deleteModal}
+    </>
   );
 };

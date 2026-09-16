@@ -101,20 +101,7 @@ export const StrengthInsights = React.memo(function StrengthInsights({
     [stats.weeklyVolume]
   );
 
-  if (stats.totalSets === 0) {
-    return (
-      <Card padding="md" rounded="xl" className="border border-dashed border-slate-200 dark:border-slate-700">
-        <div className="text-center py-6">
-          <BarChart3 size={28} className="mx-auto text-slate-300 dark:text-slate-600 mb-3" />
-          <h3 className="font-bold text-slate-700 dark:text-slate-200 mb-1">Aún no hay series registradas</h3>
-          <p className="text-xs text-slate-500 dark:text-slate-400 max-w-xs mx-auto">
-            Cuando anotes el peso y las reps de tus series, aquí verás tu RM estimado, el volumen
-            semanal y tus récords.
-          </p>
-        </div>
-      </Card>
-    );
-  }
+  if (stats.totalSets === 0) return null;
 
   const grid = isDark ? GRID_DARK : GRID_LIGHT;
   const tick = isDark ? TICK_DARK : TICK_LIGHT;

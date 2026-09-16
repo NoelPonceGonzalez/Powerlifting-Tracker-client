@@ -19,6 +19,10 @@ interface GlassModalProps {
   /** Evita que el overlay cierre (p. ej. guardando). */
   persist?: boolean;
   zIndexClass?: string;
+  /** Sheet con muelle: gráficos de Progreso. */
+  rise?: boolean;
+  /** Más alto: listas de Chat (amigos, nuevo mensaje). */
+  sheet?: boolean;
 }
 
 /**
@@ -36,6 +40,8 @@ export function GlassModal({
   className,
   persist = false,
   zIndexClass = 'z-[100000]',
+  rise = false,
+  sheet = false,
 }: GlassModalProps) {
   useEscapeClose(open && !persist, onClose);
 
@@ -73,14 +79,18 @@ export function GlassModal({
             className="fixed inset-0 min-h-[100dvh] bg-slate-900/25 backdrop-blur-md dark:bg-black/45"
           />
           <motion.div
-            initial={{ opacity: 0, y: 22 }}
+            initial={{ opacity: 0, y: rise ? 48 : 22 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 14 }}
-            transition={SCREEN_TRANSITION}
+            transition={rise
+              ? { type: 'spring', stiffness: 380, damping: 32, mass: 0.8 }
+              : SCREEN_TRANSITION
+            }
             onClick={e => e.stopPropagation()}
             className={cn(
-              'relative z-10 flex max-h-[88dvh] w-full flex-col overflow-hidden rounded-t-[28px] border border-white/50 bg-white/70 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl sm:rounded-[28px] dark:border-white/10 dark:bg-slate-900/65',
-              wide ? 'max-w-lg sm:max-w-xl' : 'max-w-sm',
+              'relative z-10 flex w-full flex-col overflow-hidden rounded-t-[28px] border border-white/50 bg-white/70 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl sm:rounded-[28px] dark:border-white/10 dark:bg-slate-900/65',
+              sheet ? 'min-h-[72dvh] max-h-[92dvh] max-w-lg' : 'max-h-[88dvh]',
+              !sheet && (wide ? 'max-w-lg sm:max-w-xl' : 'max-w-sm'),
               className
             )}
           >

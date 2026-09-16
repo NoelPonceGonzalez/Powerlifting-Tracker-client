@@ -25,7 +25,7 @@ export function ComposeSheet({ open, onClose, onPublish, onGymNow, onGymLater }:
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={SCREEN_TRANSITION}
-      className="fixed inset-0 z-[120000] flex items-end justify-center p-3 sm:items-center"
+      className="fixed inset-0 z-[120000] flex min-h-[100dvh] items-end justify-center p-0 sm:items-center sm:p-4"
     >
       <motion.button
         type="button"
@@ -41,7 +41,7 @@ export function ComposeSheet({ open, onClose, onPublish, onGymNow, onGymLater }:
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, y: 12 }}
         transition={SCREEN_TRANSITION}
-        className="relative w-full max-w-sm overflow-hidden rounded-3xl border border-white/50 bg-white/75 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl dark:border-white/10 dark:bg-slate-900/70"
+        className="relative w-full max-w-sm overflow-hidden rounded-t-[28px] border border-white/50 bg-white/75 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl sm:rounded-[28px] dark:border-white/10 dark:bg-slate-900/70"
       >
         <div className="flex items-center justify-between px-4 pt-4">
           <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">Nuevo</p>
@@ -62,8 +62,8 @@ export function ComposeSheet({ open, onClose, onPublish, onGymNow, onGymLater }:
             className="flex w-full items-center gap-3 rounded-2xl border border-white/50 bg-white/55 px-3 py-3 text-left dark:border-white/10 dark:bg-slate-800/50"
           >
             <span className="min-w-0 flex-1">
-              <span className="block text-sm font-semibold text-slate-900 dark:text-white">Foto o vídeo</span>
-              <span className="mt-0.5 block text-[12px] text-slate-500">Súbelo para que te feliciten</span>
+              <span className="block text-sm font-semibold text-slate-900 dark:text-white">Historia</span>
+              <span className="mt-0.5 block text-[12px] text-slate-500">Foto o vídeo · se borra en 24 h</span>
             </span>
             <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-indigo-600 text-white">
               <Camera size={20} />

@@ -180,6 +180,8 @@ export interface PlannedExercise {
   pct?: number;
   pctPerSet?: number[];
   weight?: number;
+  /** Kilos de cada serie cuando el plan no usa el mismo peso en todas (1×3 142,5 + 4×4 122,5). */
+  weightPerSet?: number[];
   mode: ExerciseMode;
   linkedTo?: string;
   /** RPE objetivo prescrito por el entrenador ("6", "8,5" o "8,5 · 6,5"). */
@@ -223,6 +225,8 @@ export interface RoutineVersion {
 
 export interface FriendRequest {
   id: string;
+  /** Usuario que envió la solicitud (no el id del documento Friendship). */
+  userId?: string;
   name: string;
   avatar?: string;
   email?: string;

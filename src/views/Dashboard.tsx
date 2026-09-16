@@ -1,7 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  AnimatePresence,
   animate as animateValue,
   motion,
   useAnimationControls,
@@ -10,21 +9,20 @@ import {
   useTransform,
   type Variants,
 } from 'motion/react';
-import { Trophy, TrendingUp, Dumbbell, MapPin, Bell } from 'lucide-react';
+import { Trophy, Dumbbell, MapPin, Plus } from 'lucide-react';
 import { 
+  Area,
   ComposedChart, 
-  Area, 
   Line,
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ReferenceLine,
-  ResponsiveContainer
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
 } from 'recharts';
 import { Card } from '@/src/components/ui/Card';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { Button } from '@/src/components/ui/Button';
+import { GlassModal } from '@/src/components/ui/GlassModal';
 import { HistoryEntry, LogEntry, RMData, TrainingMax, TrainingWeek, Challenge, GymCheckIn, User, RoutineProgressKind } from '@/src/types';
 import { StrengthInsights } from '@/src/components/StrengthInsights';
 import { computeSessionStats } from '@/src/lib/sessionStats';
@@ -40,65 +38,8 @@ import { weekOfMonthMondayBased, weekCountInMonth, lastCalendarDayOfWeekIndexInM
 import { TM_BASELINE_DATE_ISO } from '@/src/lib/historyTm';
 import { EASE_OUT, VIEW_TRANSITION } from '@/src/lib/motionPresets';
 
-/**
- * Alternancia valor absoluto ↔ porcentaje cada 3 s.
- * Vive fuera de React y se consume solo en el texto que parpadea: si el estado
- * estuviera en DashboardView, cada tick repintaría también todos los gráficos.
- */
-/** Props estáticas de Recharts: como literales inline cambiaban de identidad en cada render. */
-const CHART_MARGIN = { top: 8, right: 4, left: 0, bottom: 0 } as const;
-const Y_AXIS_DOMAIN = ['dataMin - 8', 'dataMax + 8'] as const;
-
 /** Curva suave: los escalones se leían como bloques cuadrados. */
 const RM_LINE_TYPE = 'monotone' as const;
-
-/**
- * Eje Y en números redondos, con los cortes calculados a mano.
- *
- * Dejar que Recharts los repartiese (`tickCount`) daba series como 135, 139, 143, 145:
- * ni redondas ni a la misma distancia. Aquí se elige un paso múltiplo de 5 o 10 y los
- * cortes caen justo en él, así el valor del RM coincide con una línea de la rejilla.
- */
-function buildYAxis(values: number[]): { domain: [number, number]; ticks: number[] } {
-  const clean = values.filter((v): v is number => v != null && Number.isFinite(v));
-  if (clean.length === 0) return { domain: [0, 10], ticks: [0, 5, 10] };
-
-  const min = Math.min(...clean);
-  const max = Math.max(...clean);
-  const span = max - min;
-  // Línea plana (aún sin progreso): margen fijo para que no quede pegada al borde.
-  const pad = Math.max(5, span * 0.35);
-  const step = span > 120 ? 20 : span > 45 ? 10 : 5;
-
-  const lo = Math.max(0, Math.floor((min - pad) / step) * step);
-  const hi = Math.ceil((max + pad) / step) * step;
-  const ticks: number[] = [];
-  for (let v = lo; v <= hi; v += step) ticks.push(v);
-  return { domain: [lo, hi], ticks };
-}
-const X_TICK_DARK = { fontSize: 11, fill: 'rgba(255,255,255,0.45)' } as const;
-const X_TICK_LIGHT = { fontSize: 11, fill: '#94a3b8' } as const;
-const Y_TICK_DARK = { fontSize: 10, fill: 'rgba(255,255,255,0.32)' } as const;
-const Y_TICK_LIGHT = { fontSize: 10, fill: '#94a3b8' } as const;
-const GRID_STROKE_DARK = 'rgba(255,255,255,0.06)';
-const GRID_STROKE_LIGHT = 'rgba(148,163,184,0.14)';
-const TOOLTIP_STYLE_DARK = {
-  backgroundColor: 'rgba(15,23,42,0.96)',
-  borderRadius: '14px',
-  border: '1px solid rgba(255,255,255,0.08)',
-  color: '#fff',
-  padding: '10px 12px',
-  fontSize: 13,
-  boxShadow: '0 12px 32px -12px rgba(0,0,0,0.55)',
-} as const;
-const TOOLTIP_STYLE_LIGHT = {
-  backgroundColor: 'rgba(255,255,255,0.98)',
-  borderRadius: '14px',
-  border: '1px solid #e2e8f0',
-  boxShadow: '0 14px 28px -16px rgba(15,23,42,0.25)',
-  padding: '10px 12px',
-  fontSize: 13,
-} as const;
 
 /**
  * Entrada de Progreso: un único reloj para toda la pantalla. La raíz solo funde
@@ -124,120 +65,11 @@ const ENTER_ITEM: Variants = {
   },
 };
 
-/** Entrada de la gráfica; la cortina que la descubre va aparte (`CHART_CURTAIN`). */
-const CHART_ENTER_INITIAL = { opacity: 0, y: 8 };
-const CHART_ENTER_ANIMATE = { opacity: 1, y: 0 };
-const CHART_ENTER_EXIT = { opacity: 0, y: -6 };
-const CHART_ENTER_TRANSITION = { duration: 0.3, ease: EASE_OUT };
-
-/**
- * La línea parece dibujarse sola: una cortina del color de la tarjeta se retira hacia
- * la derecha. Es `scaleX`, que la GPU compone sola; recortar con `clip-path` repintaría
- * la gráfica entera en cada frame y en móvil se nota.
- */
-
-/**
- * Cifra que sube hasta su valor. El MotionValue se pinta directo en el DOM: contar
- * con `useState` repintaría el dashboard entero en cada frame.
- */
-const CountUpNumber = React.memo(function CountUpNumber({
-  value,
-  decimals = 0,
-  replayKey = 0,
-}: {
-  value: number;
-  decimals?: number;
-  replayKey?: number;
-}) {
-  const reduceMotion = useReducedMotion();
-  const raw = useMotionValue(reduceMotion ? value : 0);
-  const factor = 10 ** decimals;
-  const text = useTransform(raw, v => String(Math.round(v * factor) / factor));
-  const lastReplayKey = useRef(replayKey);
-
-  useEffect(() => {
-    if (reduceMotion) {
-      raw.set(value);
-      return;
-    }
-    // Solo se reinicia a 0 al entrar en la pestaña; un cambio de marca interpola desde el valor actual.
-    if (lastReplayKey.current !== replayKey) {
-      lastReplayKey.current = replayKey;
-      raw.set(0);
-    }
-    const controls = animateValue(raw, value, { duration: 0.9, ease: EASE_OUT });
-    return () => controls.stop();
-  }, [value, replayKey, raw, reduceMotion]);
-
-  // `tabular-nums`: sin ancho fijo por dígito, la cifra al contar zarandearía lo que tiene al lado.
-  return <motion.span className="tabular-nums">{text}</motion.span>;
-});
-
-const PERCENT_TOGGLE_MS = 3000;
-let percentToggleValue = false;
-let percentToggleTimer: ReturnType<typeof setInterval> | null = null;
-const percentToggleListeners = new Set<() => void>();
-
-function subscribePercentToggle(onChange: () => void): () => void {
-  percentToggleListeners.add(onChange);
-  if (percentToggleTimer == null) {
-    percentToggleTimer = setInterval(() => {
-      percentToggleValue = !percentToggleValue;
-      percentToggleListeners.forEach((l) => l());
-    }, PERCENT_TOGGLE_MS);
-  }
-  return () => {
-    percentToggleListeners.delete(onChange);
-    if (percentToggleListeners.size === 0 && percentToggleTimer != null) {
-      clearInterval(percentToggleTimer);
-      percentToggleTimer = null;
-      percentToggleValue = false;
-    }
-  };
-}
-
-const getPercentToggle = () => percentToggleValue;
-
 type StatTone = 'positive' | 'negative' | 'neutral';
 interface StatVariant {
   value: string;
   tone: StatTone;
 }
-
-/** Texto que alterna entre absoluto y %. Se suscribe él solo al temporizador. */
-const AlternatingStat = React.memo(function AlternatingStat({
-  abs,
-  pct,
-  className,
-  prefix,
-}: {
-  abs: StatVariant;
-  pct: StatVariant;
-  className: string;
-  prefix?: string;
-}) {
-  const showPercent = useSyncExternalStore(subscribePercentToggle, getPercentToggle, getPercentToggle);
-  const current = showPercent ? pct : abs;
-  return (
-    <AnimatePresence mode="wait">
-      <motion.span
-        key={showPercent ? 'pct' : 'abs'}
-        initial={{ opacity: 0, y: 4 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -4 }}
-        transition={{ duration: 0.2 }}
-        className={cn(
-          className,
-          current.tone === 'positive' && 'text-emerald-600 dark:text-emerald-400',
-          current.tone === 'negative' && 'text-rose-600 dark:text-rose-400',
-          current.tone === 'neutral' && 'text-slate-500 dark:text-slate-400'
-        )}
-      >
-        {prefix}{current.value}
-      </motion.span>
-    </AnimatePresence>
-  );
-});
 
 interface TmCardConfig {
   color: string;
@@ -271,165 +103,182 @@ function tmConfigFor(name: string, mbMode: boolean): TmCardConfig {
   return table.default;
 }
 
-/**
- * Tarjeta de progreso de un TM. Memoizada: el dashboard se repinta con check-ins,
- * torneos y refrescos que no afectan a estos gráficos.
- */
-const TmProgressCard = React.memo(function TmProgressCard({
-  tm,
-  config,
-  chartData,
-  stat,
-  isDark,
-  chartKey,
+const CHART_MARGIN = { top: 10, right: 10, left: 4, bottom: 0 } as const;
+
+function padChartSeries(
+  data: Array<Record<string, string | number | null | undefined>>,
+  dataKey: string
+): Array<Record<string, string | number | null | undefined>> {
+  const known = data.filter(d => d[dataKey] != null);
+  if (known.length >= 2) return data;
+  if (known.length === 1) {
+    const only = known[0];
+    return [
+      { ...only, date: 'Inicio' },
+      { ...only, date: String(only.date ?? 'Ahora') },
+    ];
+  }
+  return data;
+}
+
+function chartDomain(values: Array<number | null | undefined>): [number, number] {
+  const nums = values.filter((v): v is number => v != null && Number.isFinite(v));
+  if (nums.length === 0) return [0, 10];
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  const span = max - min;
+  const pad = span < 1 ? Math.max(8, max * 0.08 || 8) : span * 0.22;
+  return [Math.max(0, min - pad), max + pad];
+}
+
+function unitForTm(tm: TrainingMax): string {
+  return tm.mode === 'weight' ? 'kg' : tm.mode === 'reps' ? 'reps' : 's';
+}
+
+/** Más suave que el snap de la app: frena al final. */
+const COUNT_EASE = [0.16, 0.84, 0.12, 1] as const;
+
+/** 20 kg acaba antes que 200: el tiempo crece con la marca, no es un reloj único. */
+function countDurationSec(value: number): number {
+  const mag = Math.abs(value);
+  if (mag < 0.05) return 0.28;
+  return Math.min(1.7, Math.max(0.4, 0.3 + mag / 230));
+}
+
+/** Cuenta hasta el valor. El MotionValue pinta el DOM y no repinta Progreso. */
+const ModalCount = React.memo(function ModalCount({
+  value,
+  replayKey,
+  delay = 0,
 }: {
-  tm: TrainingMax;
-  config: TmCardConfig;
-  chartData: { date: string; value: number | null }[];
-  stat?: { abs: StatVariant; pct: StatVariant };
-  isDark: boolean;
-  chartKey: string;
+  value: number;
+  replayKey: string;
+  delay?: number;
 }) {
-  const unit = tm.mode === 'weight' ? 'kg' : tm.mode === 'reps' ? 'reps' : 's';
-  const gradId = `grad-${tm.id.replace(/[^a-z0-9]/gi, '')}`;
-  const itemStyle = useMemo(() => ({ color: config.color }), [config.color]);
-  const activeDot = useMemo(
-    () => ({ r: 5, fill: config.color, stroke: isDark ? '#1e293b' : '#fff', strokeWidth: 2 }),
-    [config.color, isDark]
+  const reduceMotion = useReducedMotion();
+  const raw = useMotionValue(reduceMotion ? value : 0);
+  const text = useTransform(raw, v => String(Math.round(v * 10) / 10));
+
+  useEffect(() => {
+    if (reduceMotion) {
+      raw.set(value);
+      return;
+    }
+    raw.set(0);
+    const controls = animateValue(raw, value, {
+      duration: countDurationSec(value),
+      ease: COUNT_EASE,
+      delay,
+    });
+    return () => controls.stop();
+  }, [value, replayKey, raw, reduceMotion, delay]);
+
+  return <motion.span className="tabular-nums">{text}</motion.span>;
+});
+
+/** Área a ancho de pantalla: en móvil se lee; sin rejilla ni eje Y. */
+const LiftAreaChart = React.memo(function LiftAreaChart({
+  data,
+  color,
+  dataKey,
+  unit,
+  isDark,
+  animate = false,
+}: {
+  data: Array<Record<string, string | number | null | undefined>>;
+  color: string;
+  dataKey: string;
+  unit: string;
+  isDark: boolean;
+  animate?: boolean;
+}) {
+  const series = useMemo(() => padChartSeries(data, dataKey), [data, dataKey]);
+  const domain = useMemo(
+    () => chartDomain(series.map(d => d[dataKey] as number | null)),
+    [series, dataKey]
   );
-  const formatter = useCallback(
-    (value: number | null): [string, string] => [value == null ? '—' : `${Math.round(value)} ${unit}`, ''],
-    [unit]
-  );
-  const renderDot = useCallback(
-    (dotProps: { cx?: number; cy?: number; index?: number; payload?: { value?: number | null } }) => {
-      const v = dotProps.payload?.value;
-      if (v == null || Number.isNaN(v)) return null;
-      const { cx, cy } = dotProps;
-      if (cx == null || cy == null) return null;
-      const prev = chartData[(dotProps.index ?? 0) - 1]?.value;
-      if (prev != null && prev === v) return null;
-      return <circle cx={cx} cy={cy} r={4} fill={config.color} stroke={isDark ? '#0f172a' : '#fff'} strokeWidth={1.5} />;
-    },
-    [config.color, chartData, isDark]
-  );
-  // El eje se calcula con los datos y con el RM vivo, para que la línea de referencia
-  // entre siempre en el encuadre aunque el salto sea de hoy y aún no haya snapshot.
-  const yAxis = useMemo(
-    () => buildYAxis([...chartData.map(d => d.value as number), tm.value]),
-    [chartData, tm.value]
-  );
-  const knownPoints = chartData.filter(d => d.value != null);
-  const firstKnown = knownPoints[0]?.value;
-  const lastKnown = knownPoints[knownPoints.length - 1]?.value;
-  const delta =
-    firstKnown != null && lastKnown != null && lastKnown !== firstKnown
-      ? lastKnown - firstKnown
-      : null;
+  const ticks = useMemo(() => {
+    const labels = series.map(d => String(d.date ?? '')).filter(Boolean);
+    if (labels.length <= 2) return labels;
+    return [labels[0], labels[labels.length - 1]];
+  }, [series]);
+  const gradId = `lift-${color.replace(/[^a-zA-Z0-9]/g, '')}`;
+  const tickFill = isDark ? 'rgba(255,255,255,0.4)' : '#94a3b8';
+  const lastIdx = series.reduce((acc, d, i) => (d[dataKey] != null ? i : acc), -1);
 
   return (
-    // Sin `initial`/`animate` propios: hereda el escalonado de la raíz para que todo entre al mismo ritmo.
-    <motion.div variants={ENTER_ITEM}>
-      <Card padding="md" rounded="2xl" variant="glass" className="group relative overflow-hidden">
-        <div className="flex justify-between items-center mb-3">
-          <div className={cn("p-2.5 rounded-2xl", config.bg, "dark:bg-opacity-50")}>
-            <Dumbbell size={18} className={config.text} />
-          </div>
-          <div className="text-right">
-            <div className="text-xl font-semibold tabular-nums text-slate-900 dark:text-white">
-              <CountUpNumber value={tm.value} />
-              <span className="text-xs font-medium text-slate-400 dark:text-slate-500 ml-1">{unit}</span>
-            </div>
-            {stat ? (
-              <AlternatingStat abs={stat.abs} pct={stat.pct} className="text-xs font-semibold block mt-0.5" />
-            ) : delta != null ? (
-              <span className={cn('text-xs font-semibold', delta > 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-500')}>
-                {delta > 0 ? '+' : ''}{Math.round(delta)} {unit}
-              </span>
-            ) : null}
-          </div>
-        </div>
-        <h3 className="mb-3 text-sm font-semibold text-slate-700 dark:text-slate-200">{tm.name}</h3>
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={chartKey}
-            initial={CHART_ENTER_INITIAL}
-            animate={CHART_ENTER_ANIMATE}
-            exit={CHART_ENTER_EXIT}
-            transition={CHART_ENTER_TRANSITION}
-            // Recharts 3 hace focusable el gráfico: sin esto queda un recuadro de foco al tocarlo.
-            className="relative h-[132px] w-full overflow-hidden outline-none max-[360px]:h-[120px] sm:h-[144px] md:h-[152px] [&_.recharts-wrapper]:overflow-hidden [&_.recharts-wrapper]:outline-none [&_.recharts-surface]:overflow-hidden [&_.recharts-surface]:outline-none"
-            onPointerDownCapture={(e) => e.stopPropagation()}
-            onPointerMoveCapture={(e) => e.stopPropagation()}
-            onTouchStart={(e) => e.stopPropagation()}
-            onTouchMove={(e) => e.stopPropagation()}
-            style={{ touchAction: 'pan-x pan-y', WebkitTapHighlightColor: 'transparent', outline: 'none' }}
-          >
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={chartData} margin={CHART_MARGIN}>
-                <defs>
-                  <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={config.color} stopOpacity={0.28}/>
-                    <stop offset="100%" stopColor={config.color} stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 6" vertical={false} stroke={isDark ? GRID_STROKE_DARK : GRID_STROKE_LIGHT} />
-                <XAxis dataKey="date" interval="preserveStartEnd" minTickGap={22} axisLine={false} tickLine={false} tick={isDark ? X_TICK_DARK : X_TICK_LIGHT} />
-                <YAxis
-                  width={34}
-                  axisLine={false}
-                  tickLine={false}
-                  tick={isDark ? Y_TICK_DARK : Y_TICK_LIGHT}
-                  domain={yAxis.domain}
-                  ticks={yAxis.ticks}
-                  allowDecimals={false}
+    <div className="h-44 w-full min-w-0 [&_.recharts-wrapper]:outline-none [&_.recharts-surface]:outline-none sm:h-52">
+      <ResponsiveContainer width="100%" height="100%">
+        <ComposedChart data={series} margin={CHART_MARGIN}>
+          <defs>
+            <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={color} stopOpacity={0.38} />
+              <stop offset="100%" stopColor={color} stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <YAxis hide domain={domain} />
+          <XAxis
+            dataKey="date"
+            ticks={ticks}
+            tickLine={false}
+            axisLine={false}
+            interval="preserveStartEnd"
+            tick={{ fontSize: 10, fill: tickFill }}
+            height={18}
+          />
+          <Tooltip
+            cursor={{ stroke: color, strokeWidth: 1, strokeDasharray: '4 4' }}
+            content={({ active, payload, label }) => {
+              const raw = payload?.[0]?.value;
+              if (!active || raw == null) return null;
+              const n = typeof raw === 'number' ? raw : Number(raw);
+              if (!Number.isFinite(n)) return null;
+              return (
+                <div className="rounded-lg bg-slate-900 px-2 py-1 text-[11px] font-semibold text-white shadow-lg">
+                  {label}: {Math.round(n * 10) / 10} {unit}
+                </div>
+              );
+            }}
+          />
+          <Area
+            type={RM_LINE_TYPE}
+            dataKey={dataKey}
+            stroke="none"
+            fill={`url(#${gradId})`}
+            isAnimationActive={animate}
+            animationDuration={900}
+            animationBegin={180}
+            animationEasing="ease-out"
+            connectNulls
+          />
+          <Line
+            type={RM_LINE_TYPE}
+            dataKey={dataKey}
+            stroke={color}
+            strokeWidth={2.5}
+            dot={(props: { cx?: number; cy?: number; index?: number }) => {
+              if (props.index !== lastIdx || props.cx == null || props.cy == null) return null;
+              return (
+                <circle
+                  cx={props.cx}
+                  cy={props.cy}
+                  r={4.5}
+                  fill={color}
+                  stroke={isDark ? '#0f172a' : '#fff'}
+                  strokeWidth={2}
                 />
-                <Tooltip
-                  cursor={false}
-                  separator=""
-                  contentStyle={isDark ? TOOLTIP_STYLE_DARK : TOOLTIP_STYLE_LIGHT}
-                  itemStyle={itemStyle}
-                  formatter={formatter}
-                />
-                {/* Nivel actual: da una referencia fija contra la que leer el resto de la línea. */}
-                <ReferenceLine
-                  y={tm.value}
-                  stroke={config.color}
-                  strokeOpacity={0.45}
-                  strokeDasharray="2 5"
-                  strokeWidth={1}
-                />
-                <Area
-                  type={RM_LINE_TYPE}
-                  dataKey="value"
-                  stroke="none"
-                  fillOpacity={1}
-                  fill={`url(#${gradId})`}
-                  // El área solo pinta el degradado bajo la línea: sin esto el tooltip
-                  // repetiría el valor una vez por serie.
-                  tooltipType="none"
-                  isAnimationActive={false}
-                  connectNulls
-                />
-                <Line
-                  type={RM_LINE_TYPE}
-                  dataKey="value"
-                  stroke={config.color}
-                  strokeWidth={2.25}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  dot={renderDot}
-                  activeDot={activeDot}
-                  fill="none"
-                  isAnimationActive={false}
-                  connectNulls
-                />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </motion.div>
-        </AnimatePresence>
-      </Card>
-    </motion.div>
+              );
+            }}
+            activeDot={{ r: 5, fill: color, stroke: isDark ? '#0f172a' : '#fff', strokeWidth: 2 }}
+            isAnimationActive={animate}
+            animationDuration={900}
+            animationBegin={180}
+            animationEasing="ease-out"
+            connectNulls
+          />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </div>
   );
 });
 
@@ -516,6 +365,8 @@ export interface DashboardProps {
   rms: RMData;
   /** TM de la rutina activa; al cambiar de rutina cambian gráficos y referencias. */
   trainingMaxes: TrainingMax[];
+  /** GET de RM de la rutina activa; evita dejar Progreso en blanco al cambiar de plan. */
+  trainingMaxesLoading?: boolean;
   /** Nombre de la rutina cuya progresión se muestra. */
   activeRoutineName?: string;
   /** Id. de rutina activa; al cambiar se resetean filtros de fecha al mes actual. */
@@ -539,11 +390,16 @@ export interface DashboardProps {
   checkIns: GymCheckIn[];
   onUpdateUser?: (updates: Partial<User>) => void;
   onOpenProgram: () => void;
+  onCreateRoutine?: () => void;
   onOpenSocial: (
     tab?: 'feed' | 'friends' | 'challenges' | 'checkins' | 'chat',
-    options?: { openCheckInModal?: boolean }
+    options?: { openCheckInModal?: boolean; from?: 'dashboard' }
   ) => void;
   onJoinFriendCheckIn: (checkIn: GymCheckIn) => void;
+  onOpenSettings?: () => void;
+  friendCount?: number;
+  /** false = no hay rutina (se pueden borrar todas). */
+  hasRoutine?: boolean;
   /** Se incrementa al volver a Progreso desde otra pestaña; fuerza remount de gráficos y replay de animación. */
   chartEnterKey?: number;
 }
@@ -551,17 +407,6 @@ export interface DashboardProps {
 type ProgressMode = 'week' | 'year';
 
 const MONTH_LABELS_SHORT = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
-
-function formatRoutineAggregate(
-  value: number | null,
-  kind: RoutineProgressKind,
-  unit: string
-): string {
-  if (value == null) return '—';
-  const v = kind === 'mixed' ? Math.round(value * 100) / 100 : Math.round(value);
-  if (!unit) return String(v);
-  return `${v} ${unit}`;
-}
 
 const ProgressModeSwitch = React.memo(function ProgressModeSwitch({
   mode,
@@ -605,6 +450,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
   history, 
   rms, 
   trainingMaxes,
+  trainingMaxesLoading = false,
   activeRoutineName = 'Rutina activa',
   activeRoutineId,
   routineCreatedAt: routineCreatedAtProp,
@@ -616,13 +462,15 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
   challenges,
   checkIns,
   onUpdateUser,
-  onOpenProgram, 
+  onOpenProgram,
+  onCreateRoutine,
   onOpenSocial,
   onJoinFriendCheckIn,
-  progressCheckpointAt,
-  progressCheckpointTms,
+  onOpenSettings,
+  hasRoutine: hasRoutineProp,
   chartEnterKey = 0,
 }) => {
+  const hasRoutine = hasRoutineProp ?? Boolean(activeRoutineId);
   const mountedAt = useMemo(() => new Date(), []);
   const currentYear = mountedAt.getFullYear();
   const currentMonth = mountedAt.getMonth();
@@ -632,10 +480,9 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
     [routineWeeks, routineLogs, currentYear]
   );
 
-  /** Replay de la entrada escalonada cada vez que se vuelve a Progreso (sin remontar la vista). */
+  /** Replay suave al volver a Progreso. No se parte de opacity 0: si no, los RM nuevos se quedan invisibles. */
   const enterControls = useAnimationControls();
   useEffect(() => {
-    enterControls.set('hidden');
     void enterControls.start('show');
   }, [chartEnterKey, enterControls]);
 
@@ -643,6 +490,8 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
   const [progressMode, setProgressMode] = useState<ProgressMode>(() => user.progressMode === 'year' ? 'year' : 'week');
   const [selectedYear, setSelectedYear] = useState<number>(currentYear);
   const [selectedMonth, setSelectedMonth] = useState<number>(currentMonth);
+  const [totalOpen, setTotalOpen] = useState(false);
+  const [selectedTmId, setSelectedTmId] = useState<string | null>(null);
 
   useEffect(() => {
     setSelectedYear(currentYear);
@@ -673,52 +522,44 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
   );
   const routineStartMs = routineStart.getTime();
 
-  /** Cómo se agrega el progreso de esta rutina (kg / reps / s / índice mixto). */
-  const routineProgressMeta = useMemo(
-    () => computeRoutineProgressTotal(trainingMaxes),
-    [trainingMaxes]
-  );
-
-  const displayRoutineProgress = routineProgressMeta.value;
-
   /** Alta de cada TM: el peso con el que se dio de alta, no 0. */
   const firstKnownTms = useMemo(
     () => firstKnownTmValues(history, trainingMaxes),
     [history, trainingMaxes]
   );
 
-  /**
-   * Ganancia: checkpoint TMs (si existe) o primer valor conocido de cada TM vs TM vivos.
-   * Añadir un TM no cuenta como subida desde 0.
-   */
+  /** El total solo suma RM de kilos. Reps y segundos no se mezclan. */
+  const weightTms = useMemo(
+    () => trainingMaxes.filter(tm => tm.mode === 'weight'),
+    [trainingMaxes]
+  );
+  const canTotal = weightTms.length >= 2;
+  const selectedTm = useMemo(
+    () => trainingMaxes.find(tm => tm.id === selectedTmId) ?? null,
+    [trainingMaxes, selectedTmId]
+  );
+
+  const routineProgressMeta = useMemo(
+    () => computeRoutineProgressTotal(weightTms),
+    [weightTms]
+  );
+
   const { totalGain, totalGainPct } = useMemo(() => {
+    if (weightTms.length === 0) return { totalGain: 0, totalGainPct: 0 };
     const currentTotal = routineProgressMeta.value;
-    const kind = routineProgressMeta.kind;
-    let base: number;
-    if (progressCheckpointTms && Object.keys(progressCheckpointTms).length > 0) {
-      const tmsAtCp = trainingMaxes.map((tm) => ({
-        ...tm,
-        value: progressCheckpointTms[tm.id] ?? tm.value,
-      }));
-      base = computeRoutineProgressTotal(tmsAtCp).value;
-    } else if (trainingMaxes.length > 0) {
-      const tmsAtBirth = trainingMaxes.map((tm) => ({
-        ...tm,
-        value: firstKnownTms[tm.id] ?? tm.value,
-      }));
-      base = computeRoutineProgressTotal(tmsAtBirth).value;
-    } else {
-      return { totalGain: 0, totalGainPct: 0 };
-    }
+    const tmsAtBirth = weightTms.map(tm => ({
+      ...tm,
+      value: firstKnownTms[tm.id] ?? tm.value,
+    }));
+    const base = computeRoutineProgressTotal(tmsAtBirth).value;
     const gain = currentTotal - base;
-    if (isEffectivelyZeroDelta(gain, kind)) {
+    if (isEffectivelyZeroDelta(gain, routineProgressMeta.kind)) {
       return { totalGain: 0, totalGainPct: 0 };
     }
     const pct = base > 0 ? Math.round((gain / base) * 100) : 0;
     return { totalGain: gain, totalGainPct: pct };
-  }, [firstKnownTms, trainingMaxes, routineProgressMeta.value, routineProgressMeta.kind, progressCheckpointTms]);
+  }, [firstKnownTms, weightTms, routineProgressMeta]);
 
-  /** Variación del agregado de la rutina (misma unidad que `routineProgressMeta`), en ambas variantes. */
   const mainStatDisplay = useMemo(() => {
     const u = routineProgressMeta.unit;
     const flat = isEffectivelyZeroDelta(totalGain, routineProgressMeta.kind);
@@ -728,7 +569,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
         : Math.round(totalGain);
     return {
       abs: {
-        value: `${abs > 0 ? '+' : ''}${abs} ${u}`.trim(),
+        value: `${abs > 0 ? '+' : ''}${abs}${u ? ` ${u}` : ''}`.trim(),
         tone: (flat ? 'neutral' : totalGain > 0 ? 'positive' : 'negative') as StatTone,
       },
       pct: {
@@ -741,20 +582,16 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
   /** Primer/último valor guardado de este TM en el historial de esta rutina (ids distintos por rutina). */
   const tmStatDisplay = useMemo(() => {
     const byId: Record<string, { abs: StatVariant; pct: StatVariant }> = {};
-    const hasCpTms = progressCheckpointTms && Object.keys(progressCheckpointTms).length > 0;
-    // Un solo recorrido del historial en vez de un `find` por cada TM.
     const firstByTmId = new Map<string, number>();
-    if (!hasCpTms) {
-      for (const h of history) {
-        if (h.trainingMaxes == null) continue;
-        for (const [tmId, val] of Object.entries(h.trainingMaxes)) {
-          if (val != null && val > 0 && !firstByTmId.has(tmId)) firstByTmId.set(tmId, val);
-        }
+    for (const h of history) {
+      if (h.trainingMaxes == null) continue;
+      for (const [tmId, val] of Object.entries(h.trainingMaxes)) {
+        if (val != null && val > 0 && !firstByTmId.has(tmId)) firstByTmId.set(tmId, val);
       }
     }
     trainingMaxes.forEach(tm => {
       const unit = tm.mode === 'weight' ? 'kg' : tm.mode === 'reps' ? 'reps' : 's';
-      const firstVal = hasCpTms ? progressCheckpointTms![tm.id] : firstByTmId.get(tm.id);
+      const firstVal = firstByTmId.get(tm.id);
       if (firstVal != null) {
         const gain = tm.value - firstVal;
         const kind =
@@ -780,7 +617,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
       }
     });
     return byId;
-  }, [history, trainingMaxes, progressCheckpointTms]);
+  }, [history, trainingMaxes]);
 
   const joinedChallenges = useMemo(() => challenges.filter(c => c.participants.some(p => p.userId === user.id)), [challenges, user.id]);
 
@@ -830,44 +667,44 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
       .sort((a, b) => Math.max(...b.map(x => x.timestamp)) - Math.max(...a.map(x => x.timestamp)));
   }, [checkIns]);
 
+  const featuredTournament = featuredFriendTournament ?? topJoinedChallenges[0] ?? null;
+  const tournamentMoreCount = Math.max(0, joinedChallenges.length - (featuredFriendTournament ? 0 : 1));
+  const featuredGymGroup = todayCheckInGroups[0] ?? null;
+  const featuredGymAvatars = featuredGymGroup
+    ? (featuredGymGroup.some(ci => ci.userId === user.id)
+      ? [user, ...featuredGymGroup.filter(ci => ci.userId !== user.id)]
+      : featuredGymGroup)
+    : [];
+
   const getTMConfig = useCallback(
     (name: string) => tmConfigFor(name, !!user.mbMode),
     [user.mbMode]
   );
 
   const isDarkTheme = user.theme === 'dark';
-  const routineMainStroke = user.mbMode
-    ? isDarkTheme
-      ? '#f9a8d4'
-      : '#ec4899'
-    : isDarkTheme
-      ? '#818cf8'
-      : '#6366f1';
-  const routineMainGradTop = routineMainStroke;
-  const mainTooltipItemStyle = useMemo(() => ({ color: routineMainStroke }), [routineMainStroke]);
-  const mainActiveDot = useMemo(
-    () => ({ r: 5, fill: routineMainStroke, stroke: isDarkTheme ? '#1e293b' : '#fff', strokeWidth: 2 }),
-    [routineMainStroke, isDarkTheme]
-  );
-  const mainTooltipFormatter = useCallback(
-    (value: number | null): [string, string] => [
-      formatRoutineAggregate(value, routineProgressMeta.kind, routineProgressMeta.unit),
-      '',
-    ],
-    [routineProgressMeta.kind, routineProgressMeta.unit]
-  );
-  const mainLineDot = useCallback(
-    (dotProps: { cx?: number; cy?: number; payload?: { total?: number | null } }) => {
-      const v = dotProps.payload?.total;
-      if (v == null || Number.isNaN(v)) return null;
-      const { cx, cy } = dotProps;
-      if (cx == null || cy == null) return null;
-      return <circle cx={cx} cy={cy} r={4} fill={routineMainStroke} stroke={isDarkTheme ? '#0f172a' : '#fff'} strokeWidth={1.5} />;
-    },
-    [routineMainStroke, isDarkTheme]
-  );
 
   const cl = Math.max(1, cycleLengthProp);
+
+  /** Día de hoy en la rutina activa: rellena Progreso cuando no hay torneos ni gym. */
+  const todayPlan = useMemo(() => {
+    const weeks = routineWeeks ?? [];
+    if (!weeks.length) return null;
+    const dow = (new Date().getDay() + 6) % 7;
+    const week = sameTemplateAllWeeksProp
+      ? weeks[0]
+      : (weeks.find(w => w.number === cwoyProp)
+        ?? weeks[Math.max(0, getMesocycleWeekIndex(cwoyProp, cl) - 1)]
+        ?? weeks[0]);
+    const day = week?.days?.[dow];
+    if (!day) return null;
+    const lifts = day.exercises.map(ex => ex.name).filter(Boolean);
+    return {
+      title: day.name || 'Hoy',
+      rest: day.type === 'rest' || lifts.length === 0,
+      lifts: lifts.slice(0, 3),
+      more: Math.max(0, lifts.length - 3),
+    };
+  }, [routineWeeks, sameTemplateAllWeeksProp, cwoyProp, cl]);
 
   /** Modo rutina por bloque (N semanas): ventana de mesociclo según año — mismo número de semana civil que hoy en otros años (comparable); en el año actual, el ciclo que contiene la semana actual. */
   const blockCycleParams = useMemo(() => {
@@ -952,7 +789,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
     const now = new Date();
     const cy = now.getFullYear();
     const cm = now.getMonth();
-    const currentTotal = computeRoutineProgressTotal(trainingMaxes).value;
+    const currentTotal = computeRoutineProgressTotal(weightTms).value;
     const rs = routineStart;
 
     if (progressMode === 'week') {
@@ -975,8 +812,8 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
         const lastBefore = lastParsedBeforeMonth(parsedHistory, selectedYear, selectedMonth, routineStartMs);
         let carryTotal: number | null = null;
         const isCurrentMonth = selectedYear === cy && selectedMonth === cm;
-        if (lastBefore && trainingMaxes.length > 0) {
-          carryTotal = progressValueFromHistoryEntry(lastBefore.source, trainingMaxes, {
+        if (lastBefore && weightTms.length > 0) {
+          carryTotal = progressValueFromHistoryEntry(lastBefore.source, weightTms, {
             missingTmFallback: firstKnownTms,
           });
         }
@@ -986,7 +823,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
           const point = latestByWeek.get(week);
           const isCurrentSlot = isCurrentMonth && week === currentWeekSlotInMonth;
           if (point?.source) {
-            carryTotal = progressValueFromHistoryEntry(point.source, trainingMaxes, {
+            carryTotal = progressValueFromHistoryEntry(point.source, weightTms, {
               missingTmFallback: firstKnownTms,
             });
           }
@@ -1024,8 +861,8 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
         return item.year < refYear || (item.year === refYear && item.planWeek < cycleStartWeek);
       });
       let carryTotalBlock: number | null = null;
-      if (lastBeforeCycle && trainingMaxes.length > 0) {
-        carryTotalBlock = progressValueFromHistoryEntry(lastBeforeCycle.source, trainingMaxes, {
+      if (lastBeforeCycle && weightTms.length > 0) {
+        carryTotalBlock = progressValueFromHistoryEntry(lastBeforeCycle.source, weightTms, {
           missingTmFallback: firstKnownTms,
         });
       }
@@ -1036,7 +873,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
         const pw = cycleStartWeek + slot - 1;
         const isCurrentSlot = refYear === cyNow && pw === cwToday;
         if (point?.source) {
-          carryTotalBlock = progressValueFromHistoryEntry(point.source, trainingMaxes, {
+          carryTotalBlock = progressValueFromHistoryEntry(point.source, weightTms, {
             missingTmFallback: firstKnownTms,
           });
         }
@@ -1066,8 +903,8 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
       return item.year < selectedYear;
     });
     let carryTotal: number | null = null;
-    if (lastBeforeYear && trainingMaxes.length > 0) {
-      carryTotal = progressValueFromHistoryEntry(lastBeforeYear.source, trainingMaxes, {
+    if (lastBeforeYear && weightTms.length > 0) {
+      carryTotal = progressValueFromHistoryEntry(lastBeforeYear.source, weightTms, {
         missingTmFallback: firstKnownTms,
       });
     }
@@ -1075,7 +912,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
       const point = latestByMonth.get(month);
       const isCurrentSlot = selectedYear === cy && month === cm;
       if (point?.source) {
-        carryTotal = progressValueFromHistoryEntry(point.source, trainingMaxes, {
+        carryTotal = progressValueFromHistoryEntry(point.source, weightTms, {
           missingTmFallback: firstKnownTms,
         });
       }
@@ -1096,7 +933,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
     progressMode,
     selectedYear,
     selectedMonth,
-    trainingMaxes,
+    weightTms,
     sameTemplateAllWeeksProp,
     cl,
     blockCycleParams,
@@ -1104,13 +941,6 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
     routineStartMs,
     firstKnownTms,
   ]);
-
-  const mainChartData = useMemo(() => chartContext.map(p => ({ date: p.label, total: p.total })), [chartContext]);
-  const mainChartDisplayData = mainChartData;
-  const mainYAxis = useMemo(
-    () => buildYAxis(mainChartData.map(p => p.total as number)),
-    [mainChartData]
-  );
 
   const tmChartDataById = useMemo(() => {
     const byId: Record<string, Array<{ date: string; value: number | null }>> = {};
@@ -1204,345 +1034,473 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
     routineStartMs,
   ]);
 
+  const mainChartData = useMemo(
+    () => chartContext.map(p => ({ date: p.label, total: p.total })),
+    [chartContext]
+  );
+  const totalStroke = user.mbMode
+    ? isDarkTheme
+      ? '#f9a8d4'
+      : '#ec4899'
+    : isDarkTheme
+      ? '#818cf8'
+      : '#6366f1';
   return (
     <motion.div 
       variants={ENTER_ROOT}
-      initial="hidden"
+      initial={false}
       animate={enterControls}
       exit="exit"
       className="mx-auto w-full max-w-6xl bg-[var(--app-bg)] px-3 pt-3 pb-[calc(8.5rem+env(safe-area-inset-bottom))] max-[360px]:px-2 max-[360px]:pt-2 max-[400px]:pt-3 sm:px-5 sm:pt-5 sm:pb-[calc(9.5rem+env(safe-area-inset-bottom))] md:px-6 md:pt-6"
     >
-      <motion.header variants={ENTER_ITEM} className="mb-4 flex flex-wrap items-center justify-between gap-2 max-[360px]:mb-3 max-[360px]:gap-1.5 sm:mb-5">
-        <div className="flex min-w-0 items-center gap-2 max-[360px]:gap-1.5">
-          <Avatar 
-            src={user.avatar}
-            name={user.name}
-            className="h-10 w-10 flex-shrink-0 rounded-full border-2 border-slate-100 shadow-lg max-[360px]:h-9 max-[360px]:w-9 sm:h-12 sm:w-12 dark:border-slate-700"
-          />
-          <div className="min-w-0">
-            <p className="truncate text-lg font-semibold text-slate-900 dark:text-white">Hola, {(user.name || 'Atleta').split(' ')[0]}</p>
-            <p className="text-xs text-slate-500">Tus marcas y quién entrena hoy</p>
+      <motion.header variants={ENTER_ITEM} initial={false} className="mb-3 max-[360px]:mb-2 sm:mb-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2 max-[360px]:gap-1.5">
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              className="shrink-0 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+              aria-label="Ajustes"
+            >
+              <Avatar
+                src={user.avatar}
+                name={user.name}
+                className="h-10 w-10 flex-shrink-0 rounded-full border-2 border-slate-100 shadow-lg max-[360px]:h-9 max-[360px]:w-9 sm:h-12 sm:w-12 dark:border-slate-700"
+              />
+            </button>
+            <div className="min-w-0">
+              <p className="truncate text-lg font-semibold text-slate-900 dark:text-white">{user.name || 'Atleta'}</p>
+              {canTotal && (
+                <button
+                  type="button"
+                  onClick={() => setTotalOpen(true)}
+                  className="mt-0.5 flex max-w-full items-baseline gap-1.5 text-left"
+                >
+                  <span className="text-[13px] font-black text-indigo-600 dark:text-indigo-300">
+                    <ModalCount value={Math.round(routineProgressMeta.value)} replayKey={`header-total-${chartEnterKey}`} />
+                    <span className="ml-0.5 text-[10px] font-semibold">kg</span>
+                  </span>
+                  <span
+                    className={cn(
+                      'truncate text-[11px] font-semibold',
+                      mainStatDisplay.abs.tone === 'positive' && 'text-emerald-600 dark:text-emerald-400',
+                      mainStatDisplay.abs.tone === 'negative' && 'text-rose-500',
+                      mainStatDisplay.abs.tone === 'neutral' && 'text-slate-400'
+                    )}
+                  >
+                    {mainStatDisplay.abs.value}
+                  </span>
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onOpenSocial('challenges', { from: 'dashboard' })}
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-50 text-amber-600 shadow-sm ring-1 ring-amber-100 transition-transform active:scale-95 dark:bg-amber-950/50 dark:text-amber-300 dark:ring-amber-900/60"
+              aria-label="Torneos"
+            >
+              <Trophy size={18} strokeWidth={2.2} />
+            </button>
+            <button
+              type="button"
+              onClick={() => onOpenSocial('checkins', { from: 'dashboard' })}
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-emerald-50 text-emerald-600 shadow-sm ring-1 ring-emerald-100 transition-transform active:scale-95 dark:bg-emerald-950/50 dark:text-emerald-300 dark:ring-emerald-900/60"
+              aria-label="Voy al gym"
+            >
+              <MapPin size={18} strokeWidth={2.2} />
+            </button>
           </div>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-1.5 max-[360px]:gap-1">
-          <ProgressModeSwitch mode={progressMode} onChange={handleProgressModeChange} />
-          {(progressMode === 'year' || progressMode === 'week') && (
-            <>
-              <select
-                value={selectedYear}
-                onChange={(e) => setSelectedYear(Number(e.target.value))}
-                className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 max-[360px]:h-7 max-[360px]:px-1.5 max-[360px]:text-[10px] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                style={{ WebkitTapHighlightColor: 'transparent' }}
-              >
-                {availableYears.map(year => (
-                  <option key={year} value={year}>{year}</option>
-                ))}
-              </select>
-              {progressMode === 'week' && sameTemplateAllWeeksProp && (
+        {hasRoutine && trainingMaxes.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-1.5 max-[360px]:gap-1">
+            <ProgressModeSwitch mode={progressMode} onChange={handleProgressModeChange} />
+            {(progressMode === 'year' || progressMode === 'week') && (
+              <>
                 <select
-                  value={selectedMonth}
-                  onChange={(e) => setSelectedMonth(Number(e.target.value))}
+                  value={selectedYear}
+                  onChange={(e) => setSelectedYear(Number(e.target.value))}
                   className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 max-[360px]:h-7 max-[360px]:px-1.5 max-[360px]:text-[10px] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
                   style={{ WebkitTapHighlightColor: 'transparent' }}
                 >
-                  {MONTH_LABELS_SHORT.map((month, idx) => (
-                    <option key={month} value={idx}>{month}</option>
+                  {availableYears.map(year => (
+                    <option key={year} value={year}>{year}</option>
                   ))}
                 </select>
-              )}
-            </>
-          )}
-        </div>
-      </motion.header>
-
-      <div className="mb-6 grid grid-cols-1 gap-3 max-[360px]:gap-2 sm:mb-8 sm:gap-4 md:grid-cols-3 md:gap-5">
-        {/* Main Stat Card - Progreso total */}
-        <motion.div variants={ENTER_ITEM} className="md:col-span-3">
-        <Card padding="md" rounded="2xl" variant="glass" className="relative overflow-hidden p-4 max-[360px]:p-3">
-          <div className="flex justify-between items-center mb-2 max-[360px]:mb-1.5">
-            <div className={cn("p-2.5 max-[360px]:p-2 rounded-xl max-[360px]:rounded-lg sm:rounded-2xl", "bg-indigo-50 dark:bg-indigo-950/50")}>
-              <TrendingUp size={18} className="max-[360px]:size-4 sm:size-5 text-indigo-600 dark:text-indigo-400" />
-            </div>
-            <div className="text-right">
-              <div
-                className="text-xl max-[360px]:text-lg sm:text-2xl font-black text-slate-900 dark:text-white"
-                title={`${routineProgressMeta.label}: ${routineProgressMeta.description}`}
-              >
-                <CountUpNumber
-                  value={displayRoutineProgress}
-                  decimals={routineProgressMeta.kind === 'mixed' ? 2 : 0}
-                  replayKey={chartEnterKey}
-                />
-                {routineProgressMeta.unit ? (
-                  <span className="text-[10px] max-[360px]:text-[9px] sm:text-xs text-slate-400 dark:text-slate-500 ml-1">
-                    {routineProgressMeta.unit}
-                  </span>
-                ) : null}
-              </div>
-              <AlternatingStat
-                abs={mainStatDisplay.abs}
-                pct={mainStatDisplay.pct}
-                className="text-xs sm:text-sm font-bold block mt-0.5"
-              />
-            </div>
-          </div>
-          <h3 className="font-semibold text-slate-800 dark:text-slate-200 mb-0.5 text-sm sm:text-base">
-            Progreso general
-          </h3>
-          <p className="mb-3 truncate text-xs text-slate-500 dark:text-slate-400">
-            Tus marcas
-          </p>
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={`${activeRoutineName}-${progressMode}-${sameTemplateAllWeeksProp}-${cl}-${selectedYear}-${selectedMonth}-${cwoyProp}-${chartEnterKey}`}
-              initial={CHART_ENTER_INITIAL}
-              animate={CHART_ENTER_ANIMATE}
-              exit={CHART_ENTER_EXIT}
-              transition={CHART_ENTER_TRANSITION}
-              className="relative h-[160px] w-full overflow-hidden outline-none max-[360px]:h-[144px] sm:h-[176px] md:h-[188px] [&_.recharts-wrapper]:overflow-hidden [&_.recharts-wrapper]:outline-none [&_.recharts-surface]:overflow-hidden [&_.recharts-surface]:outline-none"
-                onPointerDownCapture={(e) => e.stopPropagation()}
-                onPointerMoveCapture={(e) => e.stopPropagation()}
-                onTouchStart={(e) => e.stopPropagation()}
-                onTouchMove={(e) => e.stopPropagation()}
-                style={{ touchAction: 'pan-x pan-y', WebkitTapHighlightColor: 'transparent', outline: 'none' }}
-              >
-                <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={mainChartDisplayData} margin={CHART_MARGIN}>
-                  <defs>
-                    <linearGradient id="colorTotalLight" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={routineMainGradTop} stopOpacity={0.26}/>
-                    <stop offset="100%" stopColor={routineMainGradTop} stopOpacity={0}/>
-                  </linearGradient>
-                  <linearGradient id="colorTotalDark" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor={routineMainGradTop} stopOpacity={0.22}/>
-                    <stop offset="100%" stopColor={routineMainGradTop} stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 6" vertical={false} stroke={isDarkTheme ? GRID_STROKE_DARK : GRID_STROKE_LIGHT} />
-                  <XAxis dataKey="date" interval="preserveStartEnd" minTickGap={22} axisLine={false} tickLine={false} tick={isDarkTheme ? X_TICK_DARK : X_TICK_LIGHT} />
-                  <YAxis
-                    width={34}
-                    axisLine={false}
-                    tickLine={false}
-                    tick={isDarkTheme ? Y_TICK_DARK : Y_TICK_LIGHT}
-                    domain={mainYAxis.domain}
-                    ticks={mainYAxis.ticks}
-                    allowDecimals={false}
-                  />
-                  <Tooltip 
-                    cursor={false}
-                    separator=""
-                    contentStyle={isDarkTheme ? TOOLTIP_STYLE_DARK : TOOLTIP_STYLE_LIGHT}
-                    itemStyle={mainTooltipItemStyle}
-                    formatter={mainTooltipFormatter}
-                  />
-                  <ReferenceLine
-                    y={displayRoutineProgress}
-                    stroke={routineMainStroke}
-                    strokeOpacity={0.4}
-                    strokeDasharray="2 5"
-                    strokeWidth={1}
-                  />
-                  <Area
-                    type={RM_LINE_TYPE}
-                    dataKey="total"
-                    stroke="none"
-                    fillOpacity={1}
-                    fill={`url(#colorTotal${user.theme === 'dark' ? 'Dark' : 'Light'})`}
-                    tooltipType="none"
-                    isAnimationActive={false}
-                    connectNulls
-                  />
-                  <Line
-                    type={RM_LINE_TYPE}
-                    dataKey="total"
-                    stroke={routineMainStroke}
-                    strokeWidth={2.25}
-                    strokeLinejoin="round"
-                    strokeLinecap="round"
-                    dot={mainLineDot}
-                    activeDot={mainActiveDot}
-                    fill="none"
-                    isAnimationActive={false}
-                    connectNulls
-                  />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </motion.div>
-          </AnimatePresence>
-        </Card>
-        </motion.div>
-
-        {/* Individual Progress Cards - TODOS los TMs */}
-        {trainingMaxes.map(tm => (
-          <TmProgressCard
-            key={`${tm.id}-${chartEnterKey}`}
-            tm={tm}
-            config={getTMConfig(tm.name)}
-            chartData={tmChartDataById[tm.id] ?? [{ date: 'Inicio', value: tm.value }]}
-            stat={tmStatDisplay[tm.id]}
-            isDark={isDarkTheme}
-            chartKey={`${tm.id}-${activeRoutineName}-${progressMode}-${sameTemplateAllWeeksProp}-${cl}-${selectedYear}-${selectedMonth}-${cwoyProp}-${chartEnterKey}`}
-          />
-        ))}
-      </div>
-
-      {/* Métricas calculadas desde las series registradas (no desde los TM) */}
-      <motion.div variants={ENTER_ITEM} className="mb-6 max-[400px]:mb-5 sm:mb-8 md:mb-10">
-        <StrengthInsights stats={sessionStats} isDark={isDarkTheme} enterKey={chartEnterKey} />
-      </motion.div>
-
-      <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2 max-[400px]:mb-5 sm:mb-8 md:mb-10">
-        <motion.section variants={ENTER_ITEM}>
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="flex items-center gap-1.5 text-base font-semibold text-slate-800 dark:text-slate-100">
-              <Trophy size={18} className="shrink-0 text-amber-500" />
-              Torneos
-            </h2>
-            <Button variant="ghost" size="sm" onClick={() => onOpenSocial('challenges')} className="text-xs font-bold text-indigo-600">
-              {joinedChallenges.length > topJoinedChallenges.length
-                ? `Ver los ${joinedChallenges.length}`
-                : 'Ver todos'}
-            </Button>
-          </div>
-          {featuredFriendTournament && (
-            <Card padding="md" rounded="2xl" variant="glass" className="mb-3">
-              <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-300">
-                {friendTournamentsToJoin.length > 1
-                  ? `De tus amigos · ${friendTournamentsToJoin.length} abiertos`
-                  : 'Te invitan tus amigos'}
-              </p>
-              <button
-                type="button"
-                onClick={() => onOpenSocial('challenges')}
-                className="flex w-full items-center justify-between gap-3 text-left"
-              >
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{featuredFriendTournament.title}</p>
-                  <p className="text-[11px] text-slate-500">{featuredFriendTournament.exercise}</p>
-                </div>
-                <span className="shrink-0 rounded-full bg-indigo-600 px-3 py-1 text-[10px] font-semibold text-white">Unirse</span>
-              </button>
-            </Card>
-          )}
-          <div className="space-y-2">
-            {topJoinedChallenges.length > 0 ? (
-              topJoinedChallenges.slice(0, 3).map(challenge => {
-                const usePts = challenge.usePointsSystem !== false;
-                const sorted = [...challenge.participants].sort((a, b) => {
-                  if (!usePts) return b.value - a.value;
-                  return b.score - a.score;
-                });
-                const myIdx = sorted.findIndex(p => p.userId === user.id);
-                const days = Math.max(0, Math.ceil((new Date(challenge.endDate).getTime() - Date.now()) / 86400000));
-                return (
-                  <Card
-                    key={challenge.id}
-                    padding="sm"
-                    rounded="2xl"
-                    variant="glass"
-                    className="cursor-pointer"
-                    onClick={() => onOpenSocial('challenges')}
+                {progressMode === 'week' && sameTemplateAllWeeksProp && (
+                  <select
+                    value={selectedMonth}
+                    onChange={(e) => setSelectedMonth(Number(e.target.value))}
+                    className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/30 max-[360px]:h-7 max-[360px]:px-1.5 max-[360px]:text-[10px] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                    style={{ WebkitTapHighlightColor: 'transparent' }}
                   >
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <h3 className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{challenge.title}</h3>
-                        <p className="text-[11px] text-slate-400">
-                          {challenge.exercise} · {days === 0 ? 'Termina hoy' : `${days} días`}
-                        </p>
-                      </div>
-                      {myIdx >= 0 ? (
-                        <span className="shrink-0 text-sm font-semibold text-indigo-600 dark:text-indigo-400">#{myIdx + 1}</span>
-                      ) : (
-                        <span className="shrink-0 text-[11px] text-slate-400">Sin marca</span>
-                      )}
-                    </div>
-                  </Card>
-                );
-              })
-            ) : !featuredFriendTournament ? (
-              <Card padding="md" variant="glass" rounded="2xl" className="border-dashed text-center">
-                <p className="text-sm font-medium text-slate-400">Aún no estás en ningún torneo</p>
-                <Button variant="outline" size="sm" className="mt-2 rounded-xl" onClick={() => onOpenSocial('challenges')}>
-                  Explorar
-                </Button>
-              </Card>
-            ) : null}
-          </div>
-        </motion.section>
-
-        <motion.section variants={ENTER_ITEM}>
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
-              <Bell size={18} className="text-slate-600 dark:text-slate-300 flex-shrink-0" />
-              Hoy en el gym
-            </h2>
-            <Button variant="ghost" size="sm" onClick={() => onOpenSocial('checkins')} className="text-indigo-600 text-xs font-bold">
-              Ver feed
-            </Button>
-          </div>
-
-          <div className="space-y-4">
-            {todayCheckInGroups.length === 0 ? (
-              <Card padding="md" className="text-center border-dashed border-2 border-slate-200 bg-transparent">
-                <p className="text-slate-400 text-sm font-medium">Nadie ha avisado hoy todavía</p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="mt-2 rounded-xl"
-                  onClick={() => onOpenSocial('checkins', { openCheckInModal: true })}
-                >
-                  Avisar yo
-                </Button>
-              </Card>
-            ) : (
-              todayCheckInGroups.map(group => {
-                const representative = group[0];
-                const hasMe = group.some(ci => ci.userId === user.id);
-                const others = group.filter(ci => ci.userId !== user.id);
-                const avatars = hasMe ? [user, ...others] : group;
-                return (
-                <div key={`${representative.gymName}-${representative.time}`} className="flex items-center justify-between p-4 bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-700/60">
-                  <div className="flex items-center gap-3">
-                    <div className="flex -space-x-2">
-                      {avatars.slice(0, 3).map((ci, idx) => (
-                        <Avatar
-                          key={`${(ci as any).userId || (ci as any).id || idx}-${idx}`}
-                          src={(ci as any).avatar}
-                          name={(ci as any).name || (ci as any).userName}
-                          className="w-10 h-10 rounded-full border-2 border-white dark:border-slate-900 flex-shrink-0"
-                        />
-                      ))}
-                    </div>
-                    <div>
-                      <p className="text-sm font-bold text-slate-900 dark:text-slate-100">
-                        {group.length > 1 ? `${group.length} atletas` : representative.userName}
-                      </p>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] font-black uppercase text-indigo-600 tracking-widest">{representative.gymName}</span>
-                        <span className="text-[10px] font-medium text-slate-400">• {representative.time}</span>
-                      </div>
-                    </div>
-                  </div>
-                  {hasMe ? (
-                    <span className="text-xs font-black uppercase tracking-wider text-slate-400">Tú</span>
-                  ) : (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="rounded-xl border-indigo-200 text-indigo-600"
-                      onClick={() => setSelectedCheckIn(representative)}
-                    >
-                      <MapPin size={16} className="mr-1" />
-                      Me uno
-                    </Button>
-                  )}
-                </div>
-              )})
+                    {MONTH_LABELS_SHORT.map((month, idx) => (
+                      <option key={month} value={idx}>{month}</option>
+                    ))}
+                  </select>
+                )}
+              </>
             )}
           </div>
-        </motion.section>
-      </div>
+        )}
+      </motion.header>
+
+      {hasRoutine && todayCheckInGroups.length > 0 && (
+        <motion.div variants={ENTER_ITEM} initial={false} className="mb-3 sm:mb-4">
+          <button
+            type="button"
+            onClick={() => onOpenSocial('checkins', { from: 'dashboard' })}
+            className="flex w-full items-center gap-3 rounded-2xl bg-white px-3 py-2 text-left shadow-sm dark:bg-slate-900"
+          >
+            <span className="flex -space-x-2">
+              {todayCheckInGroups.flatMap(g => g).slice(0, 4).map((ci, idx) => (
+                <Avatar
+                  key={`${ci.userId}-${idx}`}
+                  src={ci.avatar}
+                  name={ci.userName}
+                  className="h-8 w-8 rounded-full border-2 border-white dark:border-slate-900"
+                />
+              ))}
+            </span>
+            <span className="min-w-0">
+              <span className="block truncate text-sm font-semibold text-slate-800 dark:text-slate-100">Hoy en el gym</span>
+              <span className="text-[11px] text-slate-400">
+                {todayCheckInGroups.flatMap(g => g).length} {todayCheckInGroups.flatMap(g => g).length === 1 ? 'persona' : 'personas'}
+              </span>
+            </span>
+          </button>
+        </motion.div>
+      )}
+
+      {!hasRoutine ? (
+        <div className="mb-6 sm:mb-8">
+          <div className="relative overflow-hidden rounded-[28px] border border-white/50 bg-white/70 px-6 py-10 text-center shadow-xl shadow-slate-900/10 backdrop-blur-2xl dark:border-white/10 dark:bg-slate-900/65">
+            <div className="pointer-events-none absolute -left-14 -top-14 h-40 w-40 rounded-full bg-indigo-400/20 blur-3xl" />
+            <div className="pointer-events-none absolute -bottom-16 -right-10 h-40 w-40 rounded-full bg-violet-400/15 blur-3xl" />
+            <span className="relative mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-[20px] bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-lg shadow-indigo-500/30">
+              <Dumbbell size={24} />
+            </span>
+            <h3 className="relative text-lg font-semibold tracking-tight text-slate-900 dark:text-slate-100">
+              Para las estadísticas necesitas una rutina
+            </h3>
+            <p className="relative mx-auto mt-2 max-w-sm text-sm leading-relaxed text-slate-500 dark:text-slate-400">
+              Sin plan no hay marcas, gráficos ni récords. Crea una rutina y empieza a registrar series.
+            </p>
+            <Button
+              variant="primary"
+              className="relative mx-auto mt-5 h-11 rounded-2xl"
+              onClick={onCreateRoutine ?? onOpenProgram}
+            >
+              <Plus size={16} />
+              Crear rutina
+            </Button>
+          </div>
+        </div>
+      ) : trainingMaxesLoading && trainingMaxes.length === 0 ? (
+        <div className="mb-4 grid grid-cols-3 gap-2 sm:mb-5">
+          {[0, 1, 2].map(i => (
+            <div
+              key={i}
+              className="h-[72px] animate-pulse rounded-2xl bg-white shadow-sm dark:bg-slate-900"
+            />
+          ))}
+        </div>
+      ) : trainingMaxes.length === 0 ? (
+        <div className="mb-6 sm:mb-8">
+          <div className="rounded-2xl border border-dashed border-slate-200 bg-white/70 px-5 py-6 text-center dark:border-slate-700 dark:bg-slate-900/50">
+            <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Los RM de {activeRoutineName}</p>
+            <p className="mx-auto mt-1.5 max-w-sm text-xs leading-relaxed text-slate-500">
+              Esta rutina aún no tiene marcas. Añádelas en Rutina; en cuanto las pongas salen aquí.
+            </p>
+            <Button variant="primary" className="mx-auto mt-4 h-10 rounded-xl" onClick={onOpenProgram}>
+              <Dumbbell size={15} />
+              Ir a la rutina
+            </Button>
+          </div>
+        </div>
+      ) : (
+      <>
+      <motion.div variants={ENTER_ITEM} initial={false} className="mb-4 sm:mb-5">
+        <div className={cn(
+          'grid gap-2',
+          trainingMaxes.length <= 2 ? 'grid-cols-2' : 'grid-cols-3'
+        )}>
+          {trainingMaxes.map((tm, index) => {
+            const config = getTMConfig(tm.name);
+            const unit = unitForTm(tm);
+            const stat = tmStatDisplay[tm.id];
+            return (
+              <motion.button
+                key={`${tm.id}-${chartEnterKey}`}
+                type="button"
+                onClick={() => setSelectedTmId(tm.id)}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.05 * index, duration: 0.28, ease: EASE_OUT }}
+                whileTap={{ scale: 0.97 }}
+                className="relative min-w-0 overflow-hidden rounded-2xl bg-white px-2.5 pb-2.5 pt-3 text-left shadow-sm ring-1 ring-black/[0.04] dark:bg-slate-900 dark:ring-white/[0.06]"
+              >
+                <span
+                  className="pointer-events-none absolute inset-x-0 top-0 h-1"
+                  style={{ background: config.color }}
+                />
+                <span
+                  className="pointer-events-none absolute -right-5 -top-6 h-16 w-16 rounded-full opacity-40 blur-2xl"
+                  style={{ background: config.color }}
+                />
+                <span className={cn('relative block truncate text-[11px] font-semibold', config.text)}>
+                  {tm.name}
+                </span>
+                <span className="relative mt-1 block truncate text-[22px] font-black leading-none text-slate-900 dark:text-white">
+                  <ModalCount
+                    value={Math.round(tm.value * 10) / 10}
+                    replayKey={`${tm.id}-${chartEnterKey}`}
+                    delay={0.02 * index}
+                  />
+                  <span className="ml-0.5 text-[10px] font-semibold text-slate-400">{unit}</span>
+                </span>
+                {stat && (
+                  <span className={cn(
+                    'relative mt-1.5 block truncate text-[10px] font-semibold',
+                    stat.abs.tone === 'positive' && 'text-emerald-600 dark:text-emerald-400',
+                    stat.abs.tone === 'negative' && 'text-rose-500',
+                    stat.abs.tone === 'neutral' && 'text-slate-400'
+                  )}>
+                    {stat.abs.value}
+                  </span>
+                )}
+              </motion.button>
+            );
+          })}
+        </div>
+        <p className="mt-2 text-center text-[11px] text-slate-400">Toca una marca para ver la gráfica</p>
+      </motion.div>
+
+      {todayPlan && (
+        <motion.button
+          variants={ENTER_ITEM}
+          initial={false}
+          type="button"
+          onClick={onOpenProgram}
+          className="mb-4 flex w-full items-center gap-3 rounded-2xl bg-white px-3.5 py-3 text-left shadow-sm ring-1 ring-black/[0.04] dark:bg-slate-900 dark:ring-white/[0.06] sm:mb-5"
+        >
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300">
+            <Dumbbell size={18} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400">Hoy · {todayPlan.title}</span>
+            {todayPlan.rest ? (
+              <span className="mt-0.5 block text-sm font-semibold text-slate-800 dark:text-slate-100">Día de descanso</span>
+            ) : (
+              <span className="mt-0.5 block truncate text-sm font-semibold text-slate-800 dark:text-slate-100">
+                {todayPlan.lifts.join(' · ')}
+                {todayPlan.more > 0 ? ` +${todayPlan.more}` : ''}
+              </span>
+            )}
+          </span>
+          <span className="shrink-0 text-[11px] font-bold text-indigo-600">Rutina</span>
+        </motion.button>
+      )}
+
+      {sessionStats.totalSets > 0 && (
+      <motion.div variants={ENTER_ITEM} initial={false} className="mb-6 max-[400px]:mb-5 sm:mb-8 md:mb-10">
+        <StrengthInsights stats={sessionStats} isDark={isDarkTheme} enterKey={chartEnterKey} />
+      </motion.div>
+      )}
+      </>
+      )}
+
+      <motion.div
+        variants={ENTER_ITEM}
+        initial={false}
+        className="mb-6 grid grid-cols-2 gap-2 max-[360px]:gap-1.5 max-[400px]:mb-5 sm:mb-8 sm:gap-4 md:mb-10"
+      >
+        {featuredTournament ? (
+          <button
+            type="button"
+            onClick={() => onOpenSocial('challenges', { from: 'dashboard' })}
+            className="flex min-w-0 items-center gap-2 rounded-2xl bg-white px-3 py-3 text-left shadow-sm ring-1 ring-black/[0.04] dark:bg-slate-900 dark:ring-white/[0.06]"
+          >
+            <Trophy size={16} className="shrink-0 text-amber-500" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[12px] font-semibold text-slate-800 dark:text-slate-100">
+                {featuredTournament.title}
+              </span>
+              <span className="mt-0.5 block truncate text-[10px] text-slate-400">
+                {featuredFriendTournament
+                  ? (friendTournamentsToJoin.length > 1 ? `${friendTournamentsToJoin.length} de amigos` : 'Te invitan')
+                  : `${featuredTournament.exercise}${tournamentMoreCount > 0 ? ` · +${tournamentMoreCount}` : ''}`}
+              </span>
+            </span>
+            {featuredFriendTournament && (
+              <span className="shrink-0 rounded-full bg-indigo-600 px-2 py-0.5 text-[9px] font-semibold text-white">Unirse</span>
+            )}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => onOpenSocial('challenges', { from: 'dashboard' })}
+            className="flex items-center gap-2 rounded-2xl bg-white px-3 py-3 text-left shadow-sm ring-1 ring-black/[0.04] dark:bg-slate-900 dark:ring-white/[0.06]"
+          >
+            <Trophy size={16} className="shrink-0 text-amber-500" />
+            <span className="min-w-0 truncate text-[12px] font-semibold text-slate-700 dark:text-slate-200">Explorar torneos</span>
+          </button>
+        )}
+        {featuredGymGroup ? (
+          <button
+            type="button"
+            onClick={() => {
+              const hasMe = featuredGymGroup.some(ci => ci.userId === user.id);
+              if (!hasMe) setSelectedCheckIn(featuredGymGroup[0]);
+              else onOpenSocial('checkins', { from: 'dashboard' });
+            }}
+            className="flex min-w-0 items-center gap-2 rounded-2xl bg-white px-3 py-3 text-left shadow-sm ring-1 ring-black/[0.04] dark:bg-slate-900 dark:ring-white/[0.06]"
+          >
+            <div className="flex shrink-0 -space-x-1.5">
+              {featuredGymAvatars.slice(0, 3).map((ci, idx) => (
+                <Avatar
+                  key={`${(ci as any).userId || (ci as any).id || idx}-${idx}`}
+                  src={(ci as any).avatar}
+                  name={(ci as any).name || (ci as any).userName}
+                  className="h-7 w-7 rounded-full border-2 border-white dark:border-slate-900"
+                />
+              ))}
+            </div>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[12px] font-semibold text-slate-800 dark:text-slate-100">
+                {featuredGymGroup.length > 1 ? `${featuredGymGroup.length} van al gym` : featuredGymGroup[0].userName}
+              </span>
+              <span className="mt-0.5 block truncate text-[10px] text-slate-400">
+                {featuredGymGroup[0].gymName} · {featuredGymGroup[0].time}
+              </span>
+            </span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => onOpenSocial('checkins', { openCheckInModal: true, from: 'dashboard' })}
+            className="flex items-center gap-2 rounded-2xl bg-white px-3 py-3 text-left shadow-sm ring-1 ring-black/[0.04] dark:bg-slate-900 dark:ring-white/[0.06]"
+          >
+            <MapPin size={16} className="shrink-0 text-emerald-500" />
+            <span className="min-w-0 truncate text-[12px] font-semibold text-slate-700 dark:text-slate-200">Avisar que voy</span>
+          </button>
+        )}
+      </motion.div>
+
+      <GlassModal
+        open={!!selectedTm}
+        onClose={() => setSelectedTmId(null)}
+        title={selectedTm?.name}
+        subtitle={selectedTm ? `Cómo ha cambiado en ${activeRoutineName}` : undefined}
+        wide
+        rise
+      >
+        {selectedTm && (
+          <div className="space-y-3">
+            <motion.p
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.28, ease: EASE_OUT }}
+              className="text-4xl font-black leading-none text-slate-900 dark:text-white"
+            >
+              <ModalCount value={Math.round(selectedTm.value * 10) / 10} replayKey={selectedTm.id} />
+              <span className="ml-1 text-sm font-semibold text-slate-400">{unitForTm(selectedTm)}</span>
+            </motion.p>
+            {tmStatDisplay[selectedTm.id] && (
+              <motion.div
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.12, duration: 0.28, ease: EASE_OUT }}
+                className="flex items-baseline gap-3 text-sm font-semibold"
+              >
+                <span className={cn(
+                  tmStatDisplay[selectedTm.id].abs.tone === 'positive' && 'text-emerald-600 dark:text-emerald-400',
+                  tmStatDisplay[selectedTm.id].abs.tone === 'negative' && 'text-rose-500',
+                  tmStatDisplay[selectedTm.id].abs.tone === 'neutral' && 'text-slate-400'
+                )}>
+                  {tmStatDisplay[selectedTm.id].abs.value}
+                </span>
+                <span className={cn(
+                  tmStatDisplay[selectedTm.id].pct.tone === 'positive' && 'text-emerald-600 dark:text-emerald-400',
+                  tmStatDisplay[selectedTm.id].pct.tone === 'negative' && 'text-rose-500',
+                  tmStatDisplay[selectedTm.id].pct.tone === 'neutral' && 'text-slate-400'
+                )}>
+                  {tmStatDisplay[selectedTm.id].pct.value}
+                </span>
+              </motion.div>
+            )}
+            <motion.div
+              initial={{ opacity: 0, y: 14 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.18, duration: 0.32, ease: EASE_OUT }}
+            >
+              <LiftAreaChart
+                key={selectedTm.id}
+                data={tmChartDataById[selectedTm.id] ?? [{ date: 'Inicio', value: selectedTm.value }]}
+                color={getTMConfig(selectedTm.name).color}
+                dataKey="value"
+                unit={unitForTm(selectedTm)}
+                isDark={isDarkTheme}
+                animate
+              />
+            </motion.div>
+          </div>
+        )}
+      </GlassModal>
+
+      <GlassModal
+        open={totalOpen && canTotal}
+        onClose={() => setTotalOpen(false)}
+        title="Total en kg"
+        subtitle={`Suma de los RM de peso de ${activeRoutineName}`}
+        rise
+      >
+        <div className="space-y-3">
+          <div className="flex items-end justify-between gap-3">
+            <motion.p
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="text-3xl font-black text-slate-900 dark:text-white"
+            >
+              <ModalCount value={Math.round(routineProgressMeta.value)} replayKey="total" />
+              <span className="ml-1 text-sm font-semibold text-slate-400">kg</span>
+            </motion.p>
+            <div className="text-right text-sm font-semibold">
+              <p className={cn(
+                mainStatDisplay.abs.tone === 'positive' && 'text-emerald-600 dark:text-emerald-400',
+                mainStatDisplay.abs.tone === 'negative' && 'text-rose-500',
+                mainStatDisplay.abs.tone === 'neutral' && 'text-slate-400'
+              )}>
+                {mainStatDisplay.abs.value}
+              </p>
+              <p className={cn(
+                mainStatDisplay.pct.tone === 'positive' && 'text-emerald-600 dark:text-emerald-400',
+                mainStatDisplay.pct.tone === 'negative' && 'text-rose-500',
+                mainStatDisplay.pct.tone === 'neutral' && 'text-slate-400'
+              )}>
+                {mainStatDisplay.pct.value}
+              </p>
+            </div>
+          </div>
+          <LiftAreaChart
+            data={mainChartData}
+            color={totalStroke}
+            dataKey="total"
+            unit="kg"
+            isDark={isDarkTheme}
+            animate
+          />
+          <ul className="space-y-1.5">
+            {weightTms.map(tm => (
+              <li key={tm.id} className="flex items-center justify-between text-sm">
+                <span className="truncate text-slate-600 dark:text-slate-300">{tm.name}</span>
+                <span className="tabular-nums font-semibold text-slate-900 dark:text-white">{Math.round(tm.value)} kg</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </GlassModal>
 
       {selectedCheckIn && typeof document !== 'undefined' && createPortal(
         <div className="fixed inset-0 flex items-center justify-center px-4 min-h-[100dvh]" style={{ zIndex: 100000 }}>

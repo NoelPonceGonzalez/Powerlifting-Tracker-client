@@ -2,8 +2,9 @@ import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { flushSync } from 'react-dom';
 import { MotionConfig } from 'motion/react';
 import * as XLSX from 'xlsx';
-import { LayoutDashboard, Dumbbell, Users, UserRound, Plus, MessageCircle, Trophy } from 'lucide-react';
+import { LayoutDashboard, Dumbbell, Plus, MessageCircle, Trophy } from 'lucide-react';
 import { ComposeSheet } from '@/src/components/ComposeSheet';
+import { PublishModal } from '@/src/components/social/PublishModal';
 
 // Views
 import { LoginView } from '@/src/views/Login';
@@ -50,7 +51,13 @@ import {
   dateISOToUtcNoonISO,
   entryDateISO,
 } from '@/src/lib/calendarWeekDate';
-import { buildBaselineHistoryEntry, TM_BASELINE_DATE_ISO } from '@/src/lib/historyTm';
+import {
+  applySmartTmCorrection,
+  buildBaselineHistoryEntry,
+  inferTmChangeKind,
+  lastHistoryTmBeforePeak,
+  TM_BASELINE_DATE_ISO,
+} from '@/src/lib/historyTm';
 import { mergeRoutineHistoryFromServer } from '@/src/lib/routineHistoryMerge';
 import { serializeLogEntryForMongo } from '@/src/lib/routineLogs';
 import {
@@ -131,9 +138,9 @@ const INITIAL_CHECKINS: GymCheckIn[] = [];
 
 // --- Constants & Mock Data ---
 const INITIAL_RMS: RMData = {
-  bench: 110,
-  squat: 140,
-  deadlift: 190
+  bench: 0,
+  squat: 0,
+  deadlift: 0
 };
 
 const EXERCISES: readonly Exercise[] = [
@@ -355,6 +362,70 @@ function getWeeksForTrainingMaxScanWithLog(routine: RoutinePlan, logId: string):
   return Array.from(merged.values());
 }
 
+function loggedPeaksByTm(
+  routine: RoutinePlan,
+  tmList: TrainingMax[],
+  weeks: TrainingWeek[]
+): Map<string, number> {
+  const peaks = new Map<string, number>();
+  const roundTo25 = (n: number) => Math.round(n / 2.5) * 2.5;
+  for (const week of weeks) {
+    for (const day of week.days) {
+      for (const ex of day.exercises) {
+        const linked = resolveTmForAutoBump(ex, tmList);
+        if (!linked) continue;
+        const lid = routineLogKeyFromIds(week, day, ex);
+        const l = resolveLogEntryForMerge(routine.logs, lid);
+        if (!l?.sets) continue;
+        for (const set of l.sets) {
+          // Solo cuenta lo que el atleta ha marcado como hecho: el peso del Word no sube el RM.
+          if (!set.completed) continue;
+          let cand = 0;
+          if (linked.mode === 'weight') {
+            const w = set.weight ?? 0;
+            if (w > 0) cand = roundTo25(w);
+          } else {
+            const val = set.reps ?? 0;
+            if (val > 0) cand = Math.round(val);
+          }
+          if (cand > (peaks.get(linked.id) ?? 0)) peaks.set(linked.id, cand);
+        }
+      }
+    }
+  }
+  return peaks;
+}
+
+function syncTmsFromLoggedPeaks(
+  tms: TrainingMax[],
+  peaks: Map<string, number>,
+  autoBump: Map<string, number>,
+  history: HistoryEntry[]
+): { next: TrainingMax[]; autoBump: Map<string, number>; bumpedIds: string[]; revertedIds: string[] } {
+  const nextAuto = new Map(autoBump);
+  const bumpedIds: string[] = [];
+  const revertedIds: string[] = [];
+  const next = tms.map((tm) => {
+    const peak = peaks.get(tm.id) ?? 0;
+    if (peak > tm.value) {
+      nextAuto.set(tm.id, peak);
+      bumpedIds.push(tm.id);
+      return { ...tm, value: peak };
+    }
+    if (nextAuto.get(tm.id) === tm.value && peak < tm.value) {
+      const floor = lastHistoryTmBeforePeak(history, tm.id, tm.value) ?? 0;
+      const revertTo = Math.max(peak, floor);
+      if (revertTo > 0 && revertTo < tm.value) {
+        nextAuto.delete(tm.id);
+        revertedIds.push(tm.id);
+        return { ...tm, value: revertTo };
+      }
+    }
+    return tm;
+  });
+  return { next, autoBump: nextAuto, bumpedIds, revertedIds };
+}
+
 /** Acepta clave canónica `w13-d0-e1` (servidor/DB) o legada `w13-w13-d0-w13-d0-e1`. */
 function parseLogIdForHistory(logId: string): { weekId: string; dayId: string; exId: string } | null {
   const canon = /^w(\d+)-d(\d+)-e(\d+)$/.exec(logId);
@@ -442,6 +513,7 @@ function exercisePatchBodyFromUpdates(updates: Partial<PlannedExercise>): Record
   if (updates.pct !== undefined) out.pct = updates.pct;
   if (updates.pctPerSet !== undefined) out.pctPerSet = updates.pctPerSet;
   if (updates.weight !== undefined) out.weight = updates.weight;
+  if (updates.weightPerSet !== undefined) out.weightPerSet = updates.weightPerSet;
   if (updates.mode !== undefined) out.mode = updates.mode;
   if (updates.linkedTo !== undefined) out.linkedTo = updates.linkedTo;
   if (updates.targetRpe !== undefined) out.targetRpe = updates.targetRpe;
@@ -528,11 +600,6 @@ const createRoutinePlan = (id: string, name: string, options?: boolean | CreateR
   };
 };
 
-const INITIAL_ROUTINES: RoutinePlan[] = [
-  createRoutinePlan('routine-a', 'Rutina A', { empty: true }),
-  createRoutinePlan('routine-b', 'Rutina B', { empty: true }),
-];
-
 const INITIAL_FRIENDS: FriendRequest[] = [];
 
 export default function App() {
@@ -549,11 +616,12 @@ export default function App() {
   useEffect(() => {
     setAliveViews((prev) => (prev[view] ? prev : { ...prev, [view]: true }));
   }, [view]);
-  const [dashboardEnterKey] = useState(0);
+  const [dashboardEnterKey, setDashboardEnterKey] = useState(0);
+  const [tmsLoading, setTmsLoading] = useState(false);
 
   // State
   const [rms, setRms] = useState<RMData>(INITIAL_RMS);
-  const [tms, setTms] = useState<TrainingMax[]>(INITIAL_TMS);
+  const [tms, setTms] = useState<TrainingMax[]>([]);
   /** TM inferidos por nombre de ejercicio (sin vínculo a TM de rutina). */
   const [internalExerciseMaxes, setInternalExerciseMaxes] = useState<InternalExerciseMax[]>([]);
   /** Evita cierres obsoletos en handleSetLogChange (varias series antes del siguiente render). */
@@ -563,8 +631,12 @@ export default function App() {
   rmsRef.current = rms;
   const internalExerciseMaxesRef = useRef<InternalExerciseMax[]>(internalExerciseMaxes);
   internalExerciseMaxesRef.current = internalExerciseMaxes;
-  const [routines, setRoutines] = useState<RoutinePlan[]>(INITIAL_ROUTINES);
-  const [activeRoutineId, setActiveRoutineId] = useState<string>(INITIAL_ROUTINES[0].id);
+  const [routines, setRoutines] = useState<RoutinePlan[]>([]);
+  const [activeRoutineId, setActiveRoutineId] = useState('');
+  useEffect(() => {
+    if (view !== 'dashboard') return;
+    setDashboardEnterKey(k => k + 1);
+  }, [view, activeRoutineId]);
   /** Ref para ignorar respuestas de fetch de TM/historial si el usuario ya cambió de rutina. */
   const activeRoutineIdRef = useRef(activeRoutineId);
   activeRoutineIdRef.current = activeRoutineId;
@@ -573,6 +645,7 @@ export default function App() {
   const [programScreen, setProgramScreen] = useState<'plan' | 'routines'>('plan');
   /** Tras crear una rutina con «tengo un documento»: abre el importador en el plan. */
   const [openImportAfterCreate, setOpenImportAfterCreate] = useState(0);
+  const [openCreateRoutineSignal, setOpenCreateRoutineSignal] = useState(0);
   const [viewAsOfWeek, setViewAsOfWeek] = useState<number | null>(null); // null = presente, número = viaje en el tiempo
   const [friends, setFriends] = useState<FriendRequest[]>(INITIAL_FRIENDS);
   const [friendsList, setFriendsList] = useState<Friend[]>([]);
@@ -625,6 +698,7 @@ export default function App() {
   });
 
   const [openPublishSignal, setOpenPublishSignal] = useState(0);
+  const [storyComposerOpen, setStoryComposerOpen] = useState(false);
   const [composeOpen, setComposeOpen] = useState(false);
   const [checkInIntent, setCheckInIntent] = useState<'now' | 'later' | null>(null);
   const [socialBackTo, setSocialBackTo] = useState<'feed' | 'profile' | 'dashboard'>('feed');
@@ -652,11 +726,11 @@ export default function App() {
       if (opts?.from) {
         setSocialBackTo(opts.from);
       } else if (next === 'friends') {
-        setSocialBackTo('profile');
+        setSocialBackTo(view === 'settings' ? 'profile' : 'dashboard');
       } else if (next === 'challenges' || next === 'checkins' || next === 'chat') {
-        setSocialBackTo(view === 'settings' ? 'profile' : view === 'dashboard' ? 'dashboard' : 'feed');
+        setSocialBackTo(view === 'settings' ? 'profile' : 'dashboard');
       } else {
-        setSocialBackTo('feed');
+        setSocialBackTo('dashboard');
       }
       if (opts?.openPublish) {
         setOpenPublishSignal((s) => s + 1);
@@ -670,8 +744,14 @@ export default function App() {
   );
 
   const openProgramPlan = useCallback(() => {
-    setProgramScreen('plan');
+    setProgramScreen(routines.length === 0 ? 'routines' : 'plan');
     setView('program');
+  }, [routines.length]);
+
+  const openCreateRoutine = useCallback(() => {
+    setProgramScreen('routines');
+    setView('program');
+    setOpenCreateRoutineSignal(n => n + 1);
   }, []);
 
   const getYearAndWeek = (d = new Date()) => ({
@@ -806,6 +886,7 @@ export default function App() {
     () => routines.find((routine) => routine.id === activeRoutineId) || routines[0],
     [routines, activeRoutineId]
   );
+  const hasRoutine = routines.length > 0 && !!activeRoutine;
   /** Nombres únicos de ejercicios de la rutina activa (sugerencias al crear un torneo). */
   const activeRoutineExerciseNames = useMemo(() => {
     if (!activeRoutine) return [];
@@ -926,11 +1007,11 @@ export default function App() {
   );
   /** Evita guardar historial/TM en Mongo con `routineId` nuevo y `tms` aún de la rutina anterior. */
   const tmsLoadedForRoutineRef = useRef<string | null>(null);
+  /** TM subido solo por series: si corriges el kilo, se deshace el pico. */
+  const tmAutoBumpValuesRef = useRef<Map<string, number>>(new Map());
   const tmHighlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Tarjetas TM que acaban de subir desde el registro de series (feedback visual). */
   const [tmAutoHighlightIds, setTmAutoHighlightIds] = useState<string[]>([]);
-  /** PUT /api/routines/:id progressCheckpointAt (botón Checkpoint en Rutina). */
-  const [routineCheckpointSaving, setRoutineCheckpointSaving] = useState(false);
   /** POST /api/routines (modal Crear rutina). */
   const [routineCreateLoading, setRoutineCreateLoading] = useState(false);
   /** DELETE /api/routines/:id — tarjeta en gestión de rutinas. */
@@ -1137,44 +1218,9 @@ export default function App() {
           apiGet<any[]>('/api/routines').catch(() => []),
           apiGet<any[]>('/api/checkins').catch(() => []),
         ]);
-        // Usuario sin rutinas: una rutina vacía (sin TM ni ejercicios; mismo criterio que "Crear rutina")
         if (!routinesRes?.length) {
-          const seedRoutine = createRoutinePlan('seed', 'Mi rutina', { empty: true, sameTemplateAllWeeks: true });
-          try {
-            const w = getWeeksAt(seedRoutine, currentWeekOfYear);
-            const bt =
-              seedRoutine.baseTemplate?.length ? seedRoutine.baseTemplate : deriveBaseTemplateFromWeeks(w);
-            const created = await apiPost<any>('/api/routines', {
-              name: seedRoutine.name,
-              versions: [{ effectiveFromWeek: 1, weeks: bt }],
-              baseTemplate: bt,
-              weekTypeOverrides: seedRoutine.weekTypeOverrides || [],
-              sameTemplateAllWeeks: true,
-              isActive: true,
-            });
-            const plan: RoutinePlan = expandRoutineFromApi({
-              _id: created._id,
-              id: created.id,
-              name: created.name,
-              sameTemplateAllWeeks: created.sameTemplateAllWeeks,
-              hiddenFromSocial: created.hiddenFromSocial,
-              cycleLength: created.cycleLength,
-              skippedWeeks: created.skippedWeeks,
-              shiftedAtCalendarWeeks: created.shiftedAtCalendarWeeks,
-              calendarDayShifts: created.calendarDayShifts,
-              weeks: created.weeks,
-              versions: created.versions,
-              baseTemplate: created.baseTemplate,
-              weekTypeOverrides: created.weekTypeOverrides,
-              logs: {},
-              progressCheckpointAt: created.progressCheckpointAt,
-              progressCheckpointTms: created.progressCheckpointTms,
-            });
-            setRoutines([plan]);
-            setActiveRoutineId(plan.id);
-          } catch (e) {
-            console.error('[App] Error creando rutina seed:', e);
-          }
+          setRoutines([]);
+          setActiveRoutineId('');
         }
         // Los TM se cargan por rutina activa (efecto dedicado).
         // Rutinas: server → RoutinePlan
@@ -1224,7 +1270,15 @@ export default function App() {
       prevRoutineDataKeyRef.current = '';
       return;
     }
-    if (!activeRoutineId) return;
+    if (!activeRoutineId) {
+      tmsLoadedForRoutineRef.current = null;
+      prevRoutineDataKeyRef.current = '';
+      setTms([]);
+      setHistory([]);
+      setRms({ bench: 0, squat: 0, deadlift: 0 });
+      setTmsLoading(false);
+      return;
+    }
     const key = `${user.id}::${activeRoutineId}`;
     const scopeChanged = prevRoutineDataKeyRef.current !== key;
 
@@ -1234,24 +1288,23 @@ export default function App() {
         tmHighlightTimerRef.current = null;
       }
       setTmAutoHighlightIds([]);
+      tmAutoBumpValuesRef.current = new Map();
     }
     const isLocalOnlyRoutine = activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20;
     if (isLocalOnlyRoutine) {
       if (scopeChanged) {
-        setTms(INITIAL_TMS);
-        setRms({
-          bench: INITIAL_TMS[0]?.value ?? 110,
-          squat: INITIAL_TMS[1]?.value ?? 140,
-          deadlift: INITIAL_TMS[2]?.value ?? 190,
-        });
+        setTms([]);
+        setRms({ bench: 0, squat: 0, deadlift: 0 });
         tmsLoadedForRoutineRef.current = activeRoutineId;
       }
+      setTmsLoading(false);
       return () => {
         prevRoutineDataKeyRef.current = key;
       };
     }
     if (scopeChanged) {
       tmsLoadedForRoutineRef.current = null;
+      setTmsLoading(true);
       setTms([]);
       setRms({ bench: 0, squat: 0, deadlift: 0 });
     }
@@ -1266,6 +1319,7 @@ export default function App() {
           setTms([]);
           setRms({ bench: 0, squat: 0, deadlift: 0 });
           tmsLoadedForRoutineRef.current = rid;
+          setTmsLoading(false);
           return;
         }
         const mapped: TrainingMax[] = tmsRes.map((t: any) => ({
@@ -1288,12 +1342,16 @@ export default function App() {
           queueMicrotask(() => setRms(rmsFromTms));
           return merged;
         });
-        if (!cancelled && activeRoutineIdRef.current === rid) tmsLoadedForRoutineRef.current = rid;
+        if (!cancelled && activeRoutineIdRef.current === rid) {
+          tmsLoadedForRoutineRef.current = rid;
+          setTmsLoading(false);
+        }
       } catch (e) {
         console.error('[App] Error cargando TMs de la rutina:', e);
         if (!cancelled && activeRoutineIdRef.current === rid) {
           setTms([]);
           setRms({ bench: 0, squat: 0, deadlift: 0 });
+          setTmsLoading(false);
         }
       }
     })();
@@ -1931,21 +1989,13 @@ export default function App() {
   };
 
   /**
-   * `kind` decide qué le pasa al historial, y con él a los gráficos de Progreso:
-   *
-   * - `'record'` (marca nueva): el pasado no se toca. El gráfico coge el valor nuevo solo
-   *   en el punto de hoy, así que la línea escalona y se ve la mejora. Además el servidor
-   *   avisa a los amigos del PR.
-   * - `'correction'` (estaba mal apuntado): se reescribe el RM en todo el historial, porque
-   *   el valor viejo nunca fue real.
-   *
-   * Antes toda edición era corrección: subir un RM reescribía el pasado y la gráfica salía
-   * plana, como si nunca hubieras progresado.
+   * El tipo se infiere: bajar o corregir un alta plana reescribe el pico; si ya hay
+   * escalones, una subida a mano es marca. Las series registradas marcan PR solas.
    */
   const handleUpdateTM = (
     id: string,
     updates: Partial<TrainingMax>,
-    kind: 'record' | 'correction' = 'record'
+    kind?: 'record' | 'correction'
   ) => {
     const prevTms = tms;
     const prevRms = rms;
@@ -1955,34 +2005,48 @@ export default function App() {
       setRms(prev => ({ ...prev, [currentTm.linkedExercise!]: updates.value! }));
     }
     if (updates.value !== undefined) {
+      tmAutoBumpValuesRef.current.delete(id);
       const linked = currentTm?.linkedExercise;
       const newRms =
         linked === 'bench' || linked === 'squat' || linked === 'deadlift'
           ? { ...rms, [linked]: updates.value! }
           : rms;
       const updatedTmsList = tms.map(t => (t.id === id ? { ...t, ...updates, value: updates.value! } : t));
-      if (kind === 'record') {
+      const inferred =
+        kind ??
+        inferTmChangeKind(historyRef.current, id, currentTm?.value ?? updates.value!, updates.value!);
+      if (inferred === 'record') {
         recordTmInHistory(updatedTmsList, newRms, prevTms, prevRms);
       } else {
-        setHistory(prev => {
-          if (prev.length === 0) return prev;
-          return prev.map((entry) => {
-            const nextTm = { ...(entry.trainingMaxes || {}), [id]: updates.value! };
-            const snapshotTms = updatedTmsList.map((t) => ({
-              ...t,
-              value: t.id === id ? updates.value! : (nextTm[t.id] ?? t.value),
-            }));
-            const prog = computeRoutineProgressTotal(snapshotTms);
-            return {
-              ...entry,
-              trainingMaxes: nextTm,
-              rms: linked && entry.rms ? { ...entry.rms, [linked]: updates.value! } : newRms,
-              total: prog.value,
-              progressKind: prog.kind,
-            };
-          });
-        });
+        setHistory((prev) =>
+          applySmartTmCorrection(
+            prev,
+            updatedTmsList,
+            id,
+            currentTm?.value ?? updates.value!,
+            updates.value!,
+            linked ? String(linked) : undefined
+          )
+        );
       }
+      (async () => {
+        if (!/^[a-f0-9]{24}$/i.test(id)) return;
+        if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) return;
+        try {
+          await apiPut(`/api/training-maxes/${id}`, {
+            ...updates,
+            correction: inferred === 'correction' ? true : undefined,
+            routineId: activeRoutineId,
+            updatedAt: dateISOToUtcNoonISO(planViewAnchorRef.current.dateISO),
+          });
+          bumpRoutineDataRefresh();
+        } catch (e) {
+          console.error('[TM] Error actualizando:', e);
+          setTms(prevTms);
+          setRms(prevRms);
+        }
+      })();
+      return;
     }
     (async () => {
       if (!/^[a-f0-9]{24}$/i.test(id)) return;
@@ -1990,7 +2054,6 @@ export default function App() {
       try {
         await apiPut(`/api/training-maxes/${id}`, {
           ...updates,
-          correction: updates.value !== undefined && kind === 'correction' ? true : undefined,
           routineId: activeRoutineId,
           updatedAt: dateISOToUtcNoonISO(planViewAnchorRef.current.dateISO),
         });
@@ -2186,70 +2249,22 @@ export default function App() {
   const handleDeleteRoutine = async (routineId: string) => {
     const target = routines.find((r) => r.id === routineId);
     const label = target?.name || 'esta rutina';
-    const isLast = routines.length <= 1;
     const isLocalId = (id: string) => id.startsWith('routine-') && id.length < 20;
-    const confirmMsg = isLast
-      ? `¿Borrar «${label}»? Se creará una rutina vacía en su lugar.`
-      : `¿Borrar «${label}»? No se puede deshacer.`;
-    if (!window.confirm(confirmMsg)) return;
+    if (!window.confirm(`¿Borrar «${label}»? No se puede deshacer.`)) return;
 
     setRoutineDeleteLoadingId(routineId);
     try {
-      if (isLast) {
-        const blank = createRoutinePlan(`routine-${Math.random().toString(36).slice(2, 8)}`, 'Mi rutina', {
-          empty: true,
-          sameTemplateAllWeeks: true,
-          cycleLength: 4,
-        });
-        const w = getWeeksAt(blank, currentWeekOfYear);
-        const bt = blank.baseTemplate?.length ? blank.baseTemplate : deriveBaseTemplateFromWeeks(w, 4);
-        const created = await apiPost<any>('/api/routines', {
-          name: blank.name,
-          versions: [{ effectiveFromWeek: 1, weeks: bt }],
-          baseTemplate: bt,
-          weekTypeOverrides: blank.weekTypeOverrides || [],
-          sameTemplateAllWeeks: true,
-          cycleLength: 4,
-          isActive: true,
-        });
-        const plan: RoutinePlan = expandRoutineFromApi({
-          _id: created._id,
-          id: created.id,
-          name: created.name,
-          sameTemplateAllWeeks: created.sameTemplateAllWeeks,
-          hiddenFromSocial: created.hiddenFromSocial,
-          cycleLength: created.cycleLength,
-          skippedWeeks: created.skippedWeeks,
-          shiftedAtCalendarWeeks: created.shiftedAtCalendarWeeks,
-          calendarDayShifts: created.calendarDayShifts,
-          weeks: created.weeks,
-          versions: created.versions,
-          baseTemplate: created.baseTemplate,
-          weekTypeOverrides: created.weekTypeOverrides,
-          logs: created.logs,
-          progressCheckpointAt: created.progressCheckpointAt,
-          progressCheckpointTms: created.progressCheckpointTms,
-        });
-        if (!isLocalId(routineId)) {
-          await apiDelete(`/api/routines/${routineId}`);
-        }
-        setRoutines([plan]);
-        setActiveRoutineId(plan.id);
-        try {
-          await apiPut(`/api/routines/${plan.id}/activate`, {});
-        } catch (activateErr) {
-          console.error('[Routine] Error activando rutina nueva:', activateErr);
-        }
-        bumpRoutineDataRefresh();
-        return;
-      }
-
       if (!isLocalId(routineId)) {
         await apiDelete(`/api/routines/${routineId}`);
       }
       const remaining = routines.filter((r) => r.id !== routineId);
       setRoutines(remaining);
-      if (activeRoutineId === routineId) {
+      if (remaining.length === 0) {
+        setActiveRoutineId('');
+        setHistory([]);
+        setTms([]);
+        setProgramScreen('routines');
+      } else if (activeRoutineId === routineId) {
         const nextId = remaining[0].id;
         setActiveRoutineId(nextId);
         if (!isLocalId(nextId)) {
@@ -2508,6 +2523,7 @@ export default function App() {
                       ...(ex.pct !== undefined ? { pct: ex.pct } : {}),
                       ...(ex.pctPerSet !== undefined ? { pctPerSet: ex.pctPerSet } : {}),
                       ...(ex.weight !== undefined ? { weight: ex.weight } : {}),
+                      ...(ex.weightPerSet !== undefined ? { weightPerSet: ex.weightPerSet } : {}),
                       ...(ex.mode !== undefined ? { mode: ex.mode } : {}),
                     }
                   : e
@@ -2552,40 +2568,44 @@ export default function App() {
     if (!user) return;
     const allWeeks = getWeeksForTrainingMaxScan(routine);
     const currentTms = tmsRef.current;
-    const newTms = currentTms.map((tm) => ({ ...tm }));
-    let didBump = false;
-    allWeeks.forEach((week: TrainingWeek) => {
-      week.days.forEach((day: TrainingDay) => {
-        day.exercises.forEach((ex: PlannedExercise) => {
-          const linkedTM = resolveTmForAutoBump(ex, newTms);
-          if (!linkedTM) return;
-          const idxTm = newTms.findIndex((t) => t.id === linkedTM.id);
-          if (idxTm < 0) return;
-          const lid = routineLogKeyFromIds(week, day, ex);
-          const l = resolveLogEntryForMerge(routine.logs, lid);
-          if (!l?.sets) return;
-          l.sets.forEach((set: SetLog) => {
-            if (linkedTM.mode === 'weight') {
-              const w = set.weight ?? 0;
-              if (w <= 0) return;
-              const candidate = roundTo25(w);
-              if (candidate > newTms[idxTm].value) {
-                newTms[idxTm] = { ...newTms[idxTm], value: candidate };
-                didBump = true;
-              }
-            } else if (linkedTM.mode === 'reps' || linkedTM.mode === 'seconds') {
-              const val = set.reps ?? 0;
-              if (val <= 0) return;
-              const candidate = Math.round(val);
-              if (candidate > newTms[idxTm].value) {
-                newTms[idxTm] = { ...newTms[idxTm], value: candidate };
-                didBump = true;
-              }
-            }
-          });
-        });
-      });
-    });
+    const peaks = loggedPeaksByTm(routine, currentTms, allWeeks);
+    const synced = syncTmsFromLoggedPeaks(
+      currentTms,
+      peaks,
+      tmAutoBumpValuesRef.current,
+      historyRef.current
+    );
+    tmAutoBumpValuesRef.current = synced.autoBump;
+    const newTms = synced.next;
+    const didBump = synced.bumpedIds.length > 0;
+    const didRevert = synced.revertedIds.length > 0;
+    if (didRevert) {
+      let hist = historyRef.current;
+      for (const id of synced.revertedIds) {
+        const oldVal = currentTms.find((t) => t.id === id)?.value;
+        const nextVal = newTms.find((t) => t.id === id)?.value;
+        if (oldVal == null || nextVal == null || nextVal === oldVal) continue;
+        const linked = newTms.find((t) => t.id === id)?.linkedExercise;
+        hist = applySmartTmCorrection(hist, newTms, id, oldVal, nextVal, linked ? String(linked) : undefined);
+        if (/^[a-f0-9]{24}$/i.test(id) && !(activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20)) {
+          apiPut(`/api/training-maxes/${id}`, {
+            value: nextVal,
+            correction: true,
+            routineId: activeRoutineId,
+          }).catch(() => {});
+        }
+      }
+      setHistory(hist);
+    }
+    if (didRevert && !didBump) {
+      tmsRef.current = newTms;
+      setTms(newTms);
+      const linked = newTms.filter(t => t.linkedExercise);
+      const newRms = { ...rmsRef.current };
+      linked.forEach(tm => { if (tm.linkedExercise) newRms[tm.linkedExercise] = tm.value; });
+      rmsRef.current = newRms;
+      setRms(newRms);
+    }
     if (didBump) {
       tmsRef.current = newTms;
       setTms(newTms);
@@ -2620,7 +2640,7 @@ export default function App() {
         });
       });
       const bumpIso = dateISOFromYearWeekDay(y, w, d ?? 0);
-      newTms.filter(t => t.value !== currentTms.find(ot => ot.id === t.id)?.value).forEach(tm => {
+      newTms.filter(t => synced.bumpedIds.includes(t.id)).forEach(tm => {
         apiPut(`/api/training-maxes/${tm.id}`, {
           value: tm.value,
           routineId: activeRoutineId,
@@ -2734,6 +2754,7 @@ export default function App() {
       newTotal: number;
     };
     let tmBump: TmBumpPayload | null = null;
+    let tmRevert: { prev: TrainingMax[]; next: TrainingMax[]; ids: string[] } | null = null;
     let pendingInternalUpserts: { name: string; mode: 'weight' | 'reps' | 'seconds'; candidateValue: number }[] = [];
     markLogDirty(activeRoutineId, logId);
     updateActiveRoutine((routine) => {
@@ -2763,40 +2784,20 @@ export default function App() {
 
       if (user) {
         const baseWeeks = getWeeksForTrainingMaxScanWithLog(routine, logId);
-        let didBump = false;
-        const newTms = tmsRef.current.map((tm) => ({ ...tm }));
-        baseWeeks.forEach((week: TrainingWeek) => {
-          week.days.forEach((day: TrainingDay) => {
-            day.exercises.forEach((ex: PlannedExercise) => {
-              const linkedTM = resolveTmForAutoBump(ex, newTms);
-              if (!linkedTM) return;
-              const idxTm = newTms.findIndex((t) => t.id === linkedTM.id);
-              if (idxTm < 0) return;
-              const lid = routineLogKeyFromIds(week, day, ex);
-              const l = resolveLogEntryForMerge(updatedLogs, lid);
-              if (!l?.sets) return;
-              l.sets.forEach((set: SetLog) => {
-                if (linkedTM.mode === 'weight') {
-                  const w = set.weight ?? 0;
-                  if (w <= 0) return;
-                  const candidate = roundTo25(w);
-                  if (candidate > newTms[idxTm].value) {
-                    newTms[idxTm] = { ...newTms[idxTm], value: candidate };
-                    didBump = true;
-                  }
-                } else if (linkedTM.mode === 'reps' || linkedTM.mode === 'seconds') {
-                  const val = set.reps ?? 0;
-                  if (val <= 0) return;
-                  const candidate = Math.round(val);
-                  if (candidate > newTms[idxTm].value) {
-                    newTms[idxTm] = { ...newTms[idxTm], value: candidate };
-                    didBump = true;
-                  }
-                }
-              });
-            });
-          });
-        });
+        const prevTmsSnap = tmsRef.current.map((tm) => ({ ...tm }));
+        const peaks = loggedPeaksByTm(updatedRoutine, prevTmsSnap, baseWeeks);
+        const synced = syncTmsFromLoggedPeaks(
+          prevTmsSnap,
+          peaks,
+          tmAutoBumpValuesRef.current,
+          historyRef.current
+        );
+        tmAutoBumpValuesRef.current = synced.autoBump;
+        const newTms = synced.next;
+        const didBump = synced.bumpedIds.length > 0;
+        if (synced.revertedIds.length > 0) {
+          tmRevert = { prev: prevTmsSnap, next: newTms, ids: synced.revertedIds };
+        }
 
         // TM interno: sin linkedTo — peso = máximo kg apuntado en serie (tu «100 %»), no e1RM; reps/seg por campo en Mongo
         const maxByKey = new Map<string, { name: string; mode: 'weight' | 'reps' | 'seconds'; candidateValue: number }>();
@@ -2812,6 +2813,7 @@ export default function App() {
               if (ex.mode === 'weight') {
                 let best = 0;
                 l.sets.forEach((set: SetLog) => {
+                  if (!set.completed) return;
                   const w = set.weight ?? 0;
                   if (w <= 0) return;
                   const cand = roundTo25(w);
@@ -2826,6 +2828,7 @@ export default function App() {
               } else if (ex.mode === 'reps' || ex.mode === 'seconds') {
                 let best = 0;
                 l.sets.forEach((set: SetLog) => {
+                  if (!set.completed) return;
                   const r = set.reps ?? 0;
                   if (r <= 0) return;
                   const cand = Math.round(r);
@@ -2869,7 +2872,6 @@ export default function App() {
           const newTmsRecord = newTms.reduce((acc, tm) => ({ ...acc, [tm.id]: tm.value }), {} as Record<string, number>);
           const newTotal = computeRoutineProgressTotal(newTms).value;
           const currentDate = new Date().toLocaleDateString('es-ES', { month: 'short' });
-          const prevTmsSnap = tmsRef.current.map((tm) => ({ ...tm }));
           const prevRmsSnap = { ...rmsRef.current };
           tmBump = {
             newTms,
@@ -3005,9 +3007,19 @@ export default function App() {
       setTms(b.newTms);
       setRms(b.newRms);
       setHistory((prev) => {
+        let working = prev;
+        if (tmRevert) {
+          for (const id of tmRevert.ids) {
+            const oldVal = tmRevert.prev.find((t) => t.id === id)?.value;
+            const nextVal = tmRevert.next.find((t) => t.id === id)?.value;
+            const linked = tmRevert.next.find((t) => t.id === id)?.linkedExercise;
+            if (oldVal == null || nextVal == null || nextVal === oldVal) continue;
+            working = applySmartTmCorrection(working, tmRevert.next, id, oldVal, nextVal, linked ? String(linked) : undefined);
+          }
+        }
         const samePeriodNew = (e: HistoryEntry) =>
           e.year === b.y && e.week === b.w && (e.dayOfWeek ?? 0) === (b.d ?? 0);
-        const filtered = prev.filter((e) => !samePeriodNew(e));
+        const filtered = working.filter((e) => !samePeriodNew(e));
         const entries: HistoryEntry[] = [...filtered];
         const hasBaseline = entries.some((e) => entryDateISO(e) === TM_BASELINE_DATE_ISO);
         if (tmActuallyChangedForHist && !hasBaseline) {
@@ -3029,12 +3041,22 @@ export default function App() {
       });
       queueMicrotask(() => {
         const bumpIsoLog = dateISOFromYearWeekDay(b.y, b.w, b.d ?? 0);
-        b.newTms.filter(t => t.value !== b.prevTmsSnapshot.find(ot => ot.id === t.id)?.value).forEach(tm => {
+        const reverted = new Set(tmRevert?.ids ?? []);
+        b.newTms.filter(t => !reverted.has(t.id) && t.value !== b.prevTmsSnapshot.find(ot => ot.id === t.id)?.value).forEach(tm => {
           apiPut(`/api/training-maxes/${tm.id}`, {
             value: tm.value,
             routineId: activeRoutineId,
             updatedAt: dateISOToUtcNoonISO(bumpIsoLog),
           }).catch((e) => console.error('[TM] Error guardando subida automática:', e));
+        });
+        tmRevert?.ids.forEach((id) => {
+          const nextVal = tmRevert.next.find((t) => t.id === id)?.value;
+          if (nextVal == null || !/^[a-f0-9]{24}$/i.test(id)) return;
+          apiPut(`/api/training-maxes/${id}`, {
+            value: nextVal,
+            correction: true,
+            routineId: activeRoutineId,
+          }).catch(() => {});
         });
         const isPersistedRoutine = !(activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20);
         if (isPersistedRoutine) {
@@ -3084,6 +3106,35 @@ export default function App() {
           };
           void run();
         }
+      });
+    } else if (tmRevert) {
+      const linked = tmRevert.next.filter((t) => t.linkedExercise);
+      const newRms = { ...rmsRef.current };
+      linked.forEach((tm) => { if (tm.linkedExercise) newRms[tm.linkedExercise] = tm.value; });
+      tmsRef.current = tmRevert.next;
+      rmsRef.current = newRms;
+      setTms(tmRevert.next);
+      setRms(newRms);
+      setHistory((prev) => {
+        let working = prev;
+        for (const id of tmRevert.ids) {
+          const oldVal = tmRevert.prev.find((t) => t.id === id)?.value;
+          const nextVal = tmRevert.next.find((t) => t.id === id)?.value;
+          const link = tmRevert.next.find((t) => t.id === id)?.linkedExercise;
+          if (oldVal == null || nextVal == null || nextVal === oldVal) continue;
+          working = applySmartTmCorrection(working, tmRevert.next, id, oldVal, nextVal, link ? String(link) : undefined);
+        }
+        return working;
+      });
+      tmRevert.ids.forEach((id) => {
+        const nextVal = tmRevert.next.find((t) => t.id === id)?.value;
+        if (nextVal == null || !/^[a-f0-9]{24}$/i.test(id)) return;
+        if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) return;
+        apiPut(`/api/training-maxes/${id}`, {
+          value: nextVal,
+          correction: true,
+          routineId: activeRoutineId,
+        }).catch(() => {});
       });
     }
   };
@@ -3197,7 +3248,7 @@ export default function App() {
         });
         setSavedAccountsState(loadSavedAccounts());
         setRoutines([]);
-        setActiveRoutineId(null);
+        setActiveRoutineId('');
         setHistory([]);
         setTms([]);
         setRms({ bench: 0, squat: 0, deadlift: 0 });
@@ -3357,7 +3408,14 @@ export default function App() {
         day.exercises.forEach(ex => {
           const log = getLogEntryForExercise(logs, week, day, ex);
           const linkedTM = tms.find(t => t.id === ex.linkedTo);
-          const getTargetWeight = (sIdx: number) => linkedTM ? Math.round(linkedTM.value * ((ex.pctPerSet?.[sIdx] ?? ex.pct ?? 75) / 100)) : (ex.weight || 0);
+          const getTargetWeight = (sIdx: number) => {
+            const written = ex.weightPerSet?.[sIdx] || ex.weight || 0;
+            if (written > 0) return written;
+            if (!linkedTM) return 0;
+            const pct = ex.pctPerSet?.[sIdx] ?? ex.pct;
+            if (pct == null) return 0;
+            return Math.round(linkedTM.value * (pct / 100));
+          };
 
           if (log.sets && log.sets.length > 0) {
             log.sets.forEach((set, sIdx) => {
@@ -3444,26 +3502,6 @@ export default function App() {
       if (!silent) alert(`✅ Período guardado: ${currentDate}`);
     } catch (e) {
       console.error('[History] Error guardando período:', e);
-    }
-  };
-
-  const handleRoutineProgressCheckpoint = async () => {
-    if (activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20) return;
-    if (tmsLoadedForRoutineRef.current !== activeRoutineId) return;
-    if (!tms.length) return;
-    setRoutineCheckpointSaving(true);
-    try {
-      await saveCurrentPeriod(true, { syncCommit: true });
-      const iso = new Date().toISOString();
-      const tmSnap: Record<string, number> = {};
-      tms.forEach((t) => { tmSnap[t.id] = t.value; });
-      await apiPut(`/api/routines/${activeRoutineId}`,
-        { progressCheckpointAt: iso, progressCheckpointTms: tmSnap });
-      updateActiveRoutine((r) => ({ ...r, progressCheckpointAt: iso, progressCheckpointTms: tmSnap }));
-    } catch (e) {
-      console.error('[Routine] Error checkpoint progreso:', e);
-    } finally {
-      setRoutineCheckpointSaving(false);
     }
   };
 
@@ -3687,8 +3725,10 @@ export default function App() {
               history={sortedHistory}
               rms={rms}
               trainingMaxes={tms}
+              trainingMaxesLoading={tmsLoading}
               activeRoutineName={activeRoutine?.name || 'Rutina activa'}
-              activeRoutineId={activeRoutineId}
+              activeRoutineId={hasRoutine ? activeRoutineId : ''}
+              hasRoutine={hasRoutine}
               progressCheckpointAt={activeRoutine?.progressCheckpointAt}
               progressCheckpointTms={activeRoutine?.progressCheckpointTms}
               routineCreatedAt={activeRoutine?.createdAt}
@@ -3699,10 +3739,16 @@ export default function App() {
               routineLogs={activeRoutine?.logs}
               challenges={challenges}
               checkIns={checkIns}
+              friendCount={friendsList.length}
               onUpdateUser={handleUpdateUser}
               onOpenProgram={openProgramPlan}
+              onCreateRoutine={openCreateRoutine}
               onOpenSocial={goToSocial}
               onJoinFriendCheckIn={handleJoinFriendCheckIn}
+              onOpenSettings={() => {
+                setView('settings');
+                setProfileOpenSettingsSignal(s => s + 1);
+              }}
             />
           </div>
         )}
@@ -3725,9 +3771,13 @@ export default function App() {
                     isActive: routine.id === activeRoutineId,
                     hiddenFromSocial: !!routine.hiddenFromSocial,
                   }))}
-                onBack={() => setProgramScreen('plan')}
+                onBack={() => {
+                  if (routines.length === 0) setView('dashboard');
+                  else setProgramScreen('plan');
+                }}
                 onActivateRoutine={handleSelectRoutine}
                 onCreateRoutine={handleCreateRoutine}
+                openCreateSignal={openCreateRoutineSignal}
                 createRoutineLoading={routineCreateLoading}
                 deleteRoutineLoadingId={routineDeleteLoadingId}
                 activateRoutineLoadingId={routineSwitchingId}
@@ -3791,14 +3841,6 @@ export default function App() {
                 onSkipWeek={handleSkipWeek}
                 onSkipDay={handleSkipDay}
                 onResetDayShifts={handleResetDayShifts}
-                onRoutineProgressCheckpoint={
-                  activeRoutine &&
-                  !(activeRoutine.id.startsWith('routine-') && activeRoutine.id.length < 20) &&
-                  tms.length > 0
-                    ? handleRoutineProgressCheckpoint
-                    : undefined
-                }
-                routineProgressCheckpointLoading={routineCheckpointSaving}
               />
             </div>
           </div>
@@ -3865,7 +3907,10 @@ export default function App() {
               onSwitchAccount={(id) => void switchToAccount(id)}
               onAddAccount={() => setAddAccountMode(true)}
               onRemoveSavedAccount={handleRemoveSavedAccount}
-              onGoToFeed={() => goToSocial('feed')}
+              onGoToFeed={() => {
+                setView('dashboard');
+                setStoryComposerOpen(true);
+              }}
               onGoToFriends={() => goToSocial('friends', { from: 'profile' })}
               onGoToChallenges={() => goToSocial('challenges', { from: 'profile' })}
               pendingFriendCount={friends.filter((r) => r.status === 'pending').length}
@@ -3879,7 +3924,7 @@ export default function App() {
         className="app-tabbar fixed bottom-4 left-3 right-3 z-50 mx-auto flex max-w-lg items-center gap-0.5 px-1.5 py-1 sm:bottom-6"
         style={{ WebkitTapHighlightColor: 'transparent' }}
       >
-        <div className="grid min-w-0 flex-1 grid-cols-3">
+        <div className="grid min-w-0 flex-1 grid-cols-2">
           <button
             type="button"
             onClick={() => setView('dashboard')}
@@ -3896,7 +3941,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => {
-              setProgramScreen('plan');
+              setProgramScreen(routines.length === 0 ? 'routines' : 'plan');
               setView('program');
             }}
             className={cn(
@@ -3909,19 +3954,6 @@ export default function App() {
             <Dumbbell className="size-[17px]" strokeWidth={view === 'program' ? 2.35 : 1.9} />
             <span>Rutina</span>
           </button>
-          <button
-            type="button"
-            onClick={() => goToSocial('feed')}
-            className={cn(
-              "flex min-h-[46px] flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
-              view === 'social' && socialTab === 'feed'
-                ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
-                : "text-slate-400 dark:text-slate-500"
-            )}
-          >
-            <Users className="size-[17px]" strokeWidth={view === 'social' && socialTab === 'feed' ? 2.35 : 1.9} />
-            <span>Inicio</span>
-          </button>
         </div>
 
         <button
@@ -3933,7 +3965,7 @@ export default function App() {
           <Plus className="size-5" strokeWidth={2.4} />
         </button>
 
-        <div className="grid min-w-0 flex-1 grid-cols-3">
+        <div className="grid min-w-0 flex-1 grid-cols-2">
           <button
             type="button"
             onClick={() => goToSocial('chat')}
@@ -3960,19 +3992,6 @@ export default function App() {
             <Trophy className="size-[17px]" strokeWidth={view === 'social' && socialTab === 'challenges' ? 2.35 : 1.9} />
             <span>Torneos</span>
           </button>
-          <button
-            type="button"
-            onClick={() => setView('settings')}
-            className={cn(
-              "flex min-h-[46px] flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
-              view === 'settings'
-                ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
-                : "text-slate-400 dark:text-slate-500"
-            )}
-          >
-            <UserRound className="size-[17px]" strokeWidth={view === 'settings' ? 2.35 : 1.9} />
-            <span>Perfil</span>
-          </button>
         </div>
       </nav>}
       <ComposeSheet
@@ -3980,16 +3999,22 @@ export default function App() {
         onClose={() => setComposeOpen(false)}
         onPublish={() => {
           setComposeOpen(false);
-          goToSocial('feed', { openPublish: true });
+          setView('dashboard');
+          setStoryComposerOpen(true);
         }}
         onGymNow={() => {
           setComposeOpen(false);
-          goToSocial('checkins', { gymNow: true });
+          goToSocial('checkins', { gymNow: true, from: 'dashboard' });
         }}
         onGymLater={() => {
           setComposeOpen(false);
-          goToSocial('checkins', { openCheckInModal: true });
+          goToSocial('checkins', { openCheckInModal: true, from: 'dashboard' });
         }}
+      />
+      <PublishModal
+        open={storyComposerOpen}
+        onClose={() => setStoryComposerOpen(false)}
+        onPublished={() => setStoryComposerOpen(false)}
       />
     </div>
     </MotionConfig>

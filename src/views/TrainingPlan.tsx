@@ -2,7 +2,6 @@ import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallba
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
-  Activity, 
   CheckCircle2, 
   Download, 
   Plus,
@@ -19,7 +18,8 @@ import {
   Loader2,
   CornerLeftDown,
   FileUp,
-  Video
+  Video,
+  Moon
 } from 'lucide-react';
 import { Card } from '@/src/components/ui/Card';
 import { Button } from '@/src/components/ui/Button';
@@ -41,12 +41,15 @@ import { resolveTmForAutoBump } from '@/src/lib/trainingMaxResolve';
 import { pctForSet as planPctForSet } from '@/src/lib/rpeIntensity';
 import {
   blocksFromPlanned,
+  compactSchemeLabel,
   exerciseRpeLabel,
   exerciseSchemeLabel,
   isMultiBlock,
   mergeAdjacentSameExercises,
   plannedRepsForSet,
+  plannedRepsLabelForSet,
   plannedRpeForSet,
+  plannedWeightForSet,
 } from '@/src/lib/exerciseScheme';
 import type { ImportCoachPlanResult, LastCoachImport } from '@/src/components/ImportCoachPlanModal';
 
@@ -93,6 +96,9 @@ const PlanBlockChips = ({
           className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] font-bold text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
         >
           {b.sets}×{b.reps}
+          {b.weight && b.weight > 0 ? (
+            <span className="font-semibold text-slate-500 dark:text-slate-400">{String(b.weight).replace('.', ',')}kg</span>
+          ) : null}
           {b.rpe ? (
             <span className="font-black text-amber-600 dark:text-amber-400">@{b.rpe}</span>
           ) : null}
@@ -145,8 +151,7 @@ interface TrainingPlanViewProps {
   isHistoryMode?: boolean;
   versionWeeks?: number[];
   /**
-   * `kind` distingue batir la marca de corregir un dato mal apuntado: la primera deja el
-   * historial intacto para que el gráfico de Progreso escalone, la segunda lo reescribe.
+   * El tipo (marca vs corrección) se infiere solo: no hay que elegir.
    */
   onUpdateTM: (id: string, updates: Partial<TrainingMax>, kind?: 'record' | 'correction') => void;
   /** Crea TM en servidor solo al confirmar el modal (nombre + valor por el usuario). */
@@ -183,9 +188,6 @@ interface TrainingPlanViewProps {
   calendarDayShifts?: CalendarDayShift[];
   onSkipDay?: (dayIdx: number, year: number, week: number) => void;
   onResetDayShifts?: (year: number, week: number) => void;
-  /** Reinicia la referencia de % en gráficos (no modifica TM). */
-  onRoutineProgressCheckpoint?: () => void | Promise<void>;
-  routineProgressCheckpointLoading?: boolean;
   /** Sincroniza año/semana/día del plan visible para anclar TM manual (no “hoy”). */
   planViewAnchorRef?: React.MutableRefObject<{
     year: number;
@@ -236,8 +238,6 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   onSkipWeek,
   onSkipDay,
   onResetDayShifts,
-  onRoutineProgressCheckpoint,
-  routineProgressCheckpointLoading = false,
   planViewAnchorRef
 }) => {
   const displayWeekNum = viewAsOfWeek ?? currentWeekOfYear;
@@ -277,27 +277,10 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   const setMediaInputRef = useRef<HTMLInputElement>(null);
   const pendingSetMedia = useRef<{ logId: string; setIdx: number } | null>(null);
 
-  /**
-   * Al cambiar el valor de un RM hace falta saber qué ha pasado: si has batido la marca
-   * el historial se deja intacto y el gráfico de Progreso escalona; si estaba mal apuntado
-   * se reescribe el pasado. Se propone lo más probable según si el número sube o baja.
-   */
-  const [tmChangeKind, setTmChangeKind] = useState<'record' | 'correction' | null>(null);
-
   const closeTmModal = () => {
     setEditingTM(null);
     setTmModalError('');
-    setTmChangeKind(null);
   };
-
-  const storedTmValue =
-    editingTM && editingTM.id !== NEW_TM_DRAFT_ID
-      ? trainingMaxes.find(t => t.id === editingTM.id)?.value ?? null
-      : null;
-  const tmValueChanged =
-    storedTmValue !== null && !!editingTM && editingTM.value > 0 && editingTM.value !== storedTmValue;
-  const tmChangeKindEffective: 'record' | 'correction' =
-    tmChangeKind ?? (storedTmValue !== null && editingTM && editingTM.value > storedTmValue ? 'record' : 'correction');
 
   // Bloquear scroll del body cuando el modal de ejercicio está abierto
   useEffect(() => {
@@ -671,13 +654,19 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     const plannedReps = plannedRepsForSet(exercise, 0);
     const setCount = Math.max(1, exercise.sets || 1);
     const weightForSet = (idx: number) => {
+      const written = plannedWeightForSet(exercise, idx);
+      if (written > 0) return written;
       const pct = planPctForSet(exercise, idx);
-      if (tm) {
+      const hasPlanPct =
+        exercise.pct != null ||
+        (exercise.pctPerSet?.[idx] ?? 0) > 0 ||
+        !!plannedRpeForSet(exercise, idx);
+      if (tm && hasPlanPct) {
         return exercise.mode === 'weight'
           ? roundTo25(tm.value * (pct / 100))
           : Math.max(1, Math.round(tm.value * (pct / 100)));
       }
-      return exercise.mode === 'weight' ? (exercise.weight || 0) : 0;
+      return 0;
     };
     const canFill = Array.from({ length: setCount }, (_, i) =>
       plannedRepsForSet(exercise, i) > 0 || weightForSet(i) > 0
@@ -743,66 +732,63 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={VIEW_TRANSITION}
-      className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-28 sm:pb-32 flex flex-col"
+      className="mx-auto flex max-w-5xl flex-col px-4 pb-28 pt-4 sm:px-6 sm:pb-32 sm:pt-6"
     >
-      <header className="order-0 mb-6 flex flex-col gap-3">
+      <header className="mb-6">
         <div className="flex items-center justify-between gap-3">
           <button
             onClick={onOpenRoutineManager}
-            className="text-left group flex-1 min-w-0"
+            className="group flex min-w-0 flex-1 items-center gap-1 text-left"
           >
-            <span className="block text-xs font-medium text-indigo-500">Hoy</span>
-            <div className="flex items-center gap-1.5">
-              <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors truncate">
-                {activeRoutineName}
-              </h1>
-              <ChevronRight className="text-slate-400 shrink-0" size={18} />
-            </div>
+            <h1 className="truncate text-[17px] font-semibold tracking-tight text-slate-900 transition-colors group-hover:text-indigo-600 dark:text-slate-100 dark:group-hover:text-indigo-400">
+              {activeRoutineName}
+            </h1>
+            <ChevronRight className="shrink-0 text-slate-300 dark:text-slate-600" size={16} />
           </button>
-          <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl shrink-0">
-            <button
-              onClick={() => setViewMode('daily')}
-              className={cn(
-                "px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors",
-                viewMode === 'daily' ? "bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm" : "text-slate-500"
-              )}
-            >
-              Día
-            </button>
-            <button
-              onClick={() => setViewMode('weekly')}
-              className={cn(
-                "px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors",
-                viewMode === 'weekly' ? "bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm" : "text-slate-500"
-              )}
-            >
-              Semana
-            </button>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {onImportCoachPlan && !isHistoryMode && (
+              <button
+                type="button"
+                onClick={() => setShowImportModal(true)}
+                className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition-transform active:scale-95 dark:text-slate-400"
+                aria-label="Importar Word o PDF"
+              >
+                <FileUp size={16} />
+              </button>
+            )}
+            <div className="flex rounded-full bg-slate-100 p-0.5 dark:bg-slate-800">
+              <button
+                onClick={() => setViewMode('daily')}
+                className={cn(
+                  'rounded-full px-2.5 py-1 text-[11px] font-semibold transition-colors',
+                  viewMode === 'daily' ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white' : 'text-slate-500'
+                )}
+              >
+                Día
+              </button>
+              <button
+                onClick={() => setViewMode('weekly')}
+                className={cn(
+                  'rounded-full px-2.5 py-1 text-[11px] font-semibold transition-colors',
+                  viewMode === 'weekly' ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white' : 'text-slate-500'
+                )}
+              >
+                Semana
+              </button>
+            </div>
           </div>
         </div>
-      </header>
-
-      {/* RM siempre visibles, en una sola fila; toca la barra para el listado. */}
-      <section className="mb-6">
         <button
           type="button"
           onClick={() => setRmListOpen(true)}
-          className={cn(
-            'flex w-full items-center gap-2 overflow-hidden rounded-2xl border bg-white/90 px-2.5 py-1.5 text-left shadow-sm dark:bg-slate-900/80',
-            tmAutoHighlightIds.length > 0
-              ? 'border-emerald-300 dark:border-emerald-700'
-              : 'border-slate-200/80 dark:border-slate-700'
-          )}
+          className="mt-2 flex w-full items-center gap-1.5 overflow-hidden text-left"
           aria-label="Ver y editar RM"
         >
-          <span className="shrink-0 rounded-lg bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-            RM
-          </span>
           <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {effectiveTms.length === 0 ? (
-              <span className="truncate text-[12px] text-slate-400">Toca para añadir tus marcas</span>
+              <span className="truncate text-[12px] text-slate-400">Añadir marcas</span>
             ) : (
-              effectiveTms.map(tm => (
+              effectiveTms.map((tm, tmIdx) => (
                 <span
                   key={tm.id}
                   role="button"
@@ -822,18 +808,17 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     if (!tmCardsReadOnly) setEditingTM(tm);
                   }}
                   className={cn(
-                    'inline-flex shrink-0 items-baseline gap-1 rounded-full px-2 py-0.5 text-[11px] leading-tight',
+                    'inline-flex shrink-0 items-baseline gap-0.5 text-[12px] leading-tight',
                     tmAutoHighlightIds.includes(tm.id)
-                      ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200'
-                      : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200'
+                      ? 'text-emerald-700 dark:text-emerald-300'
+                      : 'text-slate-500 dark:text-slate-400'
                   )}
                 >
-                  <span className="max-w-[7.5rem] truncate font-medium text-slate-500 dark:text-slate-400">
-                    {tm.name}
-                  </span>
-                  <span className="font-semibold tabular-nums text-slate-900 dark:text-white">
+                  {tmIdx > 0 && <span className="mr-1 text-slate-300 dark:text-slate-600">·</span>}
+                  <span className="max-w-[6.5rem] truncate">{tm.name}</span>
+                  <span className="font-semibold tabular-nums text-slate-800 dark:text-slate-100">
                     {tm.value}
-                    <span className="ml-0.5 font-medium text-slate-400">
+                    <span className="font-medium text-slate-400">
                       {tm.mode === 'weight' ? 'kg' : tm.mode === 'reps' ? 'r' : 's'}
                     </span>
                   </span>
@@ -841,34 +826,28 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
               ))
             )}
           </div>
-          <ChevronRight size={14} className="shrink-0 text-slate-300 dark:text-slate-600" />
+          <ChevronRight size={13} className="shrink-0 text-slate-300 dark:text-slate-600" />
         </button>
-      </section>
+      </header>
 
-      {/* Plan Content — primero: entrenar hoy */}
       <section className="relative">
-        <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
           <div className="min-w-0">
-            <p className="text-xs font-medium text-slate-400">
-              Semana {cycleWeek}{!sameTemplateAllWeeks ? ` de ${cycleLength}` : ''}
+            <p className="text-[11px] font-medium text-slate-400">
+              {sameTemplateAllWeeks || cycleLength <= 1
+                ? currentMonth
+                : `Semana ${cycleWeek} de ${cycleLength}`}
             </p>
-            <h2 className="mt-1 text-lg font-semibold tracking-tight text-slate-900 dark:text-white sm:text-xl">
-              {viewMode === 'daily' ? currentDay?.name || 'Hoy' : 'Vista semanal'}
+            <h2 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white">
+              {viewMode === 'daily' ? currentDay?.name || 'Hoy' : 'Esta semana'}
             </h2>
-            {!isHistoryMode && (
-              <p className="mt-1.5 max-w-lg text-xs leading-relaxed text-slate-500 dark:text-slate-400">
-                {sameTemplateAllWeeks || cycleLength <= 1
-                  ? 'Misma sesión cada semana. Si cambias un ejercicio, cambia en todas.'
-                  : `Semana ${cycleWeek} de ${cycleLength}. Kilos y RPE pueden ser distintos cada semana; al acabar el bloque se puede repetir o importar el siguiente.`}
-              </p>
-            )}
           </div>
           
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <div className="relative">
               <button 
                 onClick={() => setShowMonthSelector(!showMonthSelector)}
-                className="flex items-center justify-center gap-2 rounded-2xl bg-white px-3.5 py-2 text-sm font-medium text-slate-700 shadow-sm dark:bg-slate-900 dark:text-slate-100"
+                className="flex items-center justify-center gap-2 rounded-full bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm dark:bg-slate-900 dark:text-slate-100"
               >
                 {currentMonth}
               </button>
@@ -912,7 +891,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   }
                 }}
                 disabled={displayWeekNum <= 1}
-                className="flex h-9 w-9 items-center justify-center rounded-2xl bg-white text-slate-600 shadow-sm disabled:opacity-40 dark:bg-slate-900 dark:text-slate-200"
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-slate-600 shadow-sm disabled:opacity-40 dark:bg-slate-900 dark:text-slate-200"
                 aria-label="Semana anterior"
               >
                 <ChevronLeft size={18} />
@@ -926,7 +905,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   }
                 }}
                 disabled={displayWeekNum >= 52}
-                className="flex h-9 w-9 items-center justify-center rounded-2xl bg-white text-slate-600 shadow-sm disabled:opacity-40 dark:bg-slate-900 dark:text-slate-200"
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-slate-600 shadow-sm disabled:opacity-40 dark:bg-slate-900 dark:text-slate-200"
                 aria-label="Semana siguiente"
               >
                 <ChevronRight size={18} />
@@ -943,7 +922,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                       : 'Marcar semana como saltada'
                   }
                   className={cn(
-                    "flex items-center gap-1.5 rounded-2xl px-3 py-2 text-xs font-medium shadow-sm transition-all",
+                    "flex items-center gap-1.5 rounded-full px-3 py-2 text-xs font-medium shadow-sm transition-all",
                     calendarWeekSkipped
                       ? "bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
                       : "bg-white text-slate-500 dark:bg-slate-900 dark:text-slate-400"
@@ -1010,7 +989,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
               className="w-full"
             >
               <div 
-                className="mb-5 flex gap-2.5 overflow-x-auto pb-1 scrollbar-hide -mx-1 px-1 sm:mx-0 sm:px-0"
+                className="mb-6 flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide -mx-1 px-1 sm:mx-0 sm:px-0"
                 onTouchStart={(e) => e.stopPropagation()}
                 onTouchMove={(e) => e.stopPropagation()}
                 onTouchEnd={(e) => e.stopPropagation()}
@@ -1036,7 +1015,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     key={day.id}
                     onClick={() => setActiveDayIdx(idx)}
                     className={cn(
-                        "flex min-w-[4.75rem] flex-shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-2xl px-4 py-2.5 text-sm font-medium transition-all",
+                        "flex min-w-[3.4rem] flex-shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-3 py-1.5 text-[12px] font-medium transition-all",
                         isActive
                           ? "bg-indigo-600 text-white shadow-sm"
                           : "bg-white text-slate-500 shadow-sm dark:bg-slate-800 dark:text-slate-400"
@@ -1071,18 +1050,17 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 exit={{ opacity: 0, x: -12 }}
                 transition={SCREEN_TRANSITION}
               >
-              <Card padding="md" rounded="md" className="shadow-sm sm:p-8">
+              <div>
                 {calendarWeekSkipped && (
                   <div className="mb-5 rounded-2xl bg-amber-50 px-4 py-3 text-xs leading-relaxed text-amber-900 dark:bg-amber-950/35 dark:text-amber-100">
                     Semana saltada: los días de entreno o descarga se muestran como descanso. El plan guardado no cambia; al pulsar «Saltada» vuelve todo como estaba.
                   </div>
                 )}
-                <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                     <div className="min-w-0">
-                      <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 sm:text-xl">{currentDay.name}</h3>
                       {dayProgress.totalExercises > 0 &&
                         (effectiveCurrentDayType === 'workout' || effectiveCurrentDayType === 'deload') && (
-                          <div className="mt-2.5 flex items-center gap-2.5">
+                          <div className="flex items-center gap-2.5">
                             <div className="h-1.5 w-24 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
                               <motion.div
                                 className="h-full rounded-full bg-emerald-500"
@@ -1100,8 +1078,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                         )}
                     </div>
                     <div className={cn("w-full sm:w-auto", isHistoryMode && "opacity-75 pointer-events-none")}>
-                      <p className="mb-2 text-xs font-medium text-slate-400">Tipo de día</p>
-                      <div className="flex rounded-2xl bg-slate-100 p-1 dark:bg-slate-800">
+                      <div className="flex rounded-full bg-slate-100 p-0.5 dark:bg-slate-800">
                         {([
                           { id: 'workout' as DayType, label: 'Entreno' },
                           { id: 'rest' as DayType, label: 'Descanso' },
@@ -1116,7 +1093,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                               title={calendarWeekSkipped ? 'Quita el salto de semana para editar el tipo de día.' : undefined}
                               onClick={() => onUpdateDayType(currentWeek.id, templateDay?.id ?? currentDay.id, opt.id)}
                               className={cn(
-                                'flex-1 rounded-xl px-3 py-2 text-xs font-medium transition-colors sm:flex-none',
+                                'flex-1 rounded-full px-3 py-1.5 text-xs font-medium transition-colors sm:flex-none',
                                 selected
                                   ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white'
                                   : 'text-slate-500'
@@ -1131,7 +1108,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 </div>
 
                 {!isHistoryMode && (onSkipDay || onResetDayShifts) && (
-                  <div className="mb-5 flex flex-wrap items-center gap-2">
+                  <div className="mb-3 flex flex-wrap items-center gap-2">
                     {onSkipDay && skippedDaysThisWeek.includes(activeDayIdx) ? (
                       <button
                         type="button"
@@ -1162,7 +1139,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 )}
 
                 {effectiveCurrentDayType === 'workout' || effectiveCurrentDayType === 'deload' ? (
-                  <div className="space-y-3">
+                  <div className="space-y-2">
                     {/* Table Header - Solo desktop. % RM solo si alguno tiene TM vinculado */}
                     <div className="hidden md:grid grid-cols-12 gap-4 px-4 py-3 bg-gradient-to-r from-slate-50 to-indigo-50/30 dark:from-slate-800 dark:to-indigo-950/30 rounded-xl text-[10px] font-black uppercase tracking-wider text-slate-600 dark:text-slate-400 border border-slate-100 dark:border-slate-700">
                       <div className="col-span-7">Ejercicio</div>
@@ -1187,7 +1164,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                             setSavingSession(false);
                           }
                         }}
-                        className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-emerald-200 bg-emerald-50/80 py-3 text-sm font-medium text-emerald-700 transition-colors hover:bg-emerald-50 disabled:opacity-60 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300 dark:hover:bg-emerald-950/50"
+                        className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-emerald-200 bg-emerald-50/70 py-2 text-[13px] font-medium text-emerald-700 transition-colors hover:bg-emerald-50 disabled:opacity-60 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300 dark:hover:bg-emerald-950/50"
                       >
                         {savingSession ? (
                           <><Loader2 size={16} className="animate-spin" /> Guardando…</>
@@ -1204,7 +1181,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     )}
 
                     {/* Ejercicios */}
-                    <div className="space-y-3">
+                    <div className="space-y-2">
                       {dayExercises.map((ex) => {
                         const logId = routineLogKeyFromIds(currentWeek, currentDay, ex);
                         const log = getLogEntryForExercise(logs, currentWeek, currentDay, ex);
@@ -1213,6 +1190,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                         const setsShown = setsInputDraft[k] !== undefined ? setsInputDraft[k] : String(Math.max(1, ex.sets || 1));
                         const repsShown = repsInputDraft[k] !== undefined ? repsInputDraft[k] : String(ex.reps ?? '');
                         const schemeLabel = exerciseSchemeLabel(ex);
+                        const compactScheme = compactSchemeLabel(ex);
                         const rpeLabel = exerciseRpeLabel(ex);
 
                         /** Estado de un vistazo: así no hay que abrir el modal para saber qué falta. */
@@ -1242,142 +1220,124 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                           return (
                             <Card
                               key={ex.id}
-                              padding="md"
+                              padding="sm"
                               rounded="xl"
-                              className="group cursor-pointer border border-slate-200/80 bg-white/90 shadow-sm transition-all hover:border-slate-300 hover:shadow-md dark:border-slate-700 dark:bg-slate-800/40 md:border-0 md:bg-transparent md:p-0 md:shadow-none md:hover:bg-slate-50/80 dark:md:hover:bg-slate-800/25"
+                              className="group cursor-pointer border-0 bg-white shadow-sm dark:bg-slate-900 md:border-0 md:bg-transparent md:p-0 md:shadow-none md:hover:bg-slate-50/80 dark:md:hover:bg-slate-800/25"
                               onClick={() => setLoggingExercise({ weekId: currentWeek.id, dayId: currentDay.id, exercise: ex })}
                             >
                               {/* Mobile Card Layout */}
-                              <div className="md:hidden space-y-3">
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="flex-1 min-w-0">
-                                    <div className="mb-1 flex flex-wrap items-center gap-2">
-                                      <h4 className="text-[15px] font-semibold tracking-tight text-slate-900 dark:text-slate-100">
-                                        {ex.name}
-                                      </h4>
-                                      {exStatusBadge}
-                                      {setVideos > 0 && (
-                                        <span className="inline-flex items-center gap-1 rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300">
-                                          <Video size={11} />
-                                          {setVideos}
-                                        </span>
-                                      )}
-                                    </div>
-                                    {isMultiBlock(ex) ? (
-                                      <div className="mb-1 space-y-1">
-                                        <PlanBlockChips exercise={ex} />
-                                        {ex.coachNote && (
-                                          <p className="text-xs text-slate-500 dark:text-slate-400">{ex.coachNote}</p>
-                                        )}
-                                      </div>
-                                    ) : (rpeLabel || ex.coachNote) ? (
-                                      <p className="mb-1 text-xs text-slate-500 dark:text-slate-400">
-                                        {rpeLabel && (
-                                          <span className="font-bold text-amber-600 dark:text-amber-400">
-                                            RPE {rpeLabel}
-                                          </span>
-                                        )}
-                                        {rpeLabel && ex.coachNote && ' · '}
-                                        {ex.coachNote}
-                                      </p>
-                                    ) : null}
-                                    {effectiveTM && (
-                                      <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider inline-block bg-indigo-50 dark:bg-indigo-950/40 px-2 py-0.5 rounded-md">
-                                        {effectiveTM.isInternal ? 'RM' : effectiveTM.name}
+                              <div className="md:hidden flex items-center gap-2.5">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-1.5">
+                                    <h4 className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                      {ex.name}
+                                    </h4>
+                                    {exStatusBadge}
+                                    {setVideos > 0 && (
+                                      <span className="inline-flex shrink-0 items-center gap-0.5 text-[10px] font-bold text-indigo-600 dark:text-indigo-300">
+                                        <Video size={10} />
+                                        {setVideos}
                                       </span>
                                     )}
                                   </div>
-                                  <div className="flex items-center gap-1">
-                                    {!isHistoryMode && (
-                                    <button 
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        removeExerciseRow(currentWeek.id, currentDay.id, ex);
-                                      }}
-                                      className="p-2 text-slate-400 dark:text-slate-500 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-all flex-shrink-0"
-                                    >
-                                      <Trash2 size={18} />
-                                    </button>
+                                  <p className="mt-0.5 truncate text-[11px] text-slate-400">
+                                    {rpeLabel && (
+                                      <span className="font-semibold text-amber-600 dark:text-amber-400">RPE {rpeLabel}</span>
                                     )}
-                                  </div>
+                                    {rpeLabel && (effectiveTM || ex.coachNote) && ' · '}
+                                    {effectiveTM && (
+                                      <span className="font-medium text-indigo-600 dark:text-indigo-400">
+                                        {effectiveTM.isInternal ? 'RM' : effectiveTM.name} {effectiveTM.value}{effectiveTM.mode === 'weight' ? 'kg' : effectiveTM.mode === 'reps' ? 'r' : 's'}
+                                      </span>
+                                    )}
+                                    {ex.coachNote && (
+                                      <>
+                                        {(rpeLabel || effectiveTM) && ' · '}
+                                        {ex.coachNote}
+                                      </>
+                                    )}
+                                  </p>
                                 </div>
-                                
-                                {/* Series × Reps - solo esto en la tarjeta; %/kg se edita dentro del modal */}
-                                <div onClick={(e) => e.stopPropagation()}>
-                                  {schemeLabel ? null : (
-                                  <>
-                                  <label className="mb-1.5 block text-center text-[11px] font-medium text-slate-400">Series × reps</label>
-                                  <div className="flex items-center justify-center rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-2.5 transition-all focus-within:border-indigo-300 focus-within:bg-white dark:border-slate-600 dark:bg-slate-800/80 dark:focus-within:border-indigo-500">
-                                    <input 
-                                      type="text"
-                                      inputMode="numeric"
-                                      autoComplete="off"
-                                      pattern="[0-9]*"
-                                      value={setsShown}
-                                      disabled={isHistoryMode}
-                                      onChange={(e) => {
-                                        const raw = e.target.value.replace(/\D/g, '');
-                                        setSetsInputDraft(prev => ({ ...prev, [k]: raw }));
-                                      }}
-                                      onBlur={() => {
-                                        if (isHistoryMode) return;
-                                        const rawSets =
-                                          setsInputDraft[k] !== undefined
-                                            ? setsInputDraft[k]
-                                            : String(Math.max(1, ex.sets || 1));
-                                        const n = parseSetsCommit(rawSets);
-                                        setSetsInputDraft(prev => {
-                                          const next = { ...prev };
-                                          delete next[k];
-                                          return next;
-                                        });
-                                        onUpdateExercise(
-                                          currentWeek.id,
-                                          currentDay.id,
-                                          ex.id,
-                                          applySetsWithPct(ex, n, effectiveTM)
-                                        );
-                                      }}
-                                      className="w-16 bg-transparent text-center text-lg font-semibold text-slate-900 focus:outline-none disabled:opacity-50 dark:text-slate-100"
-                                      placeholder="3"
-                                    />
-                                    <span className="mx-3 text-lg font-medium text-slate-300">×</span>
-                                    <input 
-                                      type="text"
-                                      inputMode="numeric"
-                                      autoComplete="off"
-                                      value={repsShown}
-                                      disabled={isHistoryMode}
-                                      onChange={(e) => {
-                                        setRepsInputDraft(prev => ({ ...prev, [k]: e.target.value }));
-                                      }}
-                                      onBlur={() => {
-                                        if (isHistoryMode) return;
-                                        const rawReps =
-                                          repsInputDraft[k] !== undefined ? repsInputDraft[k] : String(ex.reps ?? '');
-                                        setRepsInputDraft(prev => {
-                                          const next = { ...prev };
-                                          delete next[k];
-                                          return next;
-                                        });
-                                        onUpdateExercise(currentWeek.id, currentDay.id, ex.id, { reps: parseRepsCommit(rawReps) });
-                                      }}
-                                      className="w-24 bg-transparent text-center text-lg font-semibold text-slate-900 focus:outline-none disabled:opacity-50 dark:text-slate-100"
-                                      placeholder="10"
-                                    />
-                                  </div>
-                                  </>
+                                <div
+                                  className="shrink-0"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  {compactScheme ? (
+                                    <span className="rounded-lg bg-slate-50 px-2 py-1 text-[12px] font-bold tabular-nums text-slate-800 dark:bg-slate-800 dark:text-slate-100">
+                                      {compactScheme}
+                                    </span>
+                                  ) : (
+                                    <div className="flex items-center rounded-lg bg-slate-50 px-1.5 py-1 dark:bg-slate-800">
+                                      <input
+                                        type="text"
+                                        inputMode="numeric"
+                                        autoComplete="off"
+                                        pattern="[0-9]*"
+                                        value={setsShown}
+                                        disabled={isHistoryMode}
+                                        onChange={(e) => {
+                                          const raw = e.target.value.replace(/\D/g, '');
+                                          setSetsInputDraft(prev => ({ ...prev, [k]: raw }));
+                                        }}
+                                        onBlur={() => {
+                                          if (isHistoryMode) return;
+                                          const rawSets =
+                                            setsInputDraft[k] !== undefined
+                                              ? setsInputDraft[k]
+                                              : String(Math.max(1, ex.sets || 1));
+                                          const n = parseSetsCommit(rawSets);
+                                          setSetsInputDraft(prev => {
+                                            const next = { ...prev };
+                                            delete next[k];
+                                            return next;
+                                          });
+                                          onUpdateExercise(
+                                            currentWeek.id,
+                                            currentDay.id,
+                                            ex.id,
+                                            applySetsWithPct(ex, n, effectiveTM)
+                                          );
+                                        }}
+                                        className="w-7 bg-transparent text-center text-sm font-semibold text-slate-900 focus:outline-none disabled:opacity-50 dark:text-slate-100"
+                                        placeholder="3"
+                                      />
+                                      <span className="text-xs font-medium text-slate-300">×</span>
+                                      <input
+                                        type="text"
+                                        inputMode="numeric"
+                                        autoComplete="off"
+                                        value={repsShown}
+                                        disabled={isHistoryMode}
+                                        onChange={(e) => {
+                                          setRepsInputDraft(prev => ({ ...prev, [k]: e.target.value }));
+                                        }}
+                                        onBlur={() => {
+                                          if (isHistoryMode) return;
+                                          const rawReps =
+                                            repsInputDraft[k] !== undefined ? repsInputDraft[k] : String(ex.reps ?? '');
+                                          setRepsInputDraft(prev => {
+                                            const next = { ...prev };
+                                            delete next[k];
+                                            return next;
+                                          });
+                                          onUpdateExercise(currentWeek.id, currentDay.id, ex.id, { reps: parseRepsCommit(rawReps) });
+                                        }}
+                                        className="w-8 bg-transparent text-center text-sm font-semibold text-slate-900 focus:outline-none disabled:opacity-50 dark:text-slate-100"
+                                        placeholder="10"
+                                      />
+                                    </div>
                                   )}
                                 </div>
-
-                                {/* TM de rutina o TM interno inferido */}
-                                {effectiveTM && (
-                                  <div className="text-center pt-1">
-                                    <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 px-3 py-1.5 rounded-full inline-block">
-                                      {effectiveTM.isInternal ? '📊 ' : '🔗 '}
-                                      {effectiveTM.isInternal ? 'RM' : effectiveTM.name} ({effectiveTM.value}{effectiveTM.mode === 'weight' ? 'kg' : effectiveTM.mode === 'reps' ? 'reps' : 's'})
-                                    </span>
-                                  </div>
+                                {!isHistoryMode && (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      removeExerciseRow(currentWeek.id, currentDay.id, ex);
+                                    }}
+                                    className="shrink-0 rounded-lg p-1.5 text-slate-300 hover:bg-rose-50 hover:text-rose-500 dark:text-slate-600 dark:hover:bg-rose-950/30 dark:hover:text-rose-400"
+                                  >
+                                    <Trash2 size={15} />
+                                  </button>
                                 )}
                               </div>
 
@@ -1522,34 +1482,32 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                         </div>
                     ) : (
                       !isHistoryMode && (
-                      <div className="mt-6 flex justify-center">
+                      <div className="mt-3 flex justify-center">
                         <button 
                           onClick={() => {
                             setNewExForm({ ...newExForm, name: '', linkedTo: '', pct: 75 });
                             setNewExModalError('');
                             setShowAddModal(true);
                           }}
-                          className="flex items-center gap-3 text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 transition-all py-4 px-8 rounded-xl border-2 border-dashed border-indigo-300 dark:border-indigo-700 group active:scale-95 shadow-sm hover:shadow-md"
+                          className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-[13px] font-semibold text-indigo-600 dark:text-indigo-400"
                         >
-                          <div className="bg-indigo-600 text-white p-2 rounded-lg group-hover:scale-110 transition-transform">
-                            <Plus size={18} />
-                          </div>
-                          <span className="font-black uppercase text-sm tracking-wider">Añadir ejercicio</span>
+                          <Plus size={15} />
+                          Añadir ejercicio
                       </button>
                     </div>
                     )
                     )}
                   </div>
                 ) : (
-                  <div className="py-20 text-center">
-                    <div className="w-20 h-20 bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center mx-auto mb-6">
-                      <Activity className="text-slate-300 dark:text-slate-500" size={40} />
+                  <div className="py-10 text-center">
+                    <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100 dark:bg-slate-800">
+                      <Moon className="text-slate-400 dark:text-slate-500" size={22} />
                     </div>
-                    <h4 className="text-xl font-black text-slate-900 dark:text-slate-100 mb-2 uppercase tracking-tight">Día de Descanso</h4>
-                    <p className="text-slate-400 dark:text-slate-500 font-medium">Recupera fuerzas para tu próxima sesión</p>
+                    <h4 className="text-base font-semibold text-slate-900 dark:text-slate-100">Descanso</h4>
+                    <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Hoy toca recuperar.</p>
                   </div>
                 )}
-              </Card>
+              </div>
               </motion.div>
               </AnimatePresence>
             </motion.div>
@@ -1559,7 +1517,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+              className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
             >
               {currentWeek.days.map((day, dayIdx) => {
                 const effType = effectiveDayType(day);
@@ -1573,24 +1531,24 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     setViewMode('daily');
                   }}
                   className={cn(
-                    "border-2 transition-all cursor-pointer hover:border-indigo-200 dark:hover:border-indigo-600",
-                    effType === 'rest' ? "bg-slate-50 dark:bg-slate-800/50 border-slate-100 dark:border-slate-700" : "bg-white dark:bg-slate-800/50 border-slate-100 dark:border-slate-700"
+                    "cursor-pointer border transition-all hover:border-indigo-200 dark:hover:border-indigo-600",
+                    effType === 'rest' ? "border-slate-100 bg-slate-50/80 dark:border-slate-700 dark:bg-slate-800/40" : "border-slate-100 bg-white dark:border-slate-700 dark:bg-slate-800/50"
                   )}
                 >
-                  <div className="flex items-center justify-between mb-4">
+                  <div className="mb-3 flex items-center justify-between gap-2">
                     <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{day.name}</h3>
                     <DayTypeBadge type={effType} />
                   </div>
 
                   {effType === 'workout' || effType === 'deload' ? (
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       {day.exercises.length === 0 ? (
-                        <p className="text-[10px] text-slate-400 dark:text-slate-500 font-bold uppercase">Sin ejercicios</p>
+                        <p className="text-xs text-slate-400 dark:text-slate-500">Sin ejercicios</p>
                       ) : (
                         mergeAdjacentSameExercises(day.exercises).map(ex => (
-                          <div key={ex.id} className="flex items-center justify-between p-2 bg-slate-50 dark:bg-slate-700/50 rounded-lg">
-                            <span className="text-[10px] font-bold text-slate-700 dark:text-slate-300 truncate max-w-[100px]">{ex.name}</span>
-                            <span className="text-[10px] font-black text-indigo-600 dark:text-indigo-400">
+                          <div key={ex.id} className="flex items-center justify-between gap-2 rounded-xl bg-slate-50 px-2.5 py-2 dark:bg-slate-700/40">
+                            <span className="min-w-0 truncate text-xs font-medium text-slate-700 dark:text-slate-200">{ex.name}</span>
+                            <span className="shrink-0 text-xs font-semibold tabular-nums text-indigo-600 dark:text-indigo-400">
                               {isMultiBlock(ex) ? `${ex.sets} series` : `${ex.sets}×${ex.reps}`}
                             </span>
                           </div>
@@ -1598,9 +1556,9 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                       )}
                     </div>
                   ) : (
-                    <div className="py-4 flex flex-col items-center justify-center text-slate-300 dark:text-slate-500">
-                      <Activity size={20} className="mb-1" />
-                      <span className="text-[8px] font-black uppercase tracking-widest">Descanso</span>
+                    <div className="flex items-center gap-2 py-3 text-slate-400 dark:text-slate-500">
+                      <Moon size={16} />
+                      <span className="text-xs font-medium">Descanso</span>
                     </div>
                   )}
                 </Card>
@@ -1611,17 +1569,15 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
         </AnimatePresence>
       </section>
 
-      <div className="order-3 mt-8 flex flex-col gap-3 sm:mt-12 sm:flex-row">
-        <Button variant="outline" className="w-full sm:w-auto" onClick={onExport}>
-          <Download size={18} />
-          <span className="text-sm sm:text-base">Exportar</span>
-        </Button>
-        {onImportCoachPlan && !isHistoryMode && (
-          <Button variant="outline" className="w-full sm:w-auto" onClick={() => setShowImportModal(true)}>
-            <FileUp size={18} />
-            <span className="text-sm sm:text-base">Importar Word / PDF</span>
-          </Button>
-        )}
+      <div className="order-3 mt-6 flex items-center justify-center gap-3 sm:mt-8">
+        <button
+          type="button"
+          onClick={onExport}
+          className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 transition-colors hover:text-slate-700 dark:hover:text-slate-200"
+        >
+          <Download size={14} />
+          Exportar
+        </button>
       </div>
 
       {showImportModal && onImportCoachPlan && (
@@ -1832,6 +1788,11 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                             {allBlocks.length > 1 && (
                               <p className="px-0.5 text-[11px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
                                 {block.sets}×{block.reps}
+                                {block.weight && block.weight > 0 ? (
+                                  <span className="font-semibold normal-case tracking-normal text-slate-700 dark:text-slate-200">
+                                    {' '}{String(block.weight).replace('.', ',')} kg
+                                  </span>
+                                ) : null}
                                 {block.rpe ? (
                                   <span className="text-amber-600 dark:text-amber-400"> @{block.rpe}</span>
                                 ) : null}
@@ -1845,14 +1806,22 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                         const effectiveTM = resolveEffectiveTM(loggingExercise.exercise);
                         const pctForSet = planPctForSet(loggingExercise.exercise, idx);
                         const exerciseMode = loggingExercise.exercise.mode;
-                        const targetWeight = effectiveTM
-                          ? (exerciseMode === 'weight'
-                              ? roundTo25(effectiveTM.value * (pctForSet / 100))
-                              : Math.max(1, Math.round(effectiveTM.value * (pctForSet / 100))))
-                          : (exerciseMode === 'weight' ? (loggingExercise.exercise.weight || 0) : 0);
+                        const writtenKg = plannedWeightForSet(loggingExercise.exercise, idx);
+                        const hasPlanPct =
+                          loggingExercise.exercise.pct != null ||
+                          (loggingExercise.exercise.pctPerSet?.[idx] ?? 0) > 0 ||
+                          !!plannedRpeForSet(loggingExercise.exercise, idx);
+                        const targetWeight = writtenKg > 0
+                          ? writtenKg
+                          : effectiveTM && hasPlanPct
+                            ? (exerciseMode === 'weight'
+                                ? roundTo25(effectiveTM.value * (pctForSet / 100))
+                                : Math.max(1, Math.round(effectiveTM.value * (pctForSet / 100))))
+                            : 0;
                         const targetReps = plannedRepsForSet(loggingExercise.exercise, idx);
+                        const targetRepsLabel = plannedRepsLabelForSet(loggingExercise.exercise, idx);
                         const setRpe = plannedRpeForSet(loggingExercise.exercise, idx);
-                        const repsLocked = targetReps > 0;
+                        const repsLocked = targetReps > 0 || /^amrap$/i.test(targetRepsLabel);
                         const unitLabel = exerciseMode === 'seconds' ? 'SEG' : 'REPS';
                         
                         const isCompleted = setLog.completed || (exerciseMode === 'weight' ? (setLog.weight !== null && setLog.reps !== null && setLog.reps >= targetReps) : (setLog.reps !== null && setLog.reps >= targetReps));
@@ -1881,7 +1850,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                             )}
                             title="Reps del plan; no se pueden cambiar"
                           >
-                            {targetReps}
+                            {targetRepsLabel || targetReps}
                           </div>
                         );
 
@@ -2098,7 +2067,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                           <input
                                             type="text"
                                             inputMode="decimal"
-                                            placeholder={targetWeight.toString()}
+                                            placeholder={targetWeight > 0 ? String(targetWeight).replace('.', ',') : ''}
                                             value={logInputDraft[`w-${logId}-${idx}`] ?? (setLog.weight && setLog.weight > 0 ? setLog.weight : '')}
                                             onChange={(e) => {
                                               const raw = e.target.value.replace(/[^\d.,]/g, '');
@@ -2127,7 +2096,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                         <input
                                           type="text"
                                           inputMode="numeric"
-                                          placeholder={targetReps.toString()}
+                                          placeholder={targetRepsLabel || (targetReps > 0 ? String(targetReps) : '')}
                                           value={logInputDraft[`r-${logId}-${idx}`] ?? (setLog.reps ?? '')}
                                           onChange={(e) => {
                                             const raw = e.target.value.replace(/\D/g, '');
@@ -2171,7 +2140,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                         <input
                                           type="text"
                                           inputMode="decimal"
-                                          placeholder={(loggingExercise.exercise.weight || 0).toString()}
+                                          placeholder={targetWeight > 0 ? String(targetWeight).replace('.', ',') : ''}
                                           value={logInputDraft[`w-${logId}-${idx}`] ?? (setLog.weight && setLog.weight > 0 ? setLog.weight : '')}
                                           onChange={(e) => {
                                             const raw = e.target.value.replace(/[^\d.,]/g, '');
@@ -2198,7 +2167,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                         <input
                                           type="text"
                                           inputMode="numeric"
-                                          placeholder={targetReps.toString()}
+                                          placeholder={targetRepsLabel || (targetReps > 0 ? String(targetReps) : '')}
                                           value={logInputDraft[`r-${logId}-${idx}`] ?? (setLog.reps ?? '')}
                                           onChange={(e) => {
                                             const raw = e.target.value.replace(/\D/g, '');
@@ -2319,7 +2288,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                     <input
                                       type="text"
                                       inputMode="numeric"
-                                      placeholder={targetReps.toString()}
+                                      placeholder={targetRepsLabel || (targetReps > 0 ? String(targetReps) : '')}
                                       value={logInputDraft[`r-${logId}-${idx}`] ?? (setLog.reps ?? '')}
                                       onChange={(e) => {
                                         const raw = e.target.value.replace(/\D/g, '');
@@ -2362,7 +2331,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                   <input
                                     type="text"
                                     inputMode="numeric"
-                                    placeholder={targetReps.toString()}
+                                    placeholder={targetRepsLabel || (targetReps > 0 ? String(targetReps) : '')}
                                     value={logInputDraft[`r-${logId}-${idx}`] ?? (setLog.reps ?? '')}
                                     onChange={(e) => {
                                       const raw = e.target.value.replace(/\D/g, '');
@@ -2603,40 +2572,6 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   </div>
                   </div>
 
-                  {tmValueChanged && (
-                    <div>
-                      <label className="mb-1.5 block text-[11px] font-medium text-slate-500">
-                        {storedTmValue} → {editingTM.value}
-                      </label>
-                      <div className="grid grid-cols-2 gap-2">
-                        {([
-                          { kind: 'record', label: 'Marca nueva' },
-                          { kind: 'correction', label: 'Estaba mal' },
-                        ] as const).map(opt => (
-                          <button
-                            key={opt.kind}
-                            type="button"
-                            onClick={() => setTmChangeKind(opt.kind)}
-                            aria-pressed={tmChangeKindEffective === opt.kind}
-                            className={cn(
-                              'rounded-xl border px-3 py-2 text-xs font-semibold transition-all',
-                              tmChangeKindEffective === opt.kind
-                                ? 'border-indigo-500 bg-indigo-600 text-white'
-                                : 'border-white/50 bg-white/50 text-slate-500 hover:bg-white/80 dark:border-white/10 dark:bg-slate-800/50'
-                            )}
-                          >
-                            {opt.label}
-                          </button>
-                        ))}
-                      </div>
-                      <p className="mt-2 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
-                        {tmChangeKindEffective === 'record'
-                          ? 'Se guarda como marca de hoy y se verá el salto en Progreso.'
-                          : 'Corrige el historial. En Progreso no habrá salto.'}
-                      </p>
-                    </div>
-                  )}
-
                   <button
                     type="button"
                     role="checkbox"
@@ -2703,8 +2638,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                           value: valueToSave,
                           mode: editingTM.mode,
                           sharedToSocial: editingTM.sharedToSocial,
-                        },
-                        tmChangeKindEffective
+                        }
                       );
                       closeTmModal();
                     }}

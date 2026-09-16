@@ -121,12 +121,20 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     await saveBio(bio).catch(() => {});
   }, [bioDraft]);
 
-  /** Pedirle a este perfil que te entrene. Solo se confirma cuando él acepta en Actividad. */
-  const askToBeMyCoach = useCallback(async () => {
+  /** Pedirle a este perfil que te entrene, o invitale a que tú le entrenes. El otro acepta en Actividad. */
+  const askCoachLink = useCallback(async (role: 'ask' | 'invite') => {
     setSavingCoach(true);
     try {
-      await requestCoach(userId);
-      setProfile(prev => (prev ? { ...prev, coachRequestStatus: 'pending' } : prev));
+      await requestCoach(userId, role);
+      setProfile(prev =>
+        prev
+          ? {
+              ...prev,
+              coachRequestStatus: role === 'ask' ? 'pending' : prev.coachRequestStatus,
+              athleteInviteStatus: role === 'invite' ? 'pending' : prev.athleteInviteStatus,
+            }
+          : prev
+      );
     } catch (e: any) {
       window.alert(e?.message || 'No se ha podido enviar la solicitud');
     } finally {
@@ -345,7 +353,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               </button>
             ) : (
               <p className="flex-1 rounded-xl bg-white/70 px-3 py-2.5 text-center text-[11px] font-medium text-slate-400 dark:bg-slate-800/60">
-                Entra en el perfil de un amigo para pedirle que te entrene.
+                Entra en el perfil de un amigo para pedirle que te entrene o para ofrecerte como coach.
               </p>
             )
           ) : (
@@ -413,27 +421,51 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               )}
 
               {profile.isFriend && (
-                <button
-                  type="button"
-                  onClick={askToBeMyCoach}
-                  disabled={savingCoach || profile.coachRequestStatus !== 'none'}
-                  title="Le llegará una solicitud y tendrá que aceptarla"
-                  className={cn(
-                    'flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-xs font-black uppercase tracking-wider transition-colors disabled:opacity-70',
-                    profile.coachRequestStatus === 'accepted'
-                      ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void askCoachLink('ask')}
+                    disabled={savingCoach || profile.coachRequestStatus === 'pending' || profile.coachRequestStatus === 'accepted'}
+                    title="Le llegará una solicitud y tendrá que aceptarla"
+                    className={cn(
+                      'flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-xs font-black uppercase tracking-wider transition-colors disabled:opacity-70',
+                      profile.coachRequestStatus === 'accepted'
+                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
+                        : profile.coachRequestStatus === 'pending'
+                          ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
+                          : 'border-2 border-indigo-200 text-indigo-600 hover:bg-indigo-50 dark:border-indigo-800 dark:text-indigo-300'
+                    )}
+                  >
+                    <GraduationCap size={15} />
+                    {profile.coachRequestStatus === 'accepted'
+                      ? 'Es tu entrenador'
                       : profile.coachRequestStatus === 'pending'
-                        ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
-                        : 'border-2 border-indigo-200 text-indigo-600 hover:bg-indigo-50 dark:border-indigo-800 dark:text-indigo-300'
-                  )}
-                >
-                  <GraduationCap size={15} />
-                  {profile.coachRequestStatus === 'accepted'
-                    ? 'Es tu entrenador'
-                    : profile.coachRequestStatus === 'pending'
-                      ? 'Pendiente'
-                      : 'Que me entrene'}
-                </button>
+                        ? 'Pendiente'
+                        : 'Que me entrene'}
+                  </button>
+                  {profile.iAmTheirCoach ? (
+                    <span className="flex items-center justify-center gap-1.5 rounded-xl bg-emerald-100 px-4 py-2.5 text-xs font-black uppercase tracking-wider text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
+                      <Dumbbell size={15} />
+                      Le entrenas
+                    </span>
+                  ) : !profile.coach ? (
+                    <button
+                      type="button"
+                      onClick={() => void askCoachLink('invite')}
+                      disabled={savingCoach || profile.athleteInviteStatus === 'pending' || profile.athleteInviteStatus === 'accepted'}
+                      title="Le llegará una invitación y tendrá que aceptarte"
+                      className={cn(
+                        'flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-xs font-black uppercase tracking-wider transition-colors disabled:opacity-70',
+                        profile.athleteInviteStatus === 'pending'
+                          ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
+                          : 'border-2 border-amber-200 text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300'
+                      )}
+                    >
+                      <Dumbbell size={15} />
+                      {profile.athleteInviteStatus === 'pending' ? 'Pendiente' : 'Entrenarle'}
+                    </button>
+                  ) : null}
+                </>
               )}
             </>
           )}
@@ -512,8 +544,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               </span>
               <span className="block text-xs text-slate-500 dark:text-slate-400">
                 {profile.isSelf
-                  ? 'Una serie buena, un PR, lo que sea. Lo verán tus amigos en Inicio.'
-                  : 'Cuando publique algo lo verás aquí y en Inicio.'}
+                  ? 'Una serie buena, un PR. Se ve en Progreso y se borra a las 24 h.'
+                  : 'Cuando suba una historia la verás en Progreso.'}
               </span>
             </span>
             {profile.isSelf && <ArrowRight size={18} className="shrink-0 text-slate-300" />}
@@ -525,7 +557,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               onClick={onGoToFeed}
               className="w-full py-1 text-center text-[11px] font-black uppercase tracking-wider text-slate-400 transition-colors hover:text-indigo-600"
             >
-              Ver Inicio
+              Ir a Progreso
             </button>
           )}
 
@@ -652,12 +684,11 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           document.body
         )}
 
-      {composing && (
-        <PublishModal
-          onClose={() => setComposing(false)}
-          onPublished={handlePublished}
-        />
-      )}
+      <PublishModal
+        open={composing}
+        onClose={() => setComposing(false)}
+        onPublished={handlePublished}
+      />
 
       {showAthleteImport && (
         <React.Suspense fallback={null}>

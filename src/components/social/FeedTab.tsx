@@ -127,9 +127,7 @@ export const FeedTab: React.FC<FeedTabProps> = ({ onOpenAuthor, onOpenChat, open
         </div>
       )}
 
-      {composing && (
-        <PublishModal onClose={() => setComposing(false)} onPublished={handlePublished} />
-      )}
+      <PublishModal open={composing} onClose={() => setComposing(false)} onPublished={handlePublished} />
     </div>
   );
 };
