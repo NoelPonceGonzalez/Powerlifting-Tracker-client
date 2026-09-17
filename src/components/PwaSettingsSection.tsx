@@ -5,7 +5,6 @@ import { Button } from '@/src/components/ui/Button';
 import { isAndroid, isIOS, useInstallPrompt } from '@/src/pwa/installPrompt';
 import { useWebNotifications } from '@/src/pwa/notifications';
 import { useMediaAccess } from '@/src/pwa/mediaAccess';
-import { apiPost } from '@/src/lib/api';
 import { cn } from '@/src/lib/utils';
 
 const StatusChip: React.FC<{ tone: 'ok' | 'warn'; children: React.ReactNode }> = ({ tone, children }) => (
@@ -24,10 +23,9 @@ const StatusChip: React.FC<{ tone: 'ok' | 'warn'; children: React.ReactNode }> =
 /** Instalación de la app (PWA) y permiso de notificaciones del navegador. */
 export const PwaSettingsSection: React.FC = () => {
   const { isInstalled, needsManualInstructions, install } = useInstallPrompt();
-  const { permission, isSupported, isBlocked, requesting, request, sendTestNotification } = useWebNotifications();
+  const { permission, isSupported, isBlocked, requesting, request } = useWebNotifications();
   const { camera, galleryReady, requestingCamera, requestCamera, openGallery } = useMediaAccess();
   const [showIosSteps, setShowIosSteps] = useState(false);
-  const [testSent, setTestSent] = useState(false);
   const [galleryOk, setGalleryOk] = useState(false);
 
   const handleInstall = useCallback(async () => {
@@ -38,18 +36,6 @@ export const PwaSettingsSection: React.FC = () => {
     await install();
   }, [needsManualInstructions, install]);
 
-  const handleTest = useCallback(async () => {
-    const ok = await sendTestNotification();
-    try {
-      await apiPost('/api/notifications/test-push', {});
-    } catch {
-      /* el aviso local ya basta si el servidor no tiene VAPID */
-    }
-    if (!ok) return;
-    setTestSent(true);
-    setTimeout(() => setTestSent(false), 3000);
-  }, [sendTestNotification]);
-
   return (
     <section>
       <div className="mb-6 flex items-center gap-3">
@@ -59,7 +45,7 @@ export const PwaSettingsSection: React.FC = () => {
         <div className="min-w-0 flex-1">
           <h2 className="text-xl font-black uppercase tracking-tight text-slate-800 dark:text-slate-100">Aplicación</h2>
           <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
-            Instálala en tu dispositivo y activa los avisos.
+            Instálala en tu dispositivo y activa notificaciones, cámara y galería.
           </p>
         </div>
       </div>
@@ -156,16 +142,14 @@ export const PwaSettingsSection: React.FC = () => {
               {permission === 'granted' ? <BellRing size={20} /> : <Bell size={20} />}
             </div>
             <div className="min-w-0">
-              <p className="font-bold text-slate-900 dark:text-slate-100">Notificaciones</p>
+              <p className="font-bold text-slate-900 dark:text-slate-100">Activar notificaciones</p>
               <p className="text-xs leading-snug text-slate-500 dark:text-slate-400">
                 {!isSupported
                   ? 'Tu navegador no soporta notificaciones web.'
                   : isBlocked
                     ? 'Bloqueadas. Actívalas en los ajustes del sitio en tu navegador.'
                     : permission === 'granted'
-                      ? testSent
-                        ? '¡Enviada! Revisa tus avisos.'
-                        : 'Recibirás avisos de entrenos y actividad de amigos.'
+                      ? 'Recibirás avisos de entrenos y actividad de amigos.'
                       : isIOS() && !isInstalled
                         ? 'En iPhone hay que instalar la app antes de poder activarlas.'
                         : 'Da permiso para recibir avisos aunque la app esté cerrada.'}
@@ -173,15 +157,9 @@ export const PwaSettingsSection: React.FC = () => {
             </div>
           </div>
           {permission === 'granted' ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => void handleTest()}
-              className="shrink-0 uppercase tracking-widest"
-            >
-              Probar
-            </Button>
+            <StatusChip tone="ok">
+              <Check size={14} /> Activas
+            </StatusChip>
           ) : (
             <Button
               type="button"
@@ -212,7 +190,7 @@ export const PwaSettingsSection: React.FC = () => {
               <Camera size={20} />
             </div>
             <div className="min-w-0">
-              <p className="font-bold text-slate-900 dark:text-slate-100">Cámara</p>
+              <p className="font-bold text-slate-900 dark:text-slate-100">Activar cámara</p>
               <p className="text-xs leading-snug text-slate-500 dark:text-slate-400">
                 {camera === 'unsupported'
                   ? 'Este dispositivo no puede abrir la cámara desde el navegador.'
@@ -226,7 +204,7 @@ export const PwaSettingsSection: React.FC = () => {
           </div>
           {camera === 'granted' ? (
             <StatusChip tone="ok">
-              <Check size={14} /> Lista
+              <Check size={14} /> Activa
             </StatusChip>
           ) : (
             <Button
@@ -256,28 +234,34 @@ export const PwaSettingsSection: React.FC = () => {
               <ImageIcon size={20} />
             </div>
             <div className="min-w-0">
-              <p className="font-bold text-slate-900 dark:text-slate-100">Galería</p>
+              <p className="font-bold text-slate-900 dark:text-slate-100">Activar galería</p>
               <p className="text-xs leading-snug text-slate-500 dark:text-slate-400">
                 {galleryOk
                   ? 'Puedes elegir fotos y vídeos de tu móvil.'
-                  : 'Ábrela para subir una historia o cambiar la foto de perfil.'}
+                  : 'Da permiso para subir una historia o cambiar la foto de perfil.'}
               </p>
             </div>
           </div>
-          <Button
-            type="button"
-            size="sm"
-            variant={galleryOk ? 'outline' : 'primary'}
-            disabled={!galleryReady}
-            onClick={() => {
-              void openGallery().then((file) => {
-                if (file) setGalleryOk(true);
-              });
-            }}
-            className="shrink-0 uppercase tracking-widest"
-          >
-            {galleryOk ? 'Probar' : 'Abrir'}
-          </Button>
+          {galleryOk ? (
+            <StatusChip tone="ok">
+              <Check size={14} /> Activa
+            </StatusChip>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              variant="primary"
+              disabled={!galleryReady}
+              onClick={() => {
+                void openGallery().then((file) => {
+                  if (file) setGalleryOk(true);
+                });
+              }}
+              className="shrink-0 uppercase tracking-widest"
+            >
+              Activar
+            </Button>
+          )}
         </div>
       </Card>
     </section>
