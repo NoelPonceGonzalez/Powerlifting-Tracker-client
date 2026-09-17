@@ -1,128 +1,198 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { Film, Plus } from 'lucide-react';
-import { mediaUrl } from '@/src/lib/api';
-import { fetchStories, type FeedPost, type StoryGroup } from '@/src/lib/feedApi';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Plus } from 'lucide-react';
+import { Avatar } from '@/src/components/ui/Avatar';
+import { fetchStories, type StoryGroup } from '@/src/lib/feedApi';
 import { StoryViewer } from '@/src/components/social/StoryViewer';
 import { cn } from '@/src/lib/utils';
+import { isRealtimeOpen } from '@/src/lib/chatRealtime';
 
 interface StoriesRailProps {
   myId: string;
+  myAvatar?: string | null;
   refreshTick?: number;
   onAddStory: () => void;
+  trailing?: React.ReactNode;
+  pageActive?: boolean;
 }
 
-function latestItem(group: StoryGroup): FeedPost | undefined {
-  return group.items[group.items.length - 1];
+function groupUnseen(group: StoryGroup) {
+  return group.items.some(s => !s.viewedByMe);
 }
 
-function StoryTile({
-  label,
-  item,
+function ringStyle(segments: number, unseen: boolean): React.CSSProperties | undefined {
+  const n = Math.max(1, segments);
+  if (n <= 1) return undefined;
+  const gap = 10;
+  const sweep = (360 - n * gap) / n;
+  const on = unseen ? '#f43f5e' : '#94a3b8';
+  const parts: string[] = [];
+  let a = -90;
+  for (let i = 0; i < n; i++) {
+    parts.push(`${on} ${a}deg ${a + sweep}deg`);
+    a += sweep;
+    parts.push(`transparent ${a}deg ${a + gap}deg`);
+    a += gap;
+  }
+  return { background: `conic-gradient(from -90deg, ${parts.join(', ')})` };
+}
+
+function Bubble({
+  name,
+  avatar,
   unseen,
+  add,
+  segments = 1,
+  caption,
   onClick,
+  onAdd,
 }: {
-  label: string;
-  item: FeedPost;
+  name: string;
+  avatar?: string | null;
   unseen: boolean;
+  add?: boolean;
+  segments?: number;
+  caption?: string;
   onClick: () => void;
+  onAdd?: () => void;
 }) {
-  const src = mediaUrl(item.mediaKey);
+  const multi = segments > 1;
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'relative h-[6.5rem] w-[4.75rem] shrink-0 overflow-hidden rounded-2xl bg-slate-900 text-left',
-        unseen && 'ring-2 ring-indigo-500 ring-offset-2 ring-offset-[var(--app-bg)]'
-      )}
-    >
-      {item.mediaType === 'video' ? (
-        <>
-          <video src={src} muted playsInline preload="metadata" className="h-full w-full object-cover" />
-          <span className="absolute right-1.5 top-1.5 text-white/90">
-            <Film size={12} />
-          </span>
-        </>
-      ) : (
-        <img src={src} alt="" className="h-full w-full object-cover" />
-      )}
-      <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-1.5 pb-1.5 pt-5 text-[11px] font-semibold leading-tight text-white">
-        <span className="line-clamp-2">{label}</span>
+    <button type="button" onClick={onClick} className="w-[4.6rem] shrink-0 text-center">
+      <span
+        className={cn(
+          'mx-auto flex h-[4.35rem] w-[4.35rem] items-center justify-center rounded-full p-[3px]',
+          !multi && (unseen
+            ? 'bg-gradient-to-tr from-amber-400 via-rose-500 to-fuchsia-600'
+            : 'bg-slate-200 dark:bg-slate-700')
+        )}
+        style={ringStyle(segments, unseen)}
+      >
+        <span className="relative block h-full w-full rounded-full bg-[var(--app-bg)] p-[2px]">
+          <Avatar src={avatar} name={name} className="h-full w-full rounded-full" />
+          {add && (
+            <span
+              role={onAdd ? 'button' : undefined}
+              aria-label="Añadir otra historia"
+              onClick={onAdd ? e => { e.stopPropagation(); onAdd(); } : undefined}
+              className="absolute -bottom-0.5 -right-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-indigo-600 text-white ring-2 ring-[var(--app-bg)]"
+            >
+              <Plus size={12} strokeWidth={2.6} />
+            </span>
+          )}
+        </span>
       </span>
+      <span className="mt-1.5 block truncate px-0.5 text-[11px] font-medium leading-tight text-slate-700 dark:text-slate-300">
+        {name}
+      </span>
+      {caption && (
+        <span className="block truncate px-0.5 text-[10px] text-slate-400 dark:text-slate-500">
+          {caption}
+        </span>
+      )}
     </button>
   );
 }
 
-export function StoriesRail({ myId, refreshTick = 0, onAddStory }: StoriesRailProps) {
+export function StoriesRail({ myId, myAvatar, refreshTick = 0, onAddStory, trailing, pageActive = true }: StoriesRailProps) {
   const [groups, setGroups] = useState<StoryGroup[]>([]);
   const [openAt, setOpenAt] = useState<number | null>(null);
 
-  const load = useCallback(() => {
-    fetchStories()
-      .then(r => setGroups(Array.isArray(r.groups) ? r.groups : []))
-      .catch(() => setGroups([]));
+  const load = useCallback(async () => {
+    try {
+      const r = await fetchStories();
+      setGroups(Array.isArray(r.groups) ? r.groups : []);
+    } catch {
+      /* se deja lo último visto */
+    }
   }, []);
 
   useEffect(() => {
-    load();
-  }, [load, refreshTick]);
+    if (!pageActive) return;
+    void load();
+  }, [load, refreshTick, pageActive]);
+
+  useEffect(() => {
+    if (!pageActive) return;
+    const tick = () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      if (isRealtimeOpen()) return;
+      void load();
+    };
+    const id = window.setInterval(tick, 45000);
+    return () => window.clearInterval(id);
+  }, [load, pageActive]);
 
   const mine = groups.find(g => g.author.id === myId);
-  const others = groups.filter(g => g.author.id !== myId);
-  const hasAny = groups.some(g => g.items.length > 0);
+  const others = groups.filter(g => g.author.id !== myId && g.items.length > 0);
+  const unseen = others.filter(groupUnseen);
+  const seen = others.filter(g => !groupUnseen(g));
+  const ordered = useMemo(() => {
+    const rest = [...unseen, ...seen];
+    return mine && mine.items.length > 0 ? [mine, ...rest] : rest;
+  }, [mine, unseen, seen]);
 
   const openGroup = (authorId: string) => {
-    const idx = groups.findIndex(g => g.author.id === authorId);
+    const idx = ordered.findIndex(g => g.author.id === authorId);
     if (idx >= 0) setOpenAt(idx);
   };
 
   return (
-    <div className="mb-4 overflow-hidden rounded-[1.35rem] border border-white/40 bg-white/70 shadow-sm shadow-slate-200/40 dark:border-white/10 dark:bg-slate-900/70">
-      <div className="flex items-center gap-2 px-3 py-2.5">
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">Hoy</p>
-          <p className="text-[11px] text-slate-400">Se borra a las 24 h</p>
-        </div>
-        <button
-          type="button"
-          onClick={onAddStory}
-          className="inline-flex h-8 shrink-0 items-center gap-1 rounded-full bg-indigo-600 px-3 text-[12px] font-semibold text-white"
-        >
-          <Plus size={14} strokeWidth={2.4} />
-          Subir
-        </button>
-      </div>
-
-      {hasAny ? (
-        <div className="flex gap-2 overflow-x-auto px-3 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          {mine && latestItem(mine) && (
-            <StoryTile
-              label="Tú"
-              item={latestItem(mine)!}
-              unseen={false}
-              onClick={() => openGroup(myId)}
-            />
-          )}
-          {others.map(g => {
-            const item = latestItem(g);
-            if (!item) return null;
-            return (
-              <StoryTile
+    <div className="-mx-1">
+      <div className="flex items-start gap-1 overflow-visible">
+        <div className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden px-1 py-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="flex w-max gap-3">
+            {mine && mine.items.length > 0 ? (
+              <Bubble
+                name="Tu historia"
+                avatar={mine.author.avatar}
+                unseen
+                add
+                segments={mine.items.length}
+                caption={mine.items.length > 1 ? `${mine.items.length} hoy` : 'Añade +'}
+                onClick={() => openGroup(myId)}
+                onAdd={onAddStory}
+              />
+            ) : (
+              <Bubble name="Tu historia" avatar={myAvatar} unseen={false} add onClick={onAddStory} />
+            )}
+            {unseen.map(g => (
+              <Bubble
                 key={g.author.id}
-                label={g.author.name.split(' ')[0]}
-                item={item}
-                unseen={g.items.some(s => !s.viewedByMe)}
+                name={g.author.name.split(' ')[0]}
+                avatar={g.author.avatar}
+                unseen
+                segments={g.items.length}
                 onClick={() => openGroup(g.author.id)}
               />
-            );
-          })}
+            ))}
+            {seen.map(g => (
+              <Bubble
+                key={g.author.id}
+                name={g.author.name.split(' ')[0]}
+                avatar={g.author.avatar}
+                unseen={false}
+                segments={g.items.length}
+                onClick={() => openGroup(g.author.id)}
+              />
+            ))}
+          </div>
         </div>
-      ) : (
-        <p className="px-3 pb-3 text-[12px] text-slate-400">Cuando alguien suba algo, aparece aquí el rato que dura.</p>
-      )}
+        {trailing}
+      </div>
 
-      {openAt != null && groups[openAt] && (
-        <StoryViewer groups={groups} startGroup={openAt} onClose={() => setOpenAt(null)} />
+      {openAt != null && ordered[openAt] && (
+        <StoryViewer
+          groups={ordered}
+          startGroup={openAt}
+          onAddStory={() => {
+            setOpenAt(null);
+            onAddStory();
+          }}
+          onClose={() => {
+            setOpenAt(null);
+            void load();
+          }}
+        />
       )}
     </div>
   );

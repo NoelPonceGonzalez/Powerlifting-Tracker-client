@@ -132,9 +132,14 @@ function normalizeLine(line: string): string {
     .trim();
 }
 
-/** "Semana 1", "SEMANA 3:", "Week 2" → 1, 3, 2 */
+/** "Semana 1", "SEMANA 3:", "Week 2", "S1", "Sem 2", "W3" (hojas de Excel) → 1, 3, 2… */
 function matchWeekHeader(line: string): number | null {
-  const m = /^(?:semana|week|micro(?:ciclo)?)\s*[:#]?\s*(\d{1,2})\b/i.exec(stripAccents(line));
+  const t = stripAccents(line).trim();
+  const m =
+    /^(?:semana|week|micro(?:ciclo)?|sem\.?|wk)\s*[:#.\-–]?\s*(\d{1,2})\b/i.exec(t) ||
+    /^s\s*[:#.\-–]?\s*(\d{1,2})$/i.exec(t) ||
+    /^w\s*[:#.\-–]?\s*(\d{1,2})$/i.exec(t) ||
+    /^(\d{1,2})\s*(?:ª|a)?\s*(?:semana|week|sem\.?)\b/i.exec(t);
   return m ? parseInt(m[1], 10) : null;
 }
 

@@ -30,6 +30,18 @@ if (typeof window !== 'undefined') {
 initInstallPrompt();
 registerServiceWorker();
 
+if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    const data = event.data;
+    if (!data || data.type !== 'NOTIFICATION_OPENED') return;
+    window.dispatchEvent(
+      new CustomEvent('notificationOpened', {
+        detail: { screen: data.screen, tab: data.tab },
+      })
+    );
+  });
+}
+
 function Root() {
   return (
     <>

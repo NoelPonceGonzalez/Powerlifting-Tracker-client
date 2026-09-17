@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
+import { SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
 import {
   ArrowLeft,
   ArrowRight,
@@ -274,7 +275,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             </span>
           </span>
           <div className="flex flex-1 justify-around">
-            <Stat value={profile.postCount} label="Posts" />
+            <Stat value={profile.trainingMaxes?.length ?? 0} label="Marcas" />
             <Stat value={profile.followerCount} label="Seguidores" />
             <Stat value={profile.followingCount} label="Siguiendo" />
           </div>
@@ -642,15 +643,16 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
+                transition={SCREEN_TRANSITION}
                 onClick={() => setOpenPost(null)}
                 className="fixed inset-0 flex items-center justify-center bg-slate-900/70 p-0 backdrop-blur-sm sm:p-6"
                 style={{ zIndex: 100050 }}
               >
                 <motion.div
-                  initial={{ opacity: 0, scale: 0.94, y: 16 }}
-                  animate={{ opacity: 1, scale: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.96, y: 10 }}
-                  transition={{ type: 'spring', stiffness: 320, damping: 28 }}
+                  initial={SLIME_SHEET_IN}
+                  animate={SLIME_SHEET_SHOW}
+                  exit={SLIME_SHEET_OUT}
+                  transition={STICKY}
                   onClick={e => e.stopPropagation()}
                   className="max-h-[92vh] w-full max-w-lg overflow-y-auto"
                 >

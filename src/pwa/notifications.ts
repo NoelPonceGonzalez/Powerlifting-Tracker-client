@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { getServiceWorkerRegistration, isServiceWorkerSupported } from '@/src/pwa/serviceWorker';
-import { apiPost } from '@/src/lib/api';
+import { apiDelete, apiGet, apiPost } from '@/src/lib/api';
 
 export type NotificationPermissionState = 'unsupported' | 'default' | 'granted' | 'denied';
 
 /**
- * Clave pública VAPID del backend. Sin ella solo hay notificaciones locales
- * (con la app abierta o en segundo plano); no se suscribe a push del servidor.
+ * Clave pública VAPID del backend. Si no está en el .env del cliente,
+ * se pide a GET /api/notifications/vapid-public-key.
  */
 const VAPID_PUBLIC_KEY = (import.meta.env.VITE_VAPID_PUBLIC_KEY as string | undefined)?.trim() || '';
 
@@ -33,12 +33,31 @@ function urlBase64ToUint8Array(base64String: string): Uint8Array {
   return output;
 }
 
+async function resolveVapidKey(): Promise<string> {
+  if (VAPID_PUBLIC_KEY) return VAPID_PUBLIC_KEY;
+  try {
+    const data = await apiGet<{ publicKey?: string }>('/api/notifications/vapid-public-key');
+    return data.publicKey?.trim() || '';
+  } catch {
+    return '';
+  }
+}
+
+export async function getWebPushEndpoint(): Promise<string | null> {
+  if (!isPushSupported()) return null;
+  const registration = await getServiceWorkerRegistration();
+  const sub = await registration?.pushManager.getSubscription();
+  return sub?.endpoint ?? null;
+}
+
 /**
  * Suscribe el navegador a Web Push y manda la suscripción al backend.
- * Es opcional: si no hay clave VAPID configurada no se hace nada.
+ * Sin clave VAPID sigue valiendo el permiso para avisos locales.
  */
-async function subscribeToPush(): Promise<void> {
-  if (!VAPID_PUBLIC_KEY || !isPushSupported()) return;
+export async function subscribeToPush(): Promise<void> {
+  if (!isPushSupported()) return;
+  const key = await resolveVapidKey();
+  if (!key) return;
   const registration = await getServiceWorkerRegistration();
   if (!registration) return;
 
@@ -47,15 +66,58 @@ async function subscribeToPush(): Promise<void> {
     existing ||
     (await registration.pushManager.subscribe({
       userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY) as BufferSource,
+      applicationServerKey: urlBase64ToUint8Array(key) as BufferSource,
     }));
 
   try {
     await apiPost('/api/notifications/web-push-subscription', subscription.toJSON());
   } catch (err) {
-    // El backend actual usa tokens de Expo; si aún no expone el endpoint, el permiso
-    // sigue sirviendo para las notificaciones locales de la app.
     console.warn('[PWA] Suscripción push no registrada en el servidor:', err);
+  }
+}
+
+export async function unsubscribeFromPush(): Promise<string | null> {
+  if (!isPushSupported()) return null;
+  const registration = await getServiceWorkerRegistration();
+  const sub = await registration?.pushManager.getSubscription();
+  if (!sub) return null;
+  const endpoint = sub.endpoint;
+  try {
+    await apiDelete('/api/notifications/web-push-subscription', { endpoint });
+  } catch {
+    /* best-effort */
+  }
+  try {
+    await sub.unsubscribe();
+  } catch {
+    /* ignore */
+  }
+  return endpoint;
+}
+
+export async function showLocalNotification(
+  title: string,
+  body: string,
+  data?: { url?: string; screen?: string; tab?: string; tag?: string }
+): Promise<boolean> {
+  if (currentPermission() !== 'granted') return false;
+  const registration = await getServiceWorkerRegistration();
+  const options: NotificationOptions = {
+    body,
+    icon: '/icons/icon-192.png',
+    badge: '/icons/icon-192.png',
+    tag: data?.tag || 'activity',
+    data: { url: data?.url || '/', screen: data?.screen, tab: data?.tab },
+  };
+  if (registration) {
+    await registration.showNotification(title, options);
+    return true;
+  }
+  try {
+    new Notification(title, options);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -104,25 +166,11 @@ export function useWebNotifications(): UseWebNotificationsResult {
   }, []);
 
   const sendTestNotification = useCallback(async (): Promise<boolean> => {
-    if (currentPermission() !== 'granted') return false;
-    const body = 'Las notificaciones están activadas. Te avisaremos de tus entrenos y de la actividad de tus amigos.';
-    const registration = await getServiceWorkerRegistration();
-    if (registration) {
-      // En Android e iOS instalado solo funciona a través del service worker.
-      await registration.showNotification('Powerlifting Tracker', {
-        body,
-        icon: '/icons/icon-192.png',
-        badge: '/icons/icon-192.png',
-        tag: 'test-notification',
-      });
-      return true;
-    }
-    try {
-      new Notification('Powerlifting Tracker', { body, icon: '/icons/icon-192.png' });
-      return true;
-    } catch {
-      return false;
-    }
+    return showLocalNotification(
+      'Powerlifting Tracker',
+      'Las notificaciones están activadas. Te avisaremos de tus entrenos y de la actividad de tus amigos.',
+      { tag: 'test-notification' }
+    );
   }, []);
 
   return {

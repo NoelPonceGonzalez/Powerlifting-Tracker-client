@@ -1,10 +1,9 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { flushSync } from 'react-dom';
-import { MotionConfig } from 'motion/react';
-import * as XLSX from 'xlsx';
-import { User as UserIcon, Dumbbell, Plus, MessageCircle, Trophy } from 'lucide-react';
+import { MotionConfig, motion } from 'motion/react';
+import { User as UserIcon, Users, Dumbbell, Plus, Trophy } from 'lucide-react';
 import { ComposeSheet } from '@/src/components/ComposeSheet';
-import { PublishModal } from '@/src/components/social/PublishModal';
+import { StoryCamera } from '@/src/components/social/StoryCamera';
 
 // Views
 import { LoginView } from '@/src/views/Login';
@@ -16,6 +15,8 @@ import { ProfileView } from '@/src/views/Profile';
 
 // Components
 import { useRealtimeUpdates } from '@/src/hooks/useRealtimeUpdates';
+import { isRealtimeOpen } from '@/src/lib/chatRealtime';
+import { SLIME_TAP, STICKY } from '@/src/lib/motionPresets';
 
 // Types
 import { 
@@ -23,7 +24,6 @@ import {
   LogEntry, 
   HistoryEntry, 
   ViewType, 
-  Exercise, 
   ExerciseMode,
   TrainingMax, 
   TrainingWeek,
@@ -86,9 +86,11 @@ import {
 } from '@/src/lib/cloneFriendRoutine';
 import { buildPlanPatchPayload } from '@/src/lib/planSyncPayload';
 import { mergeCoachImportIntoRoutine } from '@/src/lib/coachPlan/applyCoachPlan';
+import { moveMergedExerciseRow } from '@/src/lib/exerciseScheme';
 import { upsertDayShift, type CalendarDayShift } from '@/src/lib/calendarDayShift';
 import type { ImportCoachPlanResult, LastCoachImport } from '@/src/components/ImportCoachPlanModal';
 import { usePushNotifications } from '@/src/hooks/usePushNotifications';
+import { getWebPushEndpoint } from '@/src/pwa/notifications';
 import {
   loadSavedAccounts,
   upsertAccount,
@@ -142,12 +144,6 @@ const INITIAL_RMS: RMData = {
   squat: 0,
   deadlift: 0
 };
-
-const EXERCISES: readonly Exercise[] = [
-  { key: 'bench', label: 'Press Banca', color: '#3b82f6', bg: 'bg-blue-50', border: 'border-blue-500', text: 'text-blue-600' },
-  { key: 'squat', label: 'Sentadilla', color: '#10b981', bg: 'bg-emerald-50', border: 'border-emerald-500', text: 'text-emerald-600' },
-  { key: 'deadlift', label: 'Peso Muerto', color: '#f43f5e', bg: 'bg-rose-50', border: 'border-rose-500', text: 'text-rose-600' }
-] as const;
 
 const INITIAL_TMS: TrainingMax[] = [
   { id: 'tm-1', name: 'Press Banca', value: 110, mode: 'weight', linkedExercise: 'bench' },
@@ -680,16 +676,32 @@ export default function App() {
   };
 
   const [openCheckInModalSignal, setOpenCheckInModalSignal] = useState(0);
+  const [openCreateChallengeSignal, setOpenCreateChallengeSignal] = useState(0);
   /** Tick that forces social data refresh (friends, requests, check-ins, challenges). */
   const [socialRefreshTick, setSocialRefreshTick] = useState(0);
-  const bumpSocialRefresh = useCallback(() => setSocialRefreshTick(t => t + 1), []);
+  const [storyRefreshTick, setStoryRefreshTick] = useState(0);
+  const lastSocialBumpAtRef = useRef(0);
+  const bumpSocialRefresh = useCallback((opts?: { stories?: boolean }) => {
+    const now = Date.now();
+    if (now - lastSocialBumpAtRef.current < 4000) return;
+    lastSocialBumpAtRef.current = now;
+    setSocialRefreshTick(t => t + 1);
+    if (opts?.stories) setStoryRefreshTick(t => t + 1);
+  }, []);
+  const bumpAllSocial = useCallback(() => bumpSocialRefresh({ stories: true }), [bumpSocialRefresh]);
   /** Refetch TM, TM internos e historial (progreso / gráficas) sin cerrar sesión. */
   const [routineDataRefreshTick, setRoutineDataRefreshTick] = useState(0);
-  const bumpRoutineDataRefresh = useCallback(() => setRoutineDataRefreshTick(t => t + 1), []);
+  const lastRoutineBumpAtRef = useRef(0);
+  const bumpRoutineDataRefresh = useCallback(() => {
+    const now = Date.now();
+    if (now - lastRoutineBumpAtRef.current < 4000) return;
+    lastRoutineBumpAtRef.current = now;
+    setRoutineDataRefreshTick(t => t + 1);
+  }, []);
 
   // SSE real-time: server pushes events → bump the corresponding refresh tick
   useRealtimeUpdates(user?.id ?? null, {
-    onSocialUpdate: bumpSocialRefresh,
+    onSocialUpdate: bumpAllSocial,
     onCheckinUpdate: bumpSocialRefresh,
     onChallengeUpdate: bumpSocialRefresh,
     onRoutineUpdate: bumpRoutineDataRefresh,
@@ -712,6 +724,7 @@ export default function App() {
       tab?: SocialTab,
       opts?: {
         openCheckInModal?: boolean;
+        openCreateChallenge?: boolean;
         openPublish?: boolean;
         gymNow?: boolean;
         from?: 'profile' | 'dashboard' | 'feed';
@@ -736,6 +749,9 @@ export default function App() {
       if (opts?.openCheckInModal || opts?.gymNow) {
         setCheckInIntent(opts?.gymNow ? 'now' : 'later');
         setOpenCheckInModalSignal((s) => s + 1);
+      }
+      if (opts?.openCreateChallenge) {
+        setOpenCreateChallengeSignal((s) => s + 1);
       }
     },
     [view]
@@ -910,7 +926,7 @@ export default function App() {
   /** Todas las rutinas: el flush debe poder guardar una rutina que ya no está activa. */
   const routinesRef = useRef<RoutinePlan[]>(routines);
   routinesRef.current = routines;
-  /** Claves de log modificadas por rutina (sync incremental a ExerciseLog en Mongo). */
+  /** Claves de log modificadas por rutina (sync incremental a WorkoutSession en Mongo). */
   const dirtyLogKeysByRoutineRef = useRef<Map<string, Set<string>>>(new Map());
   const planBulkSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -940,7 +956,6 @@ export default function App() {
         plan.logs = preserved;
       }
       setRoutines((prev) => prev.map((x) => (x.id === plan.id ? plan : x)));
-      bumpRoutineDataRefresh();
     } catch (e) {
       console.error('[Routine] Error sync plan (fallback):', e);
     }
@@ -1005,6 +1020,9 @@ export default function App() {
   );
   /** Evita guardar historial/TM en Mongo con `routineId` nuevo y `tms` aún de la rutina anterior. */
   const tmsLoadedForRoutineRef = useRef<string | null>(null);
+  /** El GET de TM no debe disparar save-period: solo los cambios del usuario. */
+  const skipNextPeriodSaveRef = useRef(false);
+  const lastPeriodSigRef = useRef('');
   /** TM subido solo por series: si corriges el kilo, se deshace el pico. */
   const tmAutoBumpValuesRef = useRef<Map<string, number>>(new Map());
   const tmHighlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1119,11 +1137,11 @@ export default function App() {
     }
   }, [activeRoutineId]);
 
-  const updateActiveRoutine = (updater: (routine: RoutinePlan) => RoutinePlan) => {
+  const updateActiveRoutine = useCallback((updater: (routine: RoutinePlan) => RoutinePlan) => {
     setRoutines((prev) => prev.map((routine) => (
       routine.id === activeRoutineId ? updater(routine) : routine
     )));
-  };
+  }, [activeRoutineId]);
 
   // Theme logic: usuario logueado usa su preferencia; sin login usa preferencia del sistema
   useEffect(() => {
@@ -1170,21 +1188,21 @@ export default function App() {
   // Al pulsar una notificación push: pantalla según `data.screen` / `data.tab` (servidor → push.ts)
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const validTabs = ['friends', 'challenges', 'checkins'] as const;
+    const validTabs = ['feed', 'friends', 'challenges', 'checkins', 'chat'] as const;
     const handle = (d: { screen?: string; tab?: string }) => {
       const screen = d?.screen ?? 'dashboard';
-      if (screen === 'social') {
-        const raw = String(d.tab ?? 'checkins');
-        const tab = (validTabs as readonly string[]).includes(raw)
-          ? (raw as 'friends' | 'challenges' | 'checkins')
-          : 'checkins';
-        setSocialTab(tab);
-        setView('social');
-        return;
-      }
       if (screen === 'program') {
         setProgramScreen('plan');
         setView('program');
+        return;
+      }
+      if (screen === 'social') {
+        const raw = String(d.tab ?? 'feed');
+        const tab = (validTabs as readonly string[]).includes(raw)
+          ? (raw as SocialTab)
+          : 'feed';
+        setSocialTab(tab);
+        setView('social');
         return;
       }
       setView('dashboard');
@@ -1199,6 +1217,11 @@ export default function App() {
       }
     };
     checkPending();
+    const params = new URLSearchParams(window.location.search);
+    const pwa = params.get('pwa');
+    if (pwa === 'plan') handle({ screen: 'program' });
+    else if (pwa === 'social') handle({ screen: 'social', tab: params.get('tab') || 'feed' });
+    else if (pwa === 'dashboard') handle({ screen: 'dashboard' });
     const t = setTimeout(checkPending, 800);
     return () => {
       window.removeEventListener('notificationOpened', onNotificationOpened as EventListener);
@@ -1212,10 +1235,7 @@ export default function App() {
     const loadUserData = async () => {
       setIsLoadingData(true);
       try {
-        const [routinesRes, checkInsRes] = await Promise.all([
-          apiGet<any[]>('/api/routines').catch(() => []),
-          apiGet<any[]>('/api/checkins').catch(() => []),
-        ]);
+        const routinesRes = await apiGet<any[]>('/api/routines').catch(() => []);
         if (!routinesRes?.length) {
           setRoutines([]);
           setActiveRoutineId('');
@@ -1247,11 +1267,8 @@ export default function App() {
           const active = routinesRes.find((r: any) => r.isActive);
           if (active) setActiveRoutineId(String(active._id || active.id));
         }
-        // Historial: se carga por rutina activa en un efecto dedicado
-        // Check-ins
-        if (checkInsRes?.length > 0) {
-          setCheckIns(checkInsRes.map((c: any) => mapCheckInFromApi(c)));
-        }
+        // Historial: se carga por rutina activa en un efecto dedicado.
+        // Check-ins y torneos: efecto de socialRefreshTick.
       } catch (e) {
         console.error('[App] Error cargando datos:', e);
       } finally {
@@ -1314,6 +1331,7 @@ export default function App() {
         if (cancelled) return;
         if (activeRoutineIdRef.current !== rid) return;
         if (!tmsRes?.length) {
+          skipNextPeriodSaveRef.current = true;
           setTms([]);
           setRms({ bench: 0, squat: 0, deadlift: 0 });
           tmsLoadedForRoutineRef.current = rid;
@@ -1329,6 +1347,7 @@ export default function App() {
           sharedToSocial: !!t.sharedToSocial,
         }));
         if (activeRoutineIdRef.current !== rid) return;
+        skipNextPeriodSaveRef.current = true;
         setTms(prev => {
           const merged = mergeTrainingMaxesFromServer(prev, mapped);
           const rmsFromTms: RMData = { bench: 0, squat: 0, deadlift: 0 };
@@ -1549,27 +1568,41 @@ export default function App() {
     };
   }, [runPlanBulkSync]);
 
-  // Solo al entrar con una cuenta, no al cambiar de pestaña.
-  useEffect(() => {
-    if (!user) return;
-    bumpSocialRefresh();
-    bumpRoutineDataRefresh();
-  }, [user?.id, bumpSocialRefresh, bumpRoutineDataRefresh]);
+  // Amigos/TM ya se cargan por user.id. No dispares otro refresco al montar.
 
-  // Al volver a primer plano: refrescar datos, quedarse en la pantalla actual.
+  // Al volver a primer plano: un refresco, no TM + Social a la vez cada vez que se cambia de app.
+  const lastVisRefreshAtRef = useRef(0);
   useEffect(() => {
     if (!user) return;
     const onVis = () => {
-      if (document.visibilityState === 'visible') {
-        bumpSocialRefresh();
-        bumpRoutineDataRefresh();
-      }
+      if (document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      if (now - lastVisRefreshAtRef.current < 45000) return;
+      lastVisRefreshAtRef.current = now;
+      if (view === 'social') bumpAllSocial();
+      else bumpSocialRefresh();
+      if (view === 'dashboard' || view === 'program') bumpRoutineDataRefresh();
     };
     document.addEventListener('visibilitychange', onVis);
     return () => {
       document.removeEventListener('visibilitychange', onVis);
     };
-  }, [user?.id, bumpSocialRefresh, bumpRoutineDataRefresh]);
+  }, [user?.id, view, bumpAllSocial, bumpSocialRefresh, bumpRoutineDataRefresh]);
+
+  // Al entrar en Social/Torneos (no al cambiar de chip: eso ya lo cubre socialNavTick en la vista).
+  useEffect(() => {
+    if (!user || view !== 'social') return;
+    bumpAllSocial();
+  }, [user?.id, view, bumpAllSocial]);
+
+  useEffect(() => {
+    if (!user || view !== 'social') return;
+    const id = window.setInterval(() => {
+      if (isRealtimeOpen()) return;
+      bumpSocialRefresh();
+    }, 60000);
+    return () => window.clearInterval(id);
+  }, [user?.id, view, bumpSocialRefresh]);
 
   // Amigos y solicitudes: cargar siempre que haya usuario (no solo en Social) para que estén listos al navegar.
   useEffect(() => {
@@ -2476,6 +2509,26 @@ export default function App() {
     }
   };
 
+  const handleMoveExercise = (weekId: string, dayId: string, exerciseId: string, dir: -1 | 1) => {
+    const routine = routines.find(r => r.id === activeRoutineId);
+    if (!routine) return;
+    const resolved = resolveWeekDayIndex(routine, weekId, dayId);
+    if (!resolved) return;
+
+    updateActiveRoutine((r) => {
+      const res2 = resolveWeekDayIndex(r, weekId, dayId);
+      if (!res2) return r;
+      return applyRoutineChangeWithVersioning(r, res2.weekIdx, res2.dayIdx, (d) => ({
+        ...d,
+        exercises: moveMergedExerciseRow(d.exercises, exerciseId, dir),
+      }), { forwardOnly: false });
+    });
+
+    if (routine.id && !routine.id.startsWith('routine-')) {
+      schedulePlanBulkSync();
+    }
+  };
+
   const handleUpdateExercise = (weekId: string, dayId: string, exerciseId: string, updates: Partial<PlannedExercise>) => {
     const routine = routines.find(r => r.id === activeRoutineId);
     if (!routine) return;
@@ -2541,7 +2594,7 @@ export default function App() {
     }
   };
 
-  const handleLogChange = (id: string, field: keyof LogEntry, value: any) => {
+  const handleLogChange = useCallback((id: string, field: keyof LogEntry, value: any) => {
     markLogDirty(activeRoutineId, id);
     updateActiveRoutine((routine) => {
       const base = resolveLogEntryForMerge(routine.logs, id);
@@ -2554,7 +2607,7 @@ export default function App() {
         },
       };
     });
-  };
+  }, [activeRoutineId, markLogDirty, updateActiveRoutine]);
 
   const roundTo25 = (n: number) => Math.round(n / 2.5) * 2.5;
 
@@ -2849,7 +2902,7 @@ export default function App() {
           );
           const prevStored = im
             ? v.mode === 'weight'
-              ? (im.valueWeight ?? im.value ?? 0)
+              ? (im.valueWeight ?? 0)
               : v.mode === 'reps'
                 ? (im.valueReps ?? 0)
                 : (im.valueSeconds ?? 0)
@@ -2897,7 +2950,7 @@ export default function App() {
               const cur = next[idx];
               const prevNum =
                 mode === 'weight'
-                  ? (cur.valueWeight ?? cur.value ?? 0)
+                  ? (cur.valueWeight ?? 0)
                   : mode === 'reps'
                     ? (cur.valueReps ?? 0)
                     : (cur.valueSeconds ?? 0);
@@ -2934,7 +2987,7 @@ export default function App() {
               const cur = next[idx];
               const prevNum =
                 mode === 'weight'
-                  ? (cur.valueWeight ?? cur.value ?? 0)
+                  ? (cur.valueWeight ?? 0)
                   : mode === 'reps'
                     ? (cur.valueReps ?? 0)
                     : (cur.valueSeconds ?? 0);
@@ -2974,7 +3027,6 @@ export default function App() {
                     valueWeight: doc.valueWeight != null ? Number(doc.valueWeight) : m.valueWeight,
                     valueReps: doc.valueReps != null ? Number(doc.valueReps) : m.valueReps,
                     valueSeconds: doc.valueSeconds != null ? Number(doc.valueSeconds) : m.valueSeconds,
-                    value: doc.value != null ? Number(doc.value) : m.value,
                   };
                 })
               );
@@ -3278,13 +3330,17 @@ export default function App() {
         typeof window !== 'undefined'
           ? (window as unknown as { __EXPO_PUSH_TOKEN__?: string }).__EXPO_PUSH_TOKEN__
           : undefined;
+      const webPushEndpoint = await getWebPushEndpoint();
       await fetch(`${base}/api/auth/logout`, {
         method: 'POST',
         headers: {
           ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(expoPush?.trim() ? { token: expoPush.trim() } : {}),
+        body: JSON.stringify({
+          ...(expoPush?.trim() ? { token: expoPush.trim() } : {}),
+          ...(webPushEndpoint ? { webPushEndpoint } : {}),
+        }),
       });
     } catch {
       /* ignore */
@@ -3375,10 +3431,11 @@ export default function App() {
           } catch (parseError) {
             console.error('[SESSION] Error parseando respuesta — sesión local mantenida:', parseError);
           }
+        } else if (res.status === 401 || res.status === 403 || res.status === 404) {
+          localStorage.removeItem('auth_token');
+          localStorage.removeItem(AUTH_USER_STORAGE_KEY);
+          setUser(null);
         } else {
-          // Server returned non-ok — keep session alive unless we're certain the user was deleted.
-          // Never force re-login due to transient server issues, token format changes, etc.
-          // Only an explicit handleLogout() should clear the token.
           console.warn('[SESSION] /api/auth/me respondió', res.status, '— sesión local mantenida');
         }
       } catch (e: any) {
@@ -3399,7 +3456,7 @@ export default function App() {
     localStorage.setItem(AUTH_USER_STORAGE_KEY, JSON.stringify(user));
   }, [user]);
 
-  const exportToExcel = () => {
+  const exportToExcel = async () => {
     const data: any[] = [];
     weeks.forEach(week => {
       week.days.forEach(day => {
@@ -3448,6 +3505,7 @@ export default function App() {
       });
     });
 
+    const XLSX = await import('xlsx');
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Plan Entrenamiento");
@@ -3503,19 +3561,27 @@ export default function App() {
     }
   };
 
-  // Auto-guardar período en DB cuando cambian TMs, RMs o logs (debounce 500ms)
+  // Auto-guardar período solo si el usuario cambia TM/RM, no al hidratar ni al editar series.
   const periodSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (!user) return;
+    if (!user || !tms.length) return;
+    const sig = `${activeRoutineId}:${tms.map(t => `${t.id}:${t.value}`).join(',')}:${rms.bench}:${rms.squat}:${rms.deadlift}`;
+    if (skipNextPeriodSaveRef.current) {
+      skipNextPeriodSaveRef.current = false;
+      lastPeriodSigRef.current = sig;
+      return;
+    }
+    if (sig === lastPeriodSigRef.current) return;
     periodSaveRef.current && clearTimeout(periodSaveRef.current);
     periodSaveRef.current = setTimeout(() => {
+      lastPeriodSigRef.current = sig;
       saveCurrentPeriod(true);
       periodSaveRef.current = null;
-    }, 500);
+    }, 2000);
     return () => {
       if (periodSaveRef.current) clearTimeout(periodSaveRef.current);
     };
-  }, [tms, rms, routines, activeRoutineId, user?.id]);
+  }, [tms, rms, activeRoutineId, user?.id]);
 
   if (isCheckingSession) {
     return (
@@ -3708,16 +3774,11 @@ export default function App() {
       )}
       <div className="relative h-full bg-[var(--app-bg)]">
         {aliveViews.dashboard && (
-          <div
-            className={cn(
-              'app-scroll h-full overflow-y-auto overflow-x-hidden overscroll-y-contain touch-pan-y',
-              view !== 'dashboard' && 'hidden'
-            )}
-            aria-hidden={view !== 'dashboard'}
-          >
+          <div className={cn('app-scroll h-full overflow-y-auto overflow-x-hidden', view !== 'dashboard' && 'hidden')} aria-hidden={view !== 'dashboard'}>
             <DashboardView 
               key={`dashboard-${user.id}`}
               chartEnterKey={dashboardEnterKey}
+              pageActive={view === 'dashboard'}
               user={user}
               history={sortedHistory}
               rms={rms}
@@ -3747,16 +3808,11 @@ export default function App() {
           </div>
         )}
         {aliveViews.program && (
-          <div
-            className={cn(
-              'app-scroll h-full overflow-y-auto overflow-x-hidden overscroll-y-contain touch-pan-y',
-              view !== 'program' && 'hidden'
-            )}
-            aria-hidden={view !== 'program'}
-          >
+          <div className={cn('app-scroll h-full overflow-y-auto overflow-x-hidden', view !== 'program' && 'hidden')} aria-hidden={view !== 'program'}>
             <div className={programScreen !== 'routines' ? 'hidden' : undefined} aria-hidden={programScreen !== 'routines'}>
               <RoutineManagerView
                 key="routine-manager"
+                pageActive={view === 'program' && programScreen === 'routines'}
                 routines={[...routines]
                   .sort((a, b) => (a.id === activeRoutineId ? -1 : b.id === activeRoutineId ? 1 : 0))
                   .map((routine) => ({
@@ -3765,10 +3821,6 @@ export default function App() {
                     isActive: routine.id === activeRoutineId,
                     hiddenFromSocial: !!routine.hiddenFromSocial,
                   }))}
-                onBack={() => {
-                  if (routines.length === 0) setView('dashboard');
-                  else setProgramScreen('plan');
-                }}
                 onActivateRoutine={handleSelectRoutine}
                 onCreateRoutine={handleCreateRoutine}
                 openCreateSignal={openCreateRoutineSignal}
@@ -3783,6 +3835,7 @@ export default function App() {
             <div className={programScreen !== 'plan' ? 'hidden' : undefined} aria-hidden={programScreen !== 'plan'}>
               <TrainingPlanView 
                 key="program"
+                pageActive={view === 'program' && programScreen === 'plan'}
                 activeRoutineName={activeRoutine?.name || 'Rutina activa'}
                 sameTemplateAllWeeks={activeRoutine?.sameTemplateAllWeeks === true}
                 cycleLength={activeRoutine?.cycleLength ?? 4}
@@ -3807,6 +3860,7 @@ export default function App() {
                 onRemoveTM={handleRemoveTM}
                 onAddExercise={isHistoryMode ? () => {} : handleAddExercise}
                 onRemoveExercise={isHistoryMode ? () => {} : handleRemoveExercise}
+                onMoveExercise={isHistoryMode ? () => {} : handleMoveExercise}
                 onUpdateExercise={isHistoryMode ? () => {} : handleUpdateExercise}
                 onRoutinePlanFlush={
                   isHistoryMode
@@ -3840,13 +3894,7 @@ export default function App() {
           </div>
         )}
         {aliveViews.social && (
-          <div
-            className={cn(
-              'app-scroll h-full overflow-y-auto overflow-x-hidden overscroll-y-contain touch-pan-y',
-              view !== 'social' && 'hidden'
-            )}
-            aria-hidden={view !== 'social'}
-          >
+          <div className={cn('app-scroll h-full overflow-y-auto overflow-x-hidden', view !== 'social' && 'hidden')} aria-hidden={view !== 'social'}>
             <SocialView 
               key={user?.id ?? 'social'}
               user={user}
@@ -3857,6 +3905,7 @@ export default function App() {
               initialTab={socialTab}
               socialNavTick={socialNavTick}
               openCheckInModalSignal={openCheckInModalSignal}
+              openCreateChallengeSignal={openCreateChallengeSignal}
               openPublishSignal={openPublishSignal}
               checkInIntent={checkInIntent}
               onAccept={handleAcceptFriend}
@@ -3881,17 +3930,15 @@ export default function App() {
               onGoToDashboard={() => setView('dashboard')}
               socialBackTo={socialBackTo}
               onChatConversationChange={setChatConversationOpen}
+              onAddStory={() => setStoryComposerOpen(true)}
+              storyRefreshTick={storyRefreshTick}
+              onPullRefresh={bumpAllSocial}
+              pageActive={view === 'social'}
             />
           </div>
         )}
         {aliveViews.settings && (
-          <div
-            className={cn(
-              'app-scroll h-full overflow-y-auto overflow-x-hidden overscroll-y-contain touch-pan-y',
-              view !== 'settings' && 'hidden'
-            )}
-            aria-hidden={view !== 'settings'}
-          >
+          <div className={cn('app-scroll h-full overflow-y-auto overflow-x-hidden', view !== 'settings' && 'hidden')} aria-hidden={view !== 'settings'}>
             <ProfileView
               key="settings"
               user={user}
@@ -3908,15 +3955,17 @@ export default function App() {
       </div>
       
       {!chatConversationOpen && <nav
-        className="app-tabbar fixed bottom-4 left-3 right-3 z-50 mx-auto flex max-w-lg items-center gap-0.5 px-1.5 py-1 sm:bottom-6"
+        className="app-tabbar fixed bottom-[max(1rem,env(safe-area-inset-bottom))] left-3 right-3 z-50 mx-auto flex max-w-lg items-center gap-0.5 px-1.5 py-1 sm:bottom-6"
         style={{ WebkitTapHighlightColor: 'transparent' }}
       >
         <div className="grid min-w-0 flex-1 grid-cols-2">
-          <button
+          <motion.button
             type="button"
+            whileTap={SLIME_TAP}
+            transition={STICKY}
             onClick={() => setView('dashboard')}
             className={cn(
-              "flex min-h-[46px] flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
+              "flex min-h-[46px] origin-center flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
               view === 'dashboard'
                 ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
                 : "text-slate-400 dark:text-slate-500"
@@ -3924,15 +3973,17 @@ export default function App() {
           >
             <UserIcon className="size-[17px]" strokeWidth={view === 'dashboard' ? 2.35 : 1.9} />
             <span>Perfil</span>
-          </button>
-          <button
+          </motion.button>
+          <motion.button
             type="button"
+            whileTap={SLIME_TAP}
+            transition={STICKY}
             onClick={() => {
               setProgramScreen(routines.length === 0 ? 'routines' : 'plan');
               setView('program');
             }}
             className={cn(
-              "flex min-h-[46px] flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
+              "flex min-h-[46px] origin-center flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
               view === 'program'
                 ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
                 : "text-slate-400 dark:text-slate-500"
@@ -3940,37 +3991,43 @@ export default function App() {
           >
             <Dumbbell className="size-[17px]" strokeWidth={view === 'program' ? 2.35 : 1.9} />
             <span>Rutina</span>
-          </button>
+          </motion.button>
         </div>
 
-        <button
+        <motion.button
           type="button"
+          whileTap={{ scaleX: 1.12, scaleY: 0.84 }}
+          transition={STICKY}
           onClick={() => setComposeOpen(true)}
-          className="mx-0.5 mb-px flex size-12 shrink-0 items-center justify-center rounded-full border border-white/55 bg-indigo-500/90 text-white shadow-[0_10px_28px_rgba(79,70,229,0.28)] outline-none backdrop-blur-xl focus:outline-none focus-visible:outline-none dark:border-white/15 dark:bg-indigo-500/80"
+          className="mx-0.5 mb-px flex size-12 shrink-0 origin-center items-center justify-center rounded-full border border-white/55 bg-indigo-500/90 text-white shadow-[0_10px_28px_rgba(79,70,229,0.28)] outline-none backdrop-blur-xl focus:outline-none focus-visible:outline-none dark:border-white/15 dark:bg-indigo-500/80"
           aria-label="Publicar o avisar"
         >
           <Plus className="size-5" strokeWidth={2.4} />
-        </button>
+        </motion.button>
 
         <div className="grid min-w-0 flex-1 grid-cols-2">
-          <button
+          <motion.button
             type="button"
+            whileTap={SLIME_TAP}
+            transition={STICKY}
             onClick={() => goToSocial('chat')}
             className={cn(
-              "flex min-h-[46px] flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
+              "flex min-h-[46px] origin-center flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
               view === 'social' && socialTab === 'chat'
                 ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
                 : "text-slate-400 dark:text-slate-500"
             )}
           >
-            <MessageCircle className="size-[17px]" strokeWidth={view === 'social' && socialTab === 'chat' ? 2.35 : 1.9} />
-            <span>Chat</span>
-          </button>
-          <button
+            <Users className="size-[17px]" strokeWidth={view === 'social' && socialTab === 'chat' ? 2.35 : 1.9} />
+            <span>Social</span>
+          </motion.button>
+          <motion.button
             type="button"
+            whileTap={SLIME_TAP}
+            transition={STICKY}
             onClick={() => goToSocial('challenges')}
             className={cn(
-              "flex min-h-[46px] flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
+              "flex min-h-[46px] origin-center flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
               view === 'social' && socialTab === 'challenges'
                 ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
                 : "text-slate-400 dark:text-slate-500"
@@ -3978,7 +4035,7 @@ export default function App() {
           >
             <Trophy className="size-[17px]" strokeWidth={view === 'social' && socialTab === 'challenges' ? 2.35 : 1.9} />
             <span>Torneos</span>
-          </button>
+          </motion.button>
         </div>
       </nav>}
       <ComposeSheet
@@ -3986,7 +4043,7 @@ export default function App() {
         onClose={() => setComposeOpen(false)}
         onPublish={() => {
           setComposeOpen(false);
-          setView('dashboard');
+          goToSocial('chat');
           setStoryComposerOpen(true);
         }}
         onGymNow={() => {
@@ -3998,10 +4055,12 @@ export default function App() {
           goToSocial('checkins', { openCheckInModal: true, from: 'dashboard' });
         }}
       />
-      <PublishModal
+      <StoryCamera
         open={storyComposerOpen}
         onClose={() => setStoryComposerOpen(false)}
-        onPublished={() => setStoryComposerOpen(false)}
+        onPublished={() => {
+          setStoryRefreshTick(n => n + 1);
+        }}
       />
     </div>
     </MotionConfig>

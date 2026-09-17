@@ -12,11 +12,19 @@ interface FeedTabProps {
   onOpenAuthor?: (authorId: string) => void;
   onOpenChat?: (peerId: string) => void;
   openPublishSignal?: number;
+  refreshTick?: number;
+  pageActive?: boolean;
 }
 
 let feedMemory: { posts: FeedPost[]; cursor: string | null; coach: FeedAuthor | null } | null = null;
 
-export const FeedTab: React.FC<FeedTabProps> = ({ onOpenAuthor, onOpenChat, openPublishSignal = 0 }) => {
+export const FeedTab: React.FC<FeedTabProps> = ({
+  onOpenAuthor,
+  onOpenChat,
+  openPublishSignal = 0,
+  refreshTick = 0,
+  pageActive = true,
+}) => {
   const [posts, setPosts] = useState<FeedPost[]>(() => feedMemory?.posts ?? []);
   const [cursor, setCursor] = useState<string | null>(() => feedMemory?.cursor ?? null);
   const [loading, setLoading] = useState(!feedMemory);
@@ -47,8 +55,9 @@ export const FeedTab: React.FC<FeedTabProps> = ({ onOpenAuthor, onOpenChat, open
   }, []);
 
   useEffect(() => {
+    if (!pageActive) return;
     void load(!!feedMemory);
-  }, [load]);
+  }, [load, refreshTick, pageActive]);
 
   useIncrementSignal('publish', openPublishSignal, () => setComposing(true));
 

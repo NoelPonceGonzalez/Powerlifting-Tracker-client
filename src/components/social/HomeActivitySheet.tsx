@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
-import { Dumbbell, GraduationCap, Heart, Loader2, MessageCircle, Trophy, UserCheck, Users, UserX, X } from 'lucide-react';
+import { SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
+import { Dumbbell, GraduationCap, Heart, Loader2, MapPin, MessageCircle, Trophy, UserCheck, Users, UserX, X } from 'lucide-react';
 import { apiGet, apiPut } from '@/src/lib/api';
 import { coachRequestCopy, coachRequestPerson, timeAgo, type ChatAsk, type ChatGroupInvite, type CoachRequest } from '@/src/lib/feedApi';
 import type { FriendRequest } from '@/src/types';
@@ -39,6 +40,7 @@ interface HomeActivitySheetProps {
   onGoFriends: () => void;
   onOpenChat?: (peerId: string) => void;
   onGoChallenges?: () => void;
+  onGoGym?: () => void;
   onNotificationsRead?: () => void;
 }
 
@@ -53,6 +55,7 @@ function notifIcon(type: string) {
   if (type === 'coach_request' || type === 'coach_accepted') return <GraduationCap size={14} className="text-amber-600" />;
   if (type === 'new_rm') return <Dumbbell size={14} className="text-emerald-600" />;
   if (type === 'challenge_invite' || type === 'challenge_join' || type === 'challenge_winner') return <Trophy size={14} className="text-amber-600" />;
+  if (type === 'gym_checkin') return <MapPin size={14} className="text-emerald-600" />;
   return <Heart size={14} className="text-slate-400" />;
 }
 
@@ -76,6 +79,7 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
   onGoFriends,
   onOpenChat,
   onGoChallenges,
+  onGoGym,
   onNotificationsRead,
 }) => {
   const [notes, setNotes] = useState<AppNotification[]>([]);
@@ -106,19 +110,22 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
+          transition={SCREEN_TRANSITION}
           className="fixed inset-0 z-[100000] flex min-h-[100dvh] items-end justify-center p-0 sm:items-center sm:p-4"
         >
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
+            transition={SCREEN_TRANSITION}
             onClick={onClose}
             className="fixed inset-0 min-h-[100dvh] bg-slate-900/25 backdrop-blur-md dark:bg-black/45"
           />
           <motion.div
-            initial={{ opacity: 0, y: 24 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 16 }}
+            initial={SLIME_SHEET_IN}
+            animate={SLIME_SHEET_SHOW}
+            exit={SLIME_SHEET_OUT}
+            transition={STICKY}
             onClick={e => e.stopPropagation()}
             className="relative z-10 max-h-[82vh] w-full max-w-sm overflow-y-auto rounded-t-[28px] border border-white/50 bg-white/70 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl sm:rounded-[28px] dark:border-white/10 dark:bg-slate-900/65"
           >
@@ -294,6 +301,10 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
                         }
                         if (note.type === 'challenge_invite' || note.type === 'challenge_join' || note.type === 'challenge_winner') {
                           onGoChallenges?.();
+                          return;
+                        }
+                        if (note.type === 'gym_checkin') {
+                          onGoGym?.();
                           return;
                         }
                         if (note.relatedUserId) onOpenProfile(note.relatedUserId);

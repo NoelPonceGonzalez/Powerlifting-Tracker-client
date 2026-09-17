@@ -19,7 +19,7 @@ interface InstagramCoverProps {
   name: string;
   username?: string | null;
   avatar?: string | null;
-  posts: number;
+  marcas: number;
   followers: number;
   following: number;
   bio: string;
@@ -31,7 +31,7 @@ export function InstagramCover({
   name,
   username,
   avatar,
-  posts,
+  marcas,
   followers,
   following,
   bio,
@@ -60,7 +60,7 @@ export function InstagramCover({
           <span className="shrink-0">{photo}</span>
         )}
         <div className="flex min-w-0 flex-1 justify-around">
-          <ProfileStat value={posts} label="publicaciones" />
+          <ProfileStat value={marcas} label="marcas" />
           <ProfileStat value={followers} label="seguidores" />
           <ProfileStat value={following} label="seguidos" />
         </div>
@@ -79,6 +79,7 @@ export function InstagramCover({
 interface ProgressMiniProfileProps {
   user: User;
   friendCount?: number;
+  marcaCount?: number;
   onOpenSettings?: () => void;
   onUpdateUser?: (updates: Partial<User>) => void;
   aside?: React.ReactNode;
@@ -87,12 +88,17 @@ interface ProgressMiniProfileProps {
 export function ProgressMiniProfile({
   user,
   friendCount = 0,
+  marcaCount = 0,
   onOpenSettings,
   onUpdateUser,
   aside,
 }: ProgressMiniProfileProps) {
   const fileRef = useRef<HTMLInputElement>(null);
-  const [posts, setPosts] = useState(0);
+  const [marcas, setMarcas] = useState(marcaCount);
+
+  useEffect(() => {
+    setMarcas(marcaCount);
+  }, [marcaCount]);
   const [following, setFollowing] = useState(friendCount);
   const [followers, setFollowers] = useState(friendCount);
   const [bio, setBio] = useState('');
@@ -106,7 +112,7 @@ export function ProgressMiniProfile({
     fetchProfile(user.id)
       .then(p => {
         if (!live) return;
-        setPosts(p.postCount);
+        setMarcas(p.trainingMaxes?.length ?? marcaCount);
         setFollowing(p.followingCount);
         setFollowers(p.followerCount);
         setBio(p.bio || '');
@@ -191,32 +197,45 @@ export function ProgressMiniProfile({
           }}
         />
         <div className="flex min-w-0 flex-1 justify-around">
-          <ProfileStat value={posts} label="publicaciones" />
+          <ProfileStat value={marcas} label="marcas" />
           <ProfileStat value={followers} label="seguidores" />
           <ProfileStat value={following} label="seguidos" />
         </div>
       </div>
 
-      <div className="mt-3">
+      <div className="mt-2.5 max-w-[18rem]">
         {editing ? (
-          <textarea
-            value={bio}
-            autoFocus
-            rows={2}
-            maxLength={160}
-            onChange={e => setBio(e.target.value.slice(0, 160))}
-            onBlur={() => void commitBio()}
-            placeholder="Un mini texto sobre ti…"
-            className="mt-1.5 w-full resize-none rounded-xl bg-white px-3 py-2 text-[13px] text-slate-800 outline-none ring-1 ring-indigo-200 dark:bg-slate-900 dark:text-slate-100 dark:ring-indigo-900"
-          />
+          <div>
+            <textarea
+              value={bio}
+              autoFocus
+              rows={2}
+              maxLength={160}
+              onChange={e => setBio(e.target.value.slice(0, 160))}
+              onBlur={() => void commitBio()}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  (e.target as HTMLTextAreaElement).blur();
+                }
+                if (e.key === 'Escape') {
+                  setBio(savedBio);
+                  setEditing(false);
+                }
+              }}
+              placeholder="Añade un resumen"
+              className="w-full resize-none border-0 bg-transparent p-0 text-[13px] leading-relaxed text-slate-700 outline-none placeholder:text-slate-400 dark:text-slate-200"
+            />
+            <p className="mt-1 text-[10px] tabular-nums text-slate-400">{bio.length}/160</p>
+          </div>
         ) : (
-          <button type="button" onClick={() => setEditing(true)} className="mt-1 w-full text-left">
+          <button type="button" onClick={() => setEditing(true)} className="text-left">
             {bio.trim() ? (
-              <p className="whitespace-pre-wrap text-[13px] leading-snug text-slate-600 dark:text-slate-300">{bio}</p>
+              <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700 dark:text-slate-200">{bio}</p>
             ) : (
-              <p className="text-[13px] text-slate-400">Añade un texto, como en Instagram…</p>
+              <span className="text-[13px] text-slate-400">Añade un resumen</span>
             )}
-            {saving && <p className="mt-0.5 text-[11px] text-slate-400">Guardando…</p>}
+            {saving && <span className="ml-2 text-[11px] text-slate-400">Guardando…</span>}
           </button>
         )}
       </div>

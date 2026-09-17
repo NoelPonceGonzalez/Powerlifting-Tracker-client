@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence, LayoutGroup } from 'motion/react';
 import { 
   CheckCircle2, 
   Download, 
@@ -8,6 +8,8 @@ import {
   Trash2,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
+  ChevronDown,
   Link as LinkIcon,
   Target,
   Gauge,
@@ -27,7 +29,7 @@ import { Input } from '@/src/components/ui/Input';
 import { LogEntry, TrainingMax, TrainingWeek, TrainingDay, PlannedExercise, ExerciseMode, DayType, SetLog, InternalExerciseMax, getInternalValueForMode, HistoryEntry } from '@/src/types';
 import { cn } from '@/src/lib/utils';
 import { mediaUrl } from '@/src/lib/api';
-import { SCREEN_TRANSITION, VIEW_TRANSITION } from '@/src/lib/motionPresets';
+import { EASE_OUT, SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY, VIEW_TRANSITION } from '@/src/lib/motionPresets';
 import { GlassModal } from '@/src/components/ui/GlassModal';
 import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
@@ -52,6 +54,7 @@ import {
   plannedWeightForSet,
 } from '@/src/lib/exerciseScheme';
 import type { ImportCoachPlanResult, LastCoachImport } from '@/src/components/ImportCoachPlanModal';
+import { useOnlineStatus } from '@/src/pwa/onlineStatus';
 
 /** Los lectores de Word/Excel/PDF solo se descargan si el usuario abre el importador. */
 const ImportCoachPlanModal = React.lazy(() =>
@@ -128,6 +131,187 @@ const DayTypeBadge = ({ type, onClick }: DayTypeBadgeProps) => {
   );
 };
 
+function ExerciseHoldRow({
+  highlighted,
+  canHold,
+  canMoveUp,
+  canMoveDown,
+  onOpen,
+  onLongPress,
+  onDismiss,
+  onMoveUp,
+  onMoveDown,
+  onDelete,
+  children,
+}: {
+  highlighted: boolean;
+  canHold: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onOpen: () => void;
+  onLongPress: () => void;
+  onDismiss: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onDelete: () => void;
+  children: React.ReactNode;
+}) {
+  const hold = useRef<number | null>(null);
+  const held = useRef(false);
+  const start = useRef<{ x: number; y: number } | null>(null);
+  const [pressing, setPressing] = useState(false);
+  const [sure, setSure] = useState(false);
+
+  useEffect(() => {
+    if (!highlighted) setSure(false);
+  }, [highlighted]);
+
+  const clearHold = () => {
+    if (hold.current != null) {
+      window.clearTimeout(hold.current);
+      hold.current = null;
+    }
+  };
+
+  const startHold = () => {
+    if (!canHold) return;
+    held.current = false;
+    hold.current = window.setTimeout(() => {
+      held.current = true;
+      setPressing(false);
+      onLongPress();
+    }, 380);
+  };
+
+  return (
+    <motion.div
+      layout="position"
+      animate={{
+        scaleX: pressing ? 1.055 : 1,
+        scaleY: pressing ? 0.9 : 1,
+        borderRadius: pressing || highlighted ? 22 : 16,
+      }}
+      transition={STICKY}
+      className={cn(
+        'origin-center',
+        highlighted && 'relative z-10'
+      )}
+    >
+      <Card
+        padding="sm"
+        rounded="xl"
+        className={cn(
+          'group cursor-pointer border-0 bg-white !p-3 shadow-sm dark:bg-slate-900 sm:!p-4 lg:border-0 lg:bg-transparent lg:!p-0 lg:shadow-none lg:hover:bg-slate-50/80 dark:lg:hover:bg-slate-800/25',
+          canHold && 'select-none touch-manipulation',
+          highlighted && 'shadow-[0_10px_28px_-12px_rgba(15,23,42,0.28)] lg:bg-white lg:shadow-[0_10px_28px_-12px_rgba(15,23,42,0.28)] dark:lg:bg-slate-900'
+        )}
+        onClick={() => {
+          if (held.current) {
+            held.current = false;
+            return;
+          }
+          if (highlighted) {
+            onDismiss();
+            return;
+          }
+          onOpen();
+        }}
+        onPointerDown={e => {
+          if (!canHold) return;
+          if ((e.target as HTMLElement).closest('input,textarea,button,a')) return;
+          start.current = { x: e.clientX, y: e.clientY };
+          setPressing(true);
+          startHold();
+        }}
+        onPointerMove={e => {
+          if (!start.current) return;
+          const dx = e.clientX - start.current.x;
+          const dy = e.clientY - start.current.y;
+          if (dx * dx + dy * dy > 100) {
+            clearHold();
+            setPressing(false);
+          }
+        }}
+        onPointerUp={() => {
+          clearHold();
+          setPressing(false);
+        }}
+        onPointerCancel={() => {
+          clearHold();
+          setPressing(false);
+        }}
+        onPointerLeave={() => {
+          clearHold();
+          setPressing(false);
+        }}
+        onContextMenu={e => {
+          if (canHold) e.preventDefault();
+        }}
+      >
+        {children}
+        <AnimatePresence>
+          {highlighted && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={STICKY}
+              className="overflow-hidden"
+            >
+              <div className="flex flex-wrap justify-end gap-2 pt-2.5 md:px-4 md:pb-2">
+                <button
+                  type="button"
+                  disabled={!canMoveUp}
+                  onClick={e => {
+                    e.stopPropagation();
+                    onMoveUp();
+                  }}
+                  className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1.5 text-[12px] font-semibold text-slate-700 disabled:opacity-40 dark:bg-slate-700 dark:text-slate-100"
+                >
+                  <ChevronUp size={12} />
+                  Subir
+                </button>
+                <button
+                  type="button"
+                  disabled={!canMoveDown}
+                  onClick={e => {
+                    e.stopPropagation();
+                    onMoveDown();
+                  }}
+                  className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1.5 text-[12px] font-semibold text-slate-700 disabled:opacity-40 dark:bg-slate-700 dark:text-slate-100"
+                >
+                  <ChevronDown size={12} />
+                  Bajar
+                </button>
+                <button
+                  type="button"
+                  onClick={e => {
+                    e.stopPropagation();
+                    if (!sure) {
+                      setSure(true);
+                      return;
+                    }
+                    onDelete();
+                  }}
+                  className={cn(
+                    'inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-[12px] font-semibold',
+                    sure
+                      ? 'bg-rose-600 text-white'
+                      : 'bg-rose-50 text-rose-600 dark:bg-rose-950/50 dark:text-rose-300'
+                  )}
+                >
+                  <Trash2 size={12} />
+                  {sure ? '¿Seguro?' : 'Eliminar'}
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </Card>
+    </motion.div>
+  );
+}
+
 interface TrainingPlanViewProps {
   activeRoutineName: string;
   /** `true` solo si modo mes (misma plantilla cada semana civil). Si es `false` u omisión → modo por semanas de ciclo: siempre mostrar Saltar semana. */
@@ -164,6 +348,7 @@ interface TrainingPlanViewProps {
   onRemoveTM: (id: string) => void;
   onAddExercise: (weekId: string, dayId: string, initialValues?: Partial<PlannedExercise>) => void;
   onRemoveExercise: (weekId: string, dayId: string, exerciseId: string) => void;
+  onMoveExercise: (weekId: string, dayId: string, exerciseId: string, dir: -1 | 1) => void;
   onUpdateExercise: (weekId: string, dayId: string, exerciseId: string, updates: Partial<PlannedExercise>) => void;
   /** Guardar logs en servidor (PATCH /logs); puede ser async para esperar a Mongo antes de cerrar el modal. */
   onRoutinePlanFlush?: () => void | Promise<void>;
@@ -195,6 +380,8 @@ interface TrainingPlanViewProps {
     dayOfWeek: number;
     dateISO: string;
   }>;
+  /** Si la pestaña Rutina no está visible, se cierran hojas portaledas (RM, log, añadir). */
+  pageActive?: boolean;
 }
 
 export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({ 
@@ -220,6 +407,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   onRemoveTM,
   onAddExercise,
   onRemoveExercise,
+  onMoveExercise,
   onUpdateExercise,
   onRoutinePlanFlush,
   onUpdateDayType,
@@ -238,7 +426,8 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   onSkipWeek,
   onSkipDay,
   onResetDayShifts,
-  planViewAnchorRef
+  planViewAnchorRef,
+  pageActive = true,
 }) => {
   const displayWeekNum = viewAsOfWeek ?? currentWeekOfYear;
   const displayPlanYear = new Date().getFullYear();
@@ -247,9 +436,12 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   const todayDayIdx = (new Date().getDay() + 6) % 7;
   const [activeWeekIdx, setActiveWeekIdx] = useState(initialWeekIdx);
   const [activeDayIdx, setActiveDayIdx] = useState(Math.min(todayDayIdx, 6));
+  const [dayDir, setDayDir] = useState(1);
+  const daySwipe = useRef<{ x: number; y: number } | null>(null);
   const [viewMode, setViewMode] = useState<'daily' | 'weekly'>('daily');
   const [showMonthSelector, setShowMonthSelector] = useState(false);
   const [expandedExerciseId, setExpandedExerciseId] = useState<string | null>(null);
+  const [heldExerciseId, setHeldExerciseId] = useState<string | null>(null);
   const [showSkipDropdown, setShowSkipDropdown] = useState(false);
   const [rmListOpen, setRmListOpen] = useState(false);
   const [logExtrasOpen, setLogExtrasOpen] = useState(false);
@@ -265,6 +457,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     setNewExModalError('');
     setShowAddModal(false);
   });
+  useEscapeClose(!!heldExerciseId, () => setHeldExerciseId(null));
   const [loggingExercise, setLoggingExercise] = useState<{ weekId: string, dayId: string, exercise: PlannedExercise } | null>(null);
   const [setMediaViewer, setSetMediaViewer] = useState<{
     title: string;
@@ -306,6 +499,20 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   useIncrementSignal('import-plan', openImportSignal, () => {
     if (onImportCoachPlan) setShowImportModal(true);
   });
+
+  useEffect(() => {
+    if (pageActive) return;
+    setRmListOpen(false);
+    setShowAddModal(false);
+    setEditingTM(null);
+    setTmModalError('');
+    setLoggingExercise(null);
+    setSetMediaViewer(null);
+    setShowMonthSelector(false);
+    setShowSkipDropdown(false);
+    setHeldExerciseId(null);
+    setShowImportModal(false);
+  }, [pageActive]);
   const [setsInputDraft, setSetsInputDraft] = useState<Record<string, string>>({});
   const [repsInputDraft, setRepsInputDraft] = useState<Record<string, string>>({});
   const [pctInputDraft, setPctInputDraft] = useState<Record<string, string>>({});
@@ -349,6 +556,10 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     () => mergeAdjacentSameExercises(currentDay?.exercises ?? []),
     [currentDay]
   );
+  useEffect(() => {
+    setHeldExerciseId(null);
+  }, [activeDayIdx, viewMode]);
+
   const currentMonth = getMonthForWeek(displayWeekNum);
   /** Cuántas semanas se han desplazado por «Saltar la semana» antes de la semana actual (block mode). */
   const weekShift = useMemo(() => {
@@ -404,6 +615,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     }
     const targetIdx = Math.max(0, Math.min(weeks.length - 1, idx));
     setActiveWeekIdx(targetIdx);
+    setHeldExerciseId(null);
   }, [displayWeekNum, weeks.length, weekShift, sameTemplateAllWeeks]);
 
   const viewDateISO = useMemo(
@@ -710,6 +922,14 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     }
   };
 
+  const goToDay = (idx: number) => {
+    const last = Math.max(0, (displayDays.length || currentWeek?.days.length || 7) - 1);
+    if (idx < 0 || idx > last) return;
+    if (idx === activeDayIdx) return;
+    setDayDir(idx > activeDayIdx ? 1 : -1);
+    setActiveDayIdx(idx);
+  };
+
   /** Resumen del día para la cabecera: ejercicios hechos y series que quedan por rellenar. */
   const dayProgress = useMemo(() => {
     const exercises = dayExercises;
@@ -726,15 +946,22 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     // `logs` entra en las dependencias porque el recuento se recalcula al registrar series.
   }, [currentWeek, currentDay, dayExercises, logs, effectiveTms, internalExerciseMaxes]);
 
+  const online = useOnlineStatus();
+
   return (
     <motion.div 
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={VIEW_TRANSITION}
-      className="mx-auto flex max-w-5xl flex-col px-4 pb-28 pt-4 sm:px-6 sm:pb-32 sm:pt-6"
+      className="mx-auto flex max-w-5xl flex-col px-3 pt-4 pb-[calc(8.5rem+env(safe-area-inset-bottom))] max-[360px]:px-2 sm:px-6 sm:pt-6 sm:pb-[calc(9.5rem+env(safe-area-inset-bottom))]"
     >
-      <header className="mb-6">
+      {!online && (
+        <p className="mb-3 rounded-2xl bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+          Sin conexión. Se muestra el último plan guardado en este dispositivo.
+        </p>
+      )}
+      <header className="mb-4 sm:mb-6">
         <div className="flex items-center justify-between gap-3">
           <button
             onClick={onOpenRoutineManager}
@@ -831,7 +1058,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
       </header>
 
       <section className="relative">
-        <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-x-2 gap-y-1.5">
           <div className="min-w-0">
             <p className="text-[11px] font-medium text-slate-400">
               {sameTemplateAllWeeks || cycleLength <= 1
@@ -890,8 +1117,10 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     onViewAsOfWeekChange?.(newWeek === currentWeekOfYear ? null : newWeek);
                   }
                 }}
-                disabled={displayWeekNum <= 1}
-                className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-slate-600 shadow-sm disabled:opacity-40 dark:bg-slate-900 dark:text-slate-200"
+                className={cn(
+                  'flex h-9 w-9 items-center justify-center rounded-full bg-white text-slate-600 shadow-sm dark:bg-slate-900 dark:text-slate-200',
+                  displayWeekNum <= 1 && 'opacity-40'
+                )}
                 aria-label="Semana anterior"
               >
                 <ChevronLeft size={18} />
@@ -904,8 +1133,10 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     onViewAsOfWeekChange?.(newWeek === currentWeekOfYear ? null : newWeek);
                   }
                 }}
-                disabled={displayWeekNum >= 52}
-                className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-slate-600 shadow-sm disabled:opacity-40 dark:bg-slate-900 dark:text-slate-200"
+                className={cn(
+                  'flex h-9 w-9 items-center justify-center rounded-full bg-white text-slate-600 shadow-sm dark:bg-slate-900 dark:text-slate-200',
+                  displayWeekNum >= 52 && 'opacity-40'
+                )}
                 aria-label="Semana siguiente"
               >
                 <ChevronRight size={18} />
@@ -988,16 +1219,13 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
               transition={{ duration: 0.2 }}
               className="w-full"
             >
-              <div 
-                className="mb-6 flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide -mx-1 px-1 sm:mx-0 sm:px-0"
-                onTouchStart={(e) => e.stopPropagation()}
-                onTouchMove={(e) => e.stopPropagation()}
-                onTouchEnd={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-                onMouseMove={(e) => e.stopPropagation()}
-                onMouseUp={(e) => e.stopPropagation()}
-                style={{ touchAction: 'pan-x' }}
+              <div
+                className="mb-3 -mx-1 sm:mb-6 sm:mx-0"
+                onTouchStart={e => e.stopPropagation()}
+                onTouchMove={e => e.stopPropagation()}
               >
+              <div className="overflow-x-auto px-1 pb-1 [scrollbar-width:none] sm:px-0 [&::-webkit-scrollbar]:hidden">
+              <div className="flex w-max gap-1.5">
                 {(displayDays.length ? displayDays : currentWeek.days).map((day, idx) => {
                   const isActive = activeDayIdx === idx;
                   const dayTypeDot = {
@@ -1013,7 +1241,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   <button
                     ref={(el) => { dayButtonRefs.current[idx] = el; }}
                     key={day.id}
-                    onClick={() => setActiveDayIdx(idx)}
+                    onClick={() => goToDay(idx)}
                     className={cn(
                         "flex min-w-[3.4rem] flex-shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-3 py-1.5 text-[12px] font-medium transition-all",
                         isActive
@@ -1037,18 +1265,30 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   );
                 })}
               </div>
+              </div>
+              </div>
 
               <AnimatePresence mode="wait">
               <motion.div
                 key={`${displayWeekNum}-${activeDayIdx}`}
-                initial={
-                  activeDayIdx === 0
-                    ? { opacity: 0 }
-                    : { opacity: 0, x: 22 }
-                }
+                initial={{ opacity: 0, x: dayDir > 0 ? 16 : -16 }}
                 animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -12 }}
-                transition={SCREEN_TRANSITION}
+                exit={{ opacity: 0, x: dayDir > 0 ? -12 : 12 }}
+                transition={{ duration: 0.2, ease: EASE_OUT }}
+                onPointerDown={e => {
+                  if ((e.target as HTMLElement).closest('input,textarea,button,a')) return;
+                  daySwipe.current = { x: e.clientX, y: e.clientY };
+                }}
+                onPointerUp={e => {
+                  const start = daySwipe.current;
+                  daySwipe.current = null;
+                  if (!start) return;
+                  const dx = e.clientX - start.x;
+                  const dy = e.clientY - start.y;
+                  if (Math.abs(dx) < 48 || Math.abs(dx) < Math.abs(dy) * 1.2) return;
+                  goToDay(activeDayIdx + (dx < 0 ? 1 : -1));
+                }}
+                onPointerCancel={() => { daySwipe.current = null; }}
               >
               <div>
                 {calendarWeekSkipped && (
@@ -1141,10 +1381,9 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 {effectiveCurrentDayType === 'workout' || effectiveCurrentDayType === 'deload' ? (
                   <div className="space-y-2">
                     {/* Table Header - Solo desktop. % RM solo si alguno tiene TM vinculado */}
-                    <div className="hidden md:grid grid-cols-12 gap-4 px-4 py-3 bg-gradient-to-r from-slate-50 to-indigo-50/30 dark:from-slate-800 dark:to-indigo-950/30 rounded-xl text-[10px] font-black uppercase tracking-wider text-slate-600 dark:text-slate-400 border border-slate-100 dark:border-slate-700">
-                      <div className="col-span-7">Ejercicio</div>
+                    <div className="hidden lg:grid grid-cols-12 gap-4 px-4 py-3 bg-gradient-to-r from-slate-50 to-indigo-50/30 dark:from-slate-800 dark:to-indigo-950/30 rounded-xl text-[10px] font-black uppercase tracking-wider text-slate-600 dark:text-slate-400 border border-slate-100 dark:border-slate-700">
+                      <div className="col-span-8">Ejercicio</div>
                       <div className="col-span-4 text-center">Series × Reps</div>
-                      <div className="col-span-1 text-center">Acción</div>
                     </div>
 
                     {/* Atajo de día: evita abrir el modal de cada ejercicio cuando la sesión ha ido según lo previsto. */}
@@ -1181,8 +1420,9 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     )}
 
                     {/* Ejercicios */}
+                    <LayoutGroup>
                     <div className="space-y-2">
-                      {dayExercises.map((ex) => {
+                      {dayExercises.map((ex, exIdx) => {
                         const logId = routineLogKeyFromIds(currentWeek, currentDay, ex);
                         const log = getLogEntryForExercise(logs, currentWeek, currentDay, ex);
                         const effectiveTM = resolveEffectiveTM(ex);
@@ -1218,18 +1458,31 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                           );
 
                           return (
-                            <Card
+                            <ExerciseHoldRow
                               key={ex.id}
-                              padding="sm"
-                              rounded="xl"
-                              className="group cursor-pointer border-0 bg-white shadow-sm dark:bg-slate-900 md:border-0 md:bg-transparent md:p-0 md:shadow-none md:hover:bg-slate-50/80 dark:md:hover:bg-slate-800/25"
-                              onClick={() => setLoggingExercise({ weekId: currentWeek.id, dayId: currentDay.id, exercise: ex })}
+                              highlighted={heldExerciseId === ex.id}
+                              canHold={!isHistoryMode}
+                              canMoveUp={exIdx > 0}
+                              canMoveDown={exIdx < dayExercises.length - 1}
+                              onOpen={() => setLoggingExercise({ weekId: currentWeek.id, dayId: currentDay.id, exercise: ex })}
+                              onLongPress={() => setHeldExerciseId(ex.id)}
+                              onDismiss={() => setHeldExerciseId(null)}
+                              onMoveUp={() => {
+                                onMoveExercise(currentWeek.id, currentDay.id, ex.id, -1);
+                              }}
+                              onMoveDown={() => {
+                                onMoveExercise(currentWeek.id, currentDay.id, ex.id, 1);
+                              }}
+                              onDelete={() => {
+                                removeExerciseRow(currentWeek.id, currentDay.id, ex);
+                                setHeldExerciseId(null);
+                              }}
                             >
                               {/* Mobile Card Layout */}
-                              <div className="md:hidden flex items-center gap-2.5">
+                              <div className="flex items-center gap-2.5 lg:hidden">
                                 <div className="min-w-0 flex-1">
-                                  <div className="flex items-center gap-1.5">
-                                    <h4 className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+                                  <div className="flex items-start gap-1.5">
+                                    <h4 className="line-clamp-2 text-sm font-semibold leading-snug text-slate-900 dark:text-slate-100">
                                       {ex.name}
                                     </h4>
                                     {exStatusBadge}
@@ -1240,7 +1493,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                       </span>
                                     )}
                                   </div>
-                                  <p className="mt-0.5 truncate text-[11px] text-slate-400">
+                                  <p className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-slate-400">
                                     {rpeLabel && (
                                       <span className="font-semibold text-amber-600 dark:text-amber-400">RPE {rpeLabel}</span>
                                     )}
@@ -1263,11 +1516,11 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                   onClick={(e) => e.stopPropagation()}
                                 >
                                   {compactScheme ? (
-                                    <span className="rounded-lg bg-slate-50 px-2 py-1 text-[12px] font-bold tabular-nums text-slate-800 dark:bg-slate-800 dark:text-slate-100">
+                                    <span className="whitespace-nowrap rounded-lg bg-slate-50 px-2 py-1 text-[12px] font-bold tabular-nums text-slate-800 dark:bg-slate-800 dark:text-slate-100">
                                       {compactScheme}
                                     </span>
                                   ) : (
-                                    <div className="flex items-center rounded-lg bg-slate-50 px-1.5 py-1 dark:bg-slate-800">
+                                    <div className="flex items-center whitespace-nowrap rounded-lg bg-slate-50 px-1.5 py-1 dark:bg-slate-800">
                                       <input
                                         type="text"
                                         inputMode="numeric"
@@ -1298,10 +1551,11 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                             applySetsWithPct(ex, n, effectiveTM)
                                           );
                                         }}
-                                        className="w-7 bg-transparent text-center text-sm font-semibold text-slate-900 focus:outline-none disabled:opacity-50 dark:text-slate-100"
+                                        style={{ width: `${Math.max(2, String(setsShown).length + 0.6)}ch` }}
+                                        className="min-w-[1.5rem] bg-transparent text-center text-sm font-semibold text-slate-900 focus:outline-none disabled:opacity-50 dark:text-slate-100"
                                         placeholder="3"
                                       />
-                                      <span className="text-xs font-medium text-slate-300">×</span>
+                                      <span className="px-0.5 text-xs font-medium text-slate-300">×</span>
                                       <input
                                         type="text"
                                         inputMode="numeric"
@@ -1322,29 +1576,19 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                           });
                                           onUpdateExercise(currentWeek.id, currentDay.id, ex.id, { reps: parseRepsCommit(rawReps) });
                                         }}
-                                        className="w-8 bg-transparent text-center text-sm font-semibold text-slate-900 focus:outline-none disabled:opacity-50 dark:text-slate-100"
+                                        style={{ width: `${Math.max(4, String(repsShown).length + 0.6)}ch` }}
+                                        className="min-w-[2.75rem] bg-transparent text-center text-sm font-semibold tabular-nums text-slate-900 focus:outline-none disabled:opacity-50 dark:text-slate-100"
                                         placeholder="10"
                                       />
                                     </div>
                                   )}
                                 </div>
-                                {!isHistoryMode && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      removeExerciseRow(currentWeek.id, currentDay.id, ex);
-                                    }}
-                                    className="shrink-0 rounded-lg p-1.5 text-slate-300 hover:bg-rose-50 hover:text-rose-500 dark:text-slate-600 dark:hover:bg-rose-950/30 dark:hover:text-rose-400"
-                                  >
-                                    <Trash2 size={15} />
-                                  </button>
-                                )}
                               </div>
 
                               {/* Desktop Table Layout */}
-                              <div className="hidden md:grid md:grid-cols-12 gap-4 items-center py-4 px-4 border-b border-slate-100 last:border-0">
+                              <div className="hidden lg:grid lg:grid-cols-12 gap-4 items-center py-4 px-4 border-b border-slate-100 last:border-0">
                               {/* Exercise Info */}
-                                <div className="col-span-7 flex items-center gap-3">
+                                <div className="col-span-8 flex items-center gap-3">
                                 <div className="flex flex-col">
                                   <span className="text-sm font-black text-slate-900 dark:text-slate-100 uppercase tracking-tight">
                                     {ex.name}
@@ -1439,26 +1683,12 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                 </div>
                                   )}
                               </div>
-
-                                {/* Actions */}
-                                <div className="col-span-1 flex items-center justify-center gap-1" onClick={(e) => e.stopPropagation()}>
-                                {!isHistoryMode && (
-                                <button 
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    removeExerciseRow(currentWeek.id, currentDay.id, ex);
-                                  }}
-                                    className="p-2 text-slate-400 dark:text-slate-500 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-all"
-                                >
-                                  <Trash2 size={18} />
-                                </button>
-                                )}
-                              </div>
                             </div>
-                            </Card>
+                            </ExerciseHoldRow>
                           );
                       })}
                     </div>
+                    </LayoutGroup>
 
                     {currentDay.exercises.length === 0 ? (
                       <div className="rounded-2xl border-2 border-dashed border-slate-200/90 bg-slate-50/60 py-8 text-center dark:border-slate-600/70 dark:bg-slate-800/25">
@@ -1527,7 +1757,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   padding="md" 
                   rounded="2xl" 
                   onClick={() => {
-                    setActiveDayIdx(dayIdx);
+                    goToDay(dayIdx);
                     setViewMode('daily');
                   }}
                   className={cn(
@@ -2388,9 +2618,10 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 className="fixed inset-0 min-h-[100dvh] bg-slate-900/25 backdrop-blur-md dark:bg-black/45"
               />
               <motion.div
-                initial={{ opacity: 0, y: 24 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 16 }}
+                initial={SLIME_SHEET_IN}
+                animate={SLIME_SHEET_SHOW}
+                exit={SLIME_SHEET_OUT}
+                transition={STICKY}
                 onClick={(e) => e.stopPropagation()}
                 className="relative z-10 w-full max-w-sm max-h-[78vh] overflow-y-auto rounded-t-[28px] border border-white/50 bg-white/70 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl sm:rounded-[28px] dark:border-white/10 dark:bg-slate-900/65"
               >
@@ -2500,9 +2731,10 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
               className="fixed inset-0 min-h-[100dvh] bg-slate-900/25 backdrop-blur-md dark:bg-black/45"
             />
             <motion.div 
-              initial={{ opacity: 0, scale: 0.96, y: 12 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.96, y: 12 }}
+              initial={SLIME_SHEET_IN}
+              animate={SLIME_SHEET_SHOW}
+              exit={SLIME_SHEET_OUT}
+              transition={STICKY}
               onClick={(e) => e.stopPropagation()}
               className="relative z-10 w-full max-w-sm max-h-[88vh] overflow-y-auto rounded-3xl border border-white/50 bg-white/75 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl dark:border-white/10 dark:bg-slate-900/70"
             >
@@ -2683,9 +2915,10 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 className="absolute inset-0 min-h-[100dvh] bg-black/75 backdrop-blur-sm"
               />
               <motion.div 
-                initial={{ opacity: 0, scale: 0.9, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                initial={SLIME_SHEET_IN}
+                animate={SLIME_SHEET_SHOW}
+                exit={SLIME_SHEET_OUT}
+                transition={STICKY}
                 onClick={(e) => e.stopPropagation()}
                 className="relative z-10 w-full max-w-md max-h-[min(88dvh,90vh)] overflow-y-auto bg-white dark:bg-slate-900 rounded-2xl sm:rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-700"
               >

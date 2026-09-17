@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import {
-  ArrowLeft,
   Dumbbell,
   Eye,
   EyeOff,
@@ -18,7 +17,7 @@ import { Card } from '@/src/components/ui/Card';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { cn } from '@/src/lib/utils';
-import { VIEW_TRANSITION } from '@/src/lib/motionPresets';
+import { SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY, VIEW_TRANSITION } from '@/src/lib/motionPresets';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
 
@@ -34,7 +33,6 @@ interface RoutineSummary {
 
 interface RoutineManagerViewProps {
   routines: RoutineSummary[];
-  onBack: () => void;
   onActivateRoutine: (routineId: string) => void;
   onCreateRoutine: (
     name: string,
@@ -50,11 +48,11 @@ interface RoutineManagerViewProps {
   onToggleHiddenRoutine?: (routineId: string) => void;
   /** Tick desde Progreso: abre el modal de crear. */
   openCreateSignal?: number;
+  pageActive?: boolean;
 }
 
 export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
   routines,
-  onBack,
   onActivateRoutine,
   onCreateRoutine,
   createRoutineLoading = false,
@@ -64,6 +62,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
   onDeleteRoutine,
   onToggleHiddenRoutine,
   openCreateSignal = 0,
+  pageActive = true,
 }) => {
   const deleteInFlight = deleteRoutineLoadingId != null;
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -80,6 +79,12 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
     setImportAfter(false);
     setShowCreateModal(true);
   });
+
+  React.useEffect(() => {
+    if (pageActive) return;
+    setShowCreateModal(false);
+    setEditingId(null);
+  }, [pageActive]);
 
   const handleCreate = async () => {
     if (createRoutineLoading) return;
@@ -137,15 +142,6 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
       className="mx-auto max-w-5xl px-4 pb-28 pt-6 sm:px-6 sm:pb-32 sm:pt-8"
     >
       <header className="mb-6 flex items-center gap-3 sm:mb-8">
-        <button
-          type="button"
-          onClick={onBack}
-          disabled={createRoutineLoading || deleteInFlight}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/50 bg-white/70 text-slate-600 shadow-sm backdrop-blur-xl disabled:opacity-40 dark:border-white/10 dark:bg-slate-800/70 dark:text-slate-200"
-          aria-label="Volver"
-        >
-          <ArrowLeft size={16} />
-        </button>
         <div className="min-w-0 flex-1">
           <h1 className="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">Rutinas</h1>
         </div>
@@ -207,6 +203,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
+              transition={SCREEN_TRANSITION}
               onClick={createRoutineLoading ? undefined : closeCreateModal}
               className={cn(
                 'absolute inset-0 min-h-[100dvh] bg-slate-900/25 backdrop-blur-md dark:bg-black/45',
@@ -214,9 +211,10 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
               )}
             />
             <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              initial={SLIME_SHEET_IN}
+              animate={SLIME_SHEET_SHOW}
+              exit={SLIME_SHEET_OUT}
+              transition={STICKY}
               onClick={(e) => e.stopPropagation()}
               className="relative max-h-[92dvh] w-full max-w-md overflow-y-auto rounded-[28px] border border-white/50 bg-white/75 p-6 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl dark:border-white/10 dark:bg-slate-900/70"
             >

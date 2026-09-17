@@ -139,6 +139,32 @@ export function mergeAdjacentSameExercises(exercises: PlannedExercise[]): Planne
   return out;
 }
 
+/** Reordena una fila visual (grupo fusionado) y vuelve a aplanar los ids originales. */
+export function moveMergedExerciseRow(
+  exercises: PlannedExercise[],
+  rowId: string,
+  dir: -1 | 1
+): PlannedExercise[] {
+  const merged = mergeAdjacentSameExercises(exercises);
+  const idx = merged.findIndex((e) => e.id === rowId || e.mergedFromIds?.includes(rowId));
+  if (idx < 0) return exercises;
+  const next = idx + dir;
+  if (next < 0 || next >= merged.length) return exercises;
+  const copy = [...merged];
+  const swap = copy[idx];
+  copy[idx] = copy[next];
+  copy[next] = swap;
+  const byId = new Map(exercises.map((e) => [e.id, e]));
+  const flat: PlannedExercise[] = [];
+  for (const row of copy) {
+    for (const id of [row.id, ...(row.mergedFromIds ?? [])]) {
+      const orig = byId.get(id);
+      if (orig) flat.push(orig);
+    }
+  }
+  return flat.length === exercises.length ? flat : exercises;
+}
+
 export function exerciseSchemeLabel(ex: PlannedExercise): string | undefined {
   if (ex.setScheme) return ex.setScheme;
   const blocks = blocksFromPlanned(ex);

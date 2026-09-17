@@ -47,18 +47,6 @@ export interface Challenge {
   createdAt?: string;
 }
 
-/** Fila del ranking de mejora de rutina (tú + amigos) en Social → Torneos → Progreso. */
-export interface RoutineProgressLeaderboardEntry {
-  userId: string;
-  name: string;
-  avatar: string;
-  isSelf: boolean;
-  routineName?: string;
-  snapshotCount: number;
-  /** % de mejora del agregado entre primer y último punto del historial; null sin rutina o sin datos. */
-  improvementPct: number | null;
-}
-
 export interface GymCheckIn {
   id: string;
   userId: string;
@@ -126,15 +114,6 @@ export interface HistoryEntry {
   routineId?: string;
 }
 
-export interface Exercise {
-  key: keyof RMData;
-  label: string;
-  color: string;
-  bg: string;
-  border: string;
-  text: string;
-}
-
 export interface TrainingMax {
   id: string;
   name: string;
@@ -157,14 +136,12 @@ export interface InternalExerciseMax {
   valueReps?: number;
   /** Mejor tiempo en s (modo segundos). */
   valueSeconds?: number;
-  /** @deprecated API antigua; usar valueWeight */
-  value?: number;
 }
 
 /** Valor TM interno según el modo del ejercicio (los tres se guardan por separado en Mongo). */
 export function getInternalValueForMode(im: InternalExerciseMax, mode: ExerciseMode): number | undefined {
   let v: number | undefined;
-  if (mode === 'weight') v = im.valueWeight ?? im.value;
+  if (mode === 'weight') v = im.valueWeight;
   else if (mode === 'reps') v = im.valueReps;
   else v = im.valueSeconds;
   if (v == null || Number(v) <= 0) return undefined;

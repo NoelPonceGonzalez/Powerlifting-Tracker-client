@@ -2,7 +2,7 @@
  * Sin dependencias: se sirve tal cual desde /sw.js.
  * Cambia CACHE_VERSION al tocar este archivo para invalidar las cachés antiguas. */
 
-const CACHE_VERSION = 'v2';
+const CACHE_VERSION = 'v3';
 const SHELL_CACHE = `pl-shell-${CACHE_VERSION}`;
 const ASSET_CACHE = `pl-assets-${CACHE_VERSION}`;
 
@@ -16,7 +16,7 @@ const SHELL_URLS = [
   '/icons/apple-touch-icon.png',
 ];
 
-/** Rutas que nunca se cachean: son datos de sesión del backend. */
+/** Rutas que nunca se cachean aquí: van autenticadas y el plan se guarda en IndexedDB. */
 function isApiRequest(url) {
   return url.pathname.startsWith('/api/') || url.pathname === '/health';
 }
@@ -165,21 +165,31 @@ self.addEventListener('push', (event) => {
     badge: '/icons/icon-192.png',
     tag: payload.tag,
     renotify: !!payload.tag,
-    data: { url: payload.url || '/' },
+    data: {
+      url: payload.url || '/',
+      screen: payload.screen,
+      tab: payload.tab,
+    },
   };
   event.waitUntil(self.registration.showNotification(title, options));
 });
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const target = (event.notification.data && event.notification.data.url) || '/';
+  const data = event.notification.data || {};
+  const target = data.url || '/';
   event.waitUntil(
     (async () => {
       const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
       for (const client of all) {
         if (new URL(client.url).origin === self.location.origin && 'focus' in client) {
           await client.focus();
-          if ('navigate' in client && target !== '/') await client.navigate(target).catch(() => undefined);
+          client.postMessage({
+            type: 'NOTIFICATION_OPENED',
+            screen: data.screen,
+            tab: data.tab,
+            url: target,
+          });
           return;
         }
       }

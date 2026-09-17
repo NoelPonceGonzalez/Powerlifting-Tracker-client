@@ -21,9 +21,10 @@ export interface FeedPost {
   author: FeedAuthor;
   mine: boolean;
   viewedByMe?: boolean;
-  /** Solo en tus propias historias: quién las ha visto. */
+  /** Solo en tus propias historias: quién las ha visto y a quién le gusta. */
   viewCount?: number;
   viewers?: FeedAuthor[];
+  likers?: FeedAuthor[];
 }
 
 export interface FeedComment {

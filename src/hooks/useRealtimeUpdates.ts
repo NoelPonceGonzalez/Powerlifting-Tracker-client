@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { getApiBaseUrl } from '@/src/lib/api';
 import { emitChatRealtime, setRealtimeOpen, type ChatRealtimeEvent } from '@/src/lib/chatRealtime';
+import { showLocalNotification } from '@/src/pwa/notifications';
 
 export type SseEventType =
   | 'social_update'
@@ -19,7 +20,16 @@ interface UseRealtimeUpdatesOptions {
 
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
 /** Sondeo de respaldo mientras el SSE no está abierto (proxy que corta streams, red móvil, etc.). */
-const FALLBACK_POLL_MS = 20000;
+const FALLBACK_POLL_MS = 60000;
+const CALLBACK_THROTTLE_MS = 2000;
+
+function throttleCall(lastAt: { t: number }, fn?: () => void) {
+  if (!fn) return;
+  const now = Date.now();
+  if (now - lastAt.t < CALLBACK_THROTTLE_MS) return;
+  lastAt.t = now;
+  fn();
+}
 
 export function useRealtimeUpdates(
   userId: string | null,
@@ -32,6 +42,11 @@ export function useRealtimeUpdates(
   const retryIndexRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+
+  const lastSocialAt = useRef({ t: 0 });
+  const lastCheckinAt = useRef({ t: 0 });
+  const lastChallengeAt = useRef({ t: 0 });
+  const lastRoutineAt = useRef({ t: 0 });
 
   const cleanup = useCallback(() => {
     if (retryTimerRef.current) {
@@ -47,7 +62,12 @@ export function useRealtimeUpdates(
 
   const connect = useCallback(() => {
     if (!mountedRef.current || !userId) return;
-    cleanup();
+    const state = esRef.current?.readyState;
+    if (state === EventSource.OPEN || state === EventSource.CONNECTING) return;
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
 
     const base = getApiBaseUrl();
     if (!base) return;
@@ -70,23 +90,56 @@ export function useRealtimeUpdates(
 
     const handleEvent = (e: MessageEvent) => {
       try {
-        const data = JSON.parse(e.data) as { type: string };
+        const data = JSON.parse(e.data) as { type: string; fromName?: string; preview?: string };
         switch (data.type) {
           case 'social_update':
-            optionsRef.current.onSocialUpdate?.();
+            throttleCall(lastSocialAt.current, optionsRef.current.onSocialUpdate);
+            if (document.hidden) {
+              void showLocalNotification('Nueva actividad', 'Tienes avisos en Social', {
+                screen: 'social',
+                tab: 'feed',
+                url: '/?pwa=social&tab=feed',
+                tag: 'social_update',
+              });
+            }
             break;
           case 'checkin_update':
-            optionsRef.current.onCheckinUpdate?.();
+            throttleCall(lastCheckinAt.current, optionsRef.current.onCheckinUpdate);
+            if (document.hidden) {
+              void showLocalNotification('Alguien está en el gym', 'Mira quién entrena ahora', {
+                screen: 'social',
+                tab: 'checkins',
+                url: '/?pwa=social&tab=checkins',
+                tag: 'checkin_update',
+              });
+            }
             break;
           case 'challenge_update':
-            optionsRef.current.onChallengeUpdate?.();
+            throttleCall(lastChallengeAt.current, optionsRef.current.onChallengeUpdate);
+            if (document.hidden) {
+              void showLocalNotification('Torneos', 'Hay movimiento en un torneo', {
+                screen: 'social',
+                tab: 'challenges',
+                url: '/?pwa=social&tab=challenges',
+                tag: 'challenge_update',
+              });
+            }
             break;
           case 'routine_update':
-            optionsRef.current.onRoutineUpdate?.();
+            throttleCall(lastRoutineAt.current, optionsRef.current.onRoutineUpdate);
             break;
-          case 'chat_message':
-            emitChatRealtime(data as ChatRealtimeEvent);
+          case 'chat_message': {
+            const chat = data as ChatRealtimeEvent;
+            emitChatRealtime(chat);
+            if (document.hidden && chat.type === 'chat_message' && !chat.message?.mine) {
+              void showLocalNotification(
+                chat.message.author?.name || 'Nuevo mensaje',
+                chat.message.text || 'Te han escrito en el chat',
+                { screen: 'social', tab: 'chat', url: '/?pwa=social&tab=chat', tag: 'chat_message' }
+              );
+            }
             break;
+          }
           case 'chat_typing':
             emitChatRealtime(data as ChatRealtimeEvent);
             break;
@@ -104,6 +157,7 @@ export function useRealtimeUpdates(
     es.addEventListener('chat_typing', handleEvent);
 
     es.onerror = () => {
+      if (esRef.current !== es) return;
       setRealtimeOpen(false);
       es.close();
       esRef.current = null;
@@ -122,7 +176,10 @@ export function useRealtimeUpdates(
     connect();
     return () => {
       mountedRef.current = false;
-      cleanup();
+      // Strict Mode desmonta y remonta: no cortes el stream a los 0 ms.
+      window.setTimeout(() => {
+        if (!mountedRef.current) cleanup();
+      }, 80);
     };
   }, [connect, cleanup]);
 

@@ -9,8 +9,10 @@ import { cn } from '@/src/lib/utils';
 import { apiGet, mediaUrl } from '@/src/lib/api';
 import { isRealtimeOpen, subscribeChatRealtime } from '@/src/lib/chatRealtime';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
+import { STICKY } from '@/src/lib/motionPresets';
 import type { Friend, FriendRequest, UserSearchResult } from '@/src/types';
 import { ChatPeoplePanel } from '@/src/components/social/ChatPeoplePanel';
+import { StoriesRail } from '@/src/components/social/StoriesRail';
 import {
   addChatGroupMembers,
   deleteChat,
@@ -41,6 +43,8 @@ interface ChatTabProps {
   friends: Friend[];
   startWith?: string | null;
   pending?: FriendRequest[];
+  /** Solicitudes por aceptar (follows, chats, grupos…). Se ve en el corazón. */
+  acceptCount?: number;
   onOpened?: () => void;
   onOpenMini?: (person: FeedAuthor) => void;
   onAcceptRequest?: (id: string) => void;
@@ -48,6 +52,9 @@ interface ChatTabProps {
   onSendRequest?: (userId: string) => Promise<void>;
   requestBusyId?: string | null;
   onConversationChange?: (open: boolean) => void;
+  onAddStory?: () => void;
+  storyRefreshTick?: number;
+  pageActive?: boolean;
 }
 
 type OpenChat =
@@ -89,8 +96,6 @@ function inboxPreview(text?: string): string {
   if (/^e2e/i.test(text)) return 'Chat listo';
   return text;
 }
-
-const STICKY = { type: 'spring' as const, stiffness: 220, damping: 14, mass: 0.95 };
 
 function InboxRow({
   row,
@@ -354,6 +359,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   friends,
   startWith,
   pending = [],
+  acceptCount,
   onOpened,
   onOpenMini,
   onAcceptRequest,
@@ -361,6 +367,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   onSendRequest,
   requestBusyId,
   onConversationChange,
+  onAddStory,
+  storyRefreshTick = 0,
+  pageActive = true,
 }) => {
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [coach, setCoach] = useState<FeedAuthor | null>(null);
@@ -385,6 +394,8 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   const [deleting, setDeleting] = useState(false);
   const [actionRow, setActionRow] = useState<ChatThread | null>(null);
   const [peopleOpen, setPeopleOpen] = useState(false);
+  const [peoplePage, setPeoplePage] = useState<'activity' | 'requests' | 'friends'>('activity');
+  const heartBadge = Math.max(acceptCount ?? 0, pending.length);
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const lastTyped = useRef(0);
@@ -395,7 +406,10 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   }, [open, onConversationChange]);
 
   useEscapeClose(!!actionRow, () => setActionRow(null));
-  useEscapeClose(peopleOpen && !open, () => setPeopleOpen(false));
+  useEscapeClose(peopleOpen && !open, () => {
+    if (peoplePage === 'requests' || peoplePage === 'friends') setPeoplePage('activity');
+    else setPeopleOpen(false);
+  });
 
   useEffect(() => {
     setPrefs(readPrefs(myId));
@@ -466,12 +480,18 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   }, []);
 
   useEffect(() => {
+    if (!pageActive) return;
     void loadInbox();
+  }, [loadInbox, pageActive]);
+
+  useEffect(() => {
+    if (!pageActive) return;
     const id = window.setInterval(() => {
+      if (isRealtimeOpen()) return;
       void loadInbox();
-    }, isRealtimeOpen() ? 20000 : 8000);
+    }, 45000);
     return () => window.clearInterval(id);
-  }, [loadInbox]);
+  }, [loadInbox, pageActive]);
 
   const openDm = useCallback(async (author: FeedAuthor) => {
     setOpen({ kind: 'dm', peer: author });
@@ -536,7 +556,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   }, [startWith, threads, friends, coach, openDm, onOpened]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || !pageActive) return;
     const id = window.setInterval(async () => {
       if (isRealtimeOpen()) return;
       try {
@@ -554,7 +574,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
       }
     }, 4000);
     return () => window.clearInterval(id);
-  }, [open]);
+  }, [open, pageActive]);
 
   useEffect(() => {
     return subscribeChatRealtime(event => {
@@ -1185,48 +1205,81 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   return (
     <>
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        {peopleOpen ? (
+      {peopleOpen ? (
+        <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => setPeopleOpen(false)}
-            className="flex items-center gap-2 rounded-full py-1 text-slate-500"
-            aria-label="Volver a chats"
+            onClick={() => {
+              if (peoplePage === 'requests' || peoplePage === 'friends') setPeoplePage('activity');
+              else setPeopleOpen(false);
+            }}
+            className="flex min-w-0 items-center gap-2 rounded-full py-1 text-slate-500"
+            aria-label={
+              peoplePage === 'requests' || peoplePage === 'friends' ? 'Volver a actividad' : 'Volver a chats'
+            }
           >
             <ArrowLeft size={18} />
-            <span className="text-sm font-semibold text-slate-800 dark:text-slate-100">Actividad</span>
+            <span className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+              {peoplePage === 'requests' ? 'Solicitudes' : peoplePage === 'friends' ? 'Amigos' : 'Actividad'}
+            </span>
           </button>
-        ) : (
-          <span />
-        )}
-        <button
-          type="button"
-          onClick={() => setPeopleOpen(v => !v)}
-          className="relative flex h-10 w-10 items-center justify-center rounded-full text-slate-500 hover:bg-white dark:hover:bg-slate-900"
-          aria-label={peopleOpen ? 'Volver a chats' : 'Solicitudes y buscar gente'}
-        >
-          <Heart
-            size={22}
-            strokeWidth={2.1}
-            className={peopleOpen || pending.length > 0 ? 'text-rose-500' : undefined}
-            fill={peopleOpen ? 'currentColor' : 'none'}
-          />
-          {pending.length > 0 && (
-            <span className="absolute right-0.5 top-0.5 h-2 w-2 rounded-full bg-rose-500 ring-2 ring-slate-50 dark:ring-slate-950" />
+          {peoplePage === 'activity' && (
+            <button
+              type="button"
+              onClick={() => setPeoplePage('friends')}
+              className="ml-auto text-sm font-semibold text-indigo-600 dark:text-indigo-400"
+            >
+              Amigos
+              {friends.length > 0 && (
+                <span className="ml-1 tabular-nums text-slate-400">{friends.length}</span>
+              )}
+            </button>
           )}
-        </button>
-      </div>
+        </div>
+      ) : (
+        <StoriesRail
+          myId={myId}
+          refreshTick={storyRefreshTick}
+          pageActive={pageActive}
+          onAddStory={() => onAddStory?.()}
+          trailing={
+            <button
+              type="button"
+              onClick={() => {
+                setPeoplePage('activity');
+                setPeopleOpen(true);
+              }}
+              className="relative mt-2 shrink-0 overflow-visible p-1.5 pr-2 pt-2 text-slate-900 dark:text-slate-100"
+              aria-label={heartBadge > 0 ? `Actividad, ${heartBadge} por aceptar` : 'Actividad'}
+            >
+              <Heart size={18} strokeWidth={2} />
+              {heartBadge > 0 && (
+                <span className="absolute right-0 top-0 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold leading-none text-white">
+                  {heartBadge > 9 ? '9+' : heartBadge}
+                </span>
+              )}
+            </button>
+          }
+        />
+      )}
+      {!peopleOpen && (
+        <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Chats</p>
+      )}
 
       {peopleOpen ? (
         <ChatPeoplePanel
           myId={myId}
           pending={pending}
+          friends={friends}
           friendIds={friends.map(f => f.id)}
+          page={peoplePage}
+          onPageChange={setPeoplePage}
           onAccept={id => onAcceptRequest?.(id)}
           onReject={id => onRejectRequest?.(id)}
           onSendRequest={onSendRequest}
           onOpenPerson={person => onOpenMini?.({ id: person.id, name: person.name, avatar: person.avatar ?? null })}
           busyId={requestBusyId}
+          refreshTick={storyRefreshTick}
         />
       ) : (
       <>
@@ -1247,7 +1300,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
             {inboxQ.trim() ? 'Nadie con ese nombre' : 'Aún no hay chats'}
           </p>
           <p className="mt-1 text-xs text-slate-400">
-            {inboxQ.trim() ? 'Prueba otro nombre.' : 'El corazón de arriba es para seguir gente. Aquí solo salen tus chats.'}
+            {inboxQ.trim() ? 'Prueba otro nombre.' : 'El corazón es la actividad: solicitudes, follows y likes.'}
           </p>
         </div>
       ) : (

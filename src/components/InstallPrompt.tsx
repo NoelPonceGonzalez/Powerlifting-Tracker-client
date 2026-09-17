@@ -104,7 +104,7 @@ export const InstallPrompt: React.FC = () => {
           transition={{ type: 'spring', stiffness: 320, damping: 30 }}
           role="dialog"
           aria-label={isNotificationsMode ? 'Activar notificaciones' : 'Instalar la aplicación'}
-          className="fixed inset-x-3 bottom-24 z-[120050] mx-auto max-w-md sm:bottom-28"
+          className="fixed inset-x-3 bottom-24 z-[60] mx-auto max-w-md sm:bottom-28"
         >
           <div className="relative overflow-hidden rounded-3xl border border-white/20 bg-white/90 p-5 shadow-2xl shadow-black/10 backdrop-blur-2xl dark:border-slate-700/60 dark:bg-slate-950/90 dark:shadow-black/60">
             <button

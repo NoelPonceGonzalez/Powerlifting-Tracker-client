@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion } from 'motion/react';
 import { 
   Search, 
   UserCheck, 
@@ -27,12 +27,13 @@ import { Card } from '@/src/components/ui/Card';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
-import { FriendRequest, Friend, Challenge, GymCheckIn, User, UserSearchResult, ChallengeType, TrainingWeek, BodyWeightScoringMode, RoutineProgressLeaderboardEntry } from '@/src/types';
+import { FriendRequest, Friend, Challenge, GymCheckIn, User, UserSearchResult, ChallengeType, TrainingWeek, BodyWeightScoringMode } from '@/src/types';
 import { cn } from '@/src/lib/utils';
 import { apiGet, apiPut } from '@/src/lib/api';
-import { VIEW_TRANSITION } from '@/src/lib/motionPresets';
+import { EASE_OUT } from '@/src/lib/motionPresets';
 import { EQUITY_OPTIONS, equitySummary, suggestBodyWeightScoring } from '@/src/lib/challengeEquity';
 import { GlassModal } from '@/src/components/ui/GlassModal';
+import { SlimeScroll } from '@/src/components/ui/SlimeScroll';
 import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 import {
@@ -43,6 +44,7 @@ import {
   fetchCoachRequests,
   fetchGroupInvites,
   fetchProfile,
+  fetchStories,
   coachRequestCopy,
   coachRequestPerson,
   type ChatAsk,
@@ -56,6 +58,7 @@ import { ChatTab } from '@/src/components/social/ChatTab';
 import { HomeActivitySheet } from '@/src/components/social/HomeActivitySheet';
 import { ProfileScreen } from '@/src/components/social/ProfileScreen';
 import { Avatar as FeedAvatar } from '@/src/components/social/MediaPost';
+import { usePullToRefresh } from '@/src/lib/usePullToRefresh';
 
 export type SocialTab = 'feed' | 'friends' | 'challenges' | 'checkins' | 'chat';
 
@@ -64,7 +67,7 @@ const TAB_LABELS: Record<SocialTab, string> = {
   friends: 'Amigos',
   challenges: 'Torneos',
   checkins: 'Gym',
-  chat: 'Chat',
+  chat: 'Social',
 };
 
 interface SocialViewProps {
@@ -76,7 +79,10 @@ interface SocialViewProps {
   initialTab?: SocialTab;
   /** Se incrementa desde el dashboard para abrir el modal de check-in en Actividad. */
   openCheckInModalSignal?: number;
+  openCreateChallengeSignal?: number;
   openPublishSignal?: number;
+  onAddStory?: () => void;
+  storyRefreshTick?: number;
   checkInIntent?: 'now' | 'later' | null;
   onAccept: (id: string) => void;
   onReject: (id: string) => void;
@@ -121,6 +127,9 @@ interface SocialViewProps {
   onGoToCopiedRoutine?: (routineId: string) => void;
   onUnfriend?: (friendId: string) => Promise<void>;
   onChatConversationChange?: (open: boolean) => void;
+  onPullRefresh?: () => void | Promise<void>;
+  /** false si Social está montada pero oculta: no hay que sondear. */
+  pageActive?: boolean;
 }
 
 const CHALLENGE_TYPE_LABELS: Record<ChallengeType, string> = {
@@ -146,12 +155,27 @@ function bodyWeightScoringSummary(
   usePoints: boolean,
   mode: BodyWeightScoringMode | undefined
 ): string {
-  if (!usePoints) return 'Clasificación por marca bruta';
+  if (!usePoints) return 'Gana quien tenga el número más alto. No se mira el peso.';
   return equitySummary(type, mode ?? 'heavier_more');
 }
 
-function sameUserId(a?: string | null, b?: string | null) {
-  return Boolean(a && b && String(a) === String(b));
+function extractUserId(value?: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'object') {
+    const o = value as { _id?: unknown; id?: unknown };
+    if (o._id != null) return String(o._id);
+    if (o.id != null) return String(o.id);
+  }
+  const s = String(value);
+  const dumped = s.match(/ObjectId\('([a-f0-9]{24})'\)/);
+  if (dumped) return dumped[1];
+  return s;
+}
+
+function sameUserId(a?: unknown, b?: unknown) {
+  const left = extractUserId(a);
+  const right = extractUserId(b);
+  return Boolean(left && right && left === right);
 }
 
 function sortChallengeRanking<T extends { score: number; value: number }>(
@@ -163,6 +187,26 @@ function sortChallengeRanking<T extends { score: number; value: number }>(
     if (!normalized) return b.value - a.value;
     return b.score - a.score;
   });
+}
+
+function formatChallengeMark(
+  challenge: Challenge,
+  p: Challenge['participants'][number]
+): string {
+  const unit = CHALLENGE_TYPE_UNIT[challenge.type as ChallengeType] || '';
+  if (challenge.usePointsSystem !== false) return `${Math.round(p.score)} pts`;
+  return `${p.value} ${unit}`;
+}
+
+function formatJoinDelta(
+  challenge: Challenge,
+  p: Challenge['participants'][number]
+): string | null {
+  if (p.initialValue == null) return null;
+  const unit = CHALLENGE_TYPE_UNIT[challenge.type as ChallengeType] || '';
+  const delta = p.value - p.initialValue;
+  if (delta === 0) return 'Igual que al unirte';
+  return `${delta > 0 ? '+' : ''}${delta} ${unit} desde que te uniste`;
 }
 
 export const SocialView: React.FC<SocialViewProps> = ({ 
@@ -183,7 +227,6 @@ export const SocialView: React.FC<SocialViewProps> = ({
   onRefreshChallenges,
   onCopyFriendRoutine,
   myRoutines,
-  myExercises,
   activeRoutineId,
   onGoToCopiedRoutine,
   onUnfriend,
@@ -193,16 +236,19 @@ export const SocialView: React.FC<SocialViewProps> = ({
   socialNavTick = 0,
   onChatConversationChange,
   openCheckInModalSignal = 0,
+  openCreateChallengeSignal = 0,
   openPublishSignal = 0,
+  onAddStory,
+  storyRefreshTick = 0,
   checkInIntent = null,
+  onPullRefresh,
+  pageActive = true,
 }) => {
   const [search, setSearch] = useState('');
   const [challengeSearch, setChallengeSearch] = useState('');
   const [activeTab, setActiveTab] = useState<SocialTab>(initialTab);
   const prevInitialTabPropRef = useRef(initialTab);
   const [challengeSubTab, setChallengeSubTab] = useState<'active' | 'finished' | 'progress'>('active');
-  const [routineLeaderboard, setRoutineLeaderboard] = useState<RoutineProgressLeaderboardEntry[] | null>(null);
-  const [routineLeaderboardLoading, setRoutineLeaderboardLoading] = useState(false);
   const [checkInSaving, setCheckInSaving] = useState(false);
   const [acceptRejectLoadingId, setAcceptRejectLoadingId] = useState<string | null>(null);
   const [showCheckInModal, setShowCheckInModal] = useState(false);
@@ -242,6 +288,22 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [gymTime, setGymTime] = useState('');
   const [editingCheckIn, setEditingCheckIn] = useState<GymCheckIn | null>(null);
   const [localCheckInIntent, setLocalCheckInIntent] = useState<'now' | 'later' | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
+  const socialRootRef = useRef<HTMLDivElement>(null);
+  const runPullRefresh = useCallback(async () => {
+    const started = Date.now();
+    await Promise.all([
+      Promise.resolve(onPullRefresh?.()),
+      fetchStories().catch(() => undefined),
+    ]);
+    const wait = 480 - (Date.now() - started);
+    if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
+  }, [onPullRefresh]);
+  const { pull: pagePull, busy: pageRefreshing } = usePullToRefresh(
+    socialRootRef,
+    !chatOpen && !viewingProfileId,
+    runPullRefresh
+  );
 
   // Búsqueda de usuarios para añadir (el API excluye amigos ya aceptados)
   const [searchResults, setSearchResults] = useState<UserSearchResult[]>([]);
@@ -302,6 +364,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
   }, []);
 
   useEffect(() => {
+    if (!pageActive) return;
     loadCoachRequests();
     loadGroupInvites();
     loadChatAsks();
@@ -311,9 +374,9 @@ export const SocialView: React.FC<SocialViewProps> = ({
         .catch(() => setUnreadNotifCount(0));
     };
     loadUnread();
-    const id = window.setInterval(loadUnread, 20000);
+    const id = window.setInterval(loadUnread, 90000);
     return () => window.clearInterval(id);
-  }, [loadCoachRequests, loadGroupInvites, loadChatAsks, user.id]);
+  }, [loadCoachRequests, loadGroupInvites, loadChatAsks, user.id, pageActive]);
 
   const answerCoach = useCallback(async (id: string, decision: 'accept' | 'reject') => {
     setCoachRequestBusyId(id);
@@ -355,20 +418,6 @@ export const SocialView: React.FC<SocialViewProps> = ({
       setChatAskBusyId(null);
     }
   }, []);
-
-  const loadRoutineLeaderboard = useCallback(() => {
-    setRoutineLeaderboardLoading(true);
-    apiGet<{ entries: RoutineProgressLeaderboardEntry[] }>('/api/social/friends/routine-progress')
-      .then(r => setRoutineLeaderboard(Array.isArray(r.entries) ? r.entries : []))
-      .catch(() => setRoutineLeaderboard([]))
-      .finally(() => setRoutineLeaderboardLoading(false));
-  }, []);
-
-  useEffect(() => {
-    if (activeTab === 'challenges' && challengeSubTab === 'progress') {
-      loadRoutineLeaderboard();
-    }
-  }, [activeTab, challengeSubTab, loadRoutineLeaderboard, friendsList.length]);
 
   /** Nav de abajo: Inicio/Chat/Torneos siempre gana, aunque hayas abierto Amigos o Gym por dentro. */
   useEffect(() => {
@@ -429,6 +478,11 @@ export const SocialView: React.FC<SocialViewProps> = ({
       setGymTime('');
     }
     setShowCheckInModal(true);
+  });
+
+  useIncrementSignal('create-challenge-modal', openCreateChallengeSignal, () => {
+    setActiveTab('challenges');
+    setShowCreateChallengeModal(true);
   });
 
   // Búsqueda desde la 1.ª letra (sin mínimo de 2); debounce corto para que responda al instante
@@ -643,7 +697,6 @@ export const SocialView: React.FC<SocialViewProps> = ({
       setCreateEquityOpen(false);
       setCreateEquityTouched(false);
       onRefreshChallenges?.();
-      if (challengeSubTab === 'progress') loadRoutineLeaderboard();
     } finally {
       setCreateSubmitting(false);
     }
@@ -658,7 +711,6 @@ export const SocialView: React.FC<SocialViewProps> = ({
       setShowJoinChallengeModal(null);
       setJoinValue('');
       onRefreshChallenges?.();
-      if (challengeSubTab === 'progress') loadRoutineLeaderboard();
     } finally {
       setJoinSubmitting(false);
     }
@@ -666,16 +718,34 @@ export const SocialView: React.FC<SocialViewProps> = ({
 
   return (
     <motion.div 
+      ref={socialRootRef}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      transition={VIEW_TRANSITION}
-      className="mx-auto max-w-5xl px-4 pb-28 pt-5 text-slate-900 sm:px-6 sm:pb-32 sm:pt-7 dark:text-slate-100"
+      transition={{ duration: 0.16, ease: EASE_OUT }}
+      className="mx-auto max-w-5xl origin-top px-4 pb-28 pt-5 text-slate-900 sm:px-6 sm:pb-32 sm:pt-7 dark:text-slate-100"
     >
+      <div
+        className="flex items-center justify-center overflow-hidden"
+        style={{ height: pageRefreshing ? 44 : pagePull }}
+        aria-hidden={!pageRefreshing && pagePull < 8}
+      >
+        {(pagePull > 6 || pageRefreshing) && (
+          <Loader2
+            size={22}
+            className={cn('text-indigo-500', pageRefreshing && 'animate-spin')}
+            style={
+              pageRefreshing
+                ? undefined
+                : { transform: `rotate(${Math.min(360, pagePull * 4)}deg)` }
+            }
+          />
+        )}
+      </div>
       <header className={cn('space-y-4', activeTab === 'chat' ? 'mb-0' : 'mb-5')}>
         {activeTab !== 'chat' && (
         <div className="flex items-center gap-3">
-          {activeTab !== 'feed' ? (
+          {activeTab !== 'feed' && activeTab !== 'challenges' ? (
             <button
               type="button"
               onClick={() => {
@@ -707,7 +777,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
             >
               <ArrowRight className="rotate-180" size={16} />
             </button>
-          ) : (
+          ) : activeTab === 'feed' ? (
             <button
               type="button"
               onClick={onGoToProfile}
@@ -721,7 +791,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                 className="h-10 w-10 rounded-full border border-slate-200 dark:border-slate-700"
               />
             </button>
-          )}
+          ) : null}
           <div className="min-w-0 flex-1">
             <h1 className="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">
               {activeTab === 'feed' ? 'Inicio' : TAB_LABELS[activeTab]}
@@ -767,7 +837,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
             <button
               type="button"
               onClick={() => setShowCreateChallengeModal(true)}
-              className="flex h-10 shrink-0 items-center gap-1.5 rounded-full bg-indigo-600 px-3.5 text-sm font-semibold text-white"
+              className="ml-auto inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full bg-indigo-600 px-3.5 text-sm font-semibold text-white"
             >
               <Plus size={15} />
               Crear
@@ -835,6 +905,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
             <FeedTab
               myName={user.name}
               myAvatar={user.avatar ?? null}
+              refreshTick={storyRefreshTick}
+              pageActive={pageActive && activeTab === 'feed'}
               openPublishSignal={openPublishSignal}
               onOpenAuthor={authorId => void openFriendModal({ id: authorId, name: 'Atleta' })}
               onOpenChat={peerId => {
@@ -850,13 +922,20 @@ export const SocialView: React.FC<SocialViewProps> = ({
               friends={friendsList}
               startWith={chatPeerId}
               pending={pendingRequests}
+              acceptCount={activityBadge}
               onOpened={() => setChatPeerId(null)}
               onOpenMini={person => openFriendModal({ id: person.id, name: person.name, avatar: person.avatar ?? undefined })}
               onAcceptRequest={id => void handleRequestAction(id, onAccept)}
               onRejectRequest={id => void handleRequestAction(id, onReject)}
               onSendRequest={onSendFriendRequest}
               requestBusyId={acceptRejectLoadingId}
-              onConversationChange={onChatConversationChange}
+              onConversationChange={open => {
+                setChatOpen(open);
+                onChatConversationChange?.(open);
+              }}
+              onAddStory={onAddStory}
+              storyRefreshTick={storyRefreshTick}
+              pageActive={pageActive && activeTab === 'chat'}
             />
         </div>
 
@@ -1022,7 +1101,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
         </div>
 
         <div className={cn('space-y-6', activeTab !== 'challenges' && 'hidden')} aria-hidden={activeTab !== 'challenges'}>
-            <div className="flex rounded-2xl bg-white p-1.5 dark:bg-slate-900">
+            <div className="flex rounded-2xl border border-slate-200/70 bg-slate-100/90 p-1 dark:border-slate-700/70 dark:bg-slate-800/90">
                 {([
                   { id: 'active' as const, label: 'Activos' },
                   { id: 'finished' as const, label: 'Finalizados' },
@@ -1033,10 +1112,10 @@ export const SocialView: React.FC<SocialViewProps> = ({
                     type="button"
                     onClick={() => setChallengeSubTab(tab.id)}
                     className={cn(
-                      'flex-1 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors sm:py-3',
+                      'flex-1 rounded-xl px-2 py-2 text-[13px] font-semibold transition-colors sm:py-2.5',
                       challengeSubTab === tab.id
-                        ? 'bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-white'
-                        : 'text-slate-500'
+                        ? 'bg-white text-indigo-600 shadow-sm dark:bg-slate-700 dark:text-indigo-400'
+                        : 'text-slate-500 dark:text-slate-400'
                     )}
                   >
                     {tab.label}
@@ -1057,79 +1136,159 @@ export const SocialView: React.FC<SocialViewProps> = ({
             {challengeSubTab === 'progress' && (
               <>
                 <Card padding="sm" rounded="md" variant="white">
-                  <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Mejora de rutina</p>
+                  <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Así vas en cada torneo</p>
                   <p className="mt-1 text-xs text-slate-500">
-                    El % es el cambio de tus marcas entre el primer y el último registro, igual que en Progreso.
+                    Tu puesto, tu marca y si has subido desde que te uniste. Pulsa un torneo para ver la clasificación.
                   </p>
                 </Card>
 
-                {routineLeaderboardLoading ? (
-                  <Card padding="md" rounded="md" variant="white" className="text-center text-slate-500">Cargando ranking…</Card>
-                ) : routineLeaderboard && routineLeaderboard.length > 0 ? (
-                  <div className="space-y-3">
-                    {routineLeaderboard.map((row, idx) => {
-                      const pct = row.improvementPct;
-                      const rank = idx + 1;
+                {activeChallenges.length === 0 ? (
+                  <Card padding="lg" rounded="md" variant="white" className="border-dashed text-center">
+                    <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300">
+                      <Trophy size={20} />
+                    </div>
+                    <p className="text-sm text-slate-500">
+                      No hay torneos activos. Crea uno o espera a que un amigo lo haga.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setShowCreateChallengeModal(true)}
+                      className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white"
+                    >
+                      <Plus size={14} />
+                      Crear torneo
+                    </button>
+                  </Card>
+                ) : (
+                  <SlimeScroll embed scrollFrom="parent" contentClassName="space-y-3.5">
+                    {activeChallenges.map(challenge => {
+                      const ranking = sortChallengeRanking(challenge.participants, challenge.usePointsSystem);
+                      const myIdx = ranking.findIndex(p => sameUserId(p.userId, user.id));
+                      const me = myIdx >= 0 ? ranking[myIdx] : undefined;
+                      const isParticipant = Boolean(me);
+                      const days = Math.max(0, Math.ceil((new Date(challenge.endDate).getTime() - Date.now()) / 86400000));
+                      const typeLabel = challenge.type === 'weight' ? 'Fuerza' : CHALLENGE_TYPE_LABELS[challenge.type as ChallengeType];
+                      const unit = CHALLENGE_TYPE_UNIT[challenge.type as ChallengeType] || '';
+                      const delta = me ? formatJoinDelta(challenge, me) : null;
+                      const maxMetric = ranking.reduce((acc, p) => {
+                        const v = challenge.usePointsSystem !== false ? p.score : p.value;
+                        return Math.max(acc, v);
+                      }, 0);
+
                       return (
                         <Card
-                          key={row.userId}
-                          padding="sm"
+                          key={challenge.id}
+                          padding="md"
                           rounded="md"
                           variant="white"
-                          className={cn(row.isSelf && 'ring-1 ring-indigo-400/70')}
+                          className="cursor-pointer"
+                          onClick={() => setSelectedChallengeDetail(challenge)}
                         >
-                          <div className="flex items-center gap-3 sm:gap-4">
-                            <span className={cn(
-                              'text-lg font-black w-8 flex justify-center shrink-0',
-                              rank === 1 ? 'text-amber-600 dark:text-amber-400' :
-                              rank === 2 ? 'text-slate-500 dark:text-slate-400' :
-                              rank === 3 ? 'text-amber-700 dark:text-amber-600' :
-                              'text-slate-400'
-                            )}>{rank}</span>
-                            <Avatar src={row.avatar} name={row.name} className="w-10 h-10 rounded-full border-2 border-slate-100 dark:border-slate-700 shrink-0" />
-                            <div className="min-w-0 flex-1">
-                              <p className="font-bold text-slate-900 dark:text-slate-100 truncate">
-                                {row.name}
-                                {row.isSelf && <span className="text-indigo-600 dark:text-indigo-400 text-xs font-black ml-2">(Tú)</span>}
-                              </p>
-                              <p className="text-[10px] text-slate-500 truncate">
-                                {row.routineName || 'Sin rutina activa'}
-                                {row.snapshotCount > 0 && ` · ${row.snapshotCount} ${row.snapshotCount === 1 ? 'registro' : 'registros'}`}
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <h3 className="text-[15px] font-semibold leading-snug text-slate-900 dark:text-slate-100">
+                                {challenge.title}
+                              </h3>
+                              <p className="mt-1 text-xs text-slate-500">
+                                {challenge.exercise}
+                                <span className="mx-1.5 text-slate-300 dark:text-slate-600">·</span>
+                                {typeLabel}
+                                <span className="mx-1.5 text-slate-300 dark:text-slate-600">·</span>
+                                {days === 0 ? 'Termina hoy' : `${days} días`}
                               </p>
                             </div>
-                            <div className="text-right shrink-0">
-                              {pct == null ? (
-                                <span className="text-sm font-bold text-slate-400">—</span>
-                              ) : (
-                                <span className={cn(
-                                  'text-lg font-black',
-                                  pct > 0 ? 'text-emerald-600 dark:text-emerald-400' :
-                                  pct < 0 ? 'text-rose-600 dark:text-rose-400' :
-                                  'text-slate-500'
-                                )}>
-                                  {pct > 0 ? '+' : ''}{pct}%
-                                </span>
+                            {isParticipant ? (
+                              <div className="shrink-0 text-right">
+                                <p className="text-lg font-black tabular-nums text-slate-900 dark:text-slate-100">
+                                  #{myIdx + 1}
+                                </p>
+                                <p className="text-[11px] font-semibold tabular-nums text-slate-500">
+                                  {formatChallengeMark(challenge, me)}
+                                </p>
+                              </div>
+                            ) : (
+                              <span className="shrink-0 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-500 dark:bg-slate-800">
+                                Sin unirte
+                              </span>
+                            )}
+                          </div>
+
+                          {isParticipant && (
+                            <p className={cn(
+                              'mt-2 text-xs font-medium',
+                              delta && delta.startsWith('+')
+                                ? 'text-emerald-600 dark:text-emerald-400'
+                                : delta && delta.startsWith('-')
+                                  ? 'text-rose-600 dark:text-rose-400'
+                                  : 'text-slate-500'
+                            )}>
+                              {delta ?? `Marca actual: ${me.value} ${unit}`}
+                            </p>
+                          )}
+
+                          {ranking.length === 0 ? (
+                            <p className="mt-3 text-xs text-slate-400">Aún nadie se ha unido</p>
+                          ) : (
+                            <div className="mt-3 space-y-2">
+                              {ranking.slice(0, 4).map((p, idx) => {
+                                const metric = challenge.usePointsSystem !== false ? p.score : p.value;
+                                const width = maxMetric > 0 ? Math.max(8, Math.round((metric / maxMetric) * 100)) : 8;
+                                const isMe = sameUserId(p.userId, user.id);
+                                return (
+                                  <div key={p.userId} className="flex items-center gap-2.5">
+                                    <span className={cn(
+                                      'w-5 shrink-0 text-center text-xs font-bold',
+                                      idx === 0 ? 'text-amber-600' : 'text-slate-400'
+                                    )}>
+                                      {idx + 1}
+                                    </span>
+                                    <Avatar src={p.avatar} name={p.name} className="h-7 w-7 shrink-0 rounded-full border border-slate-100 dark:border-slate-700" />
+                                    <div className="min-w-0 flex-1">
+                                      <div className="mb-1 flex items-center justify-between gap-2">
+                                        <p className="truncate text-xs font-semibold text-slate-800 dark:text-slate-100">
+                                          {p.name}{isMe ? ' (tú)' : ''}
+                                        </p>
+                                        <p className="shrink-0 text-[11px] font-semibold tabular-nums text-slate-500">
+                                          {formatChallengeMark(challenge, p)}
+                                        </p>
+                                      </div>
+                                      <div className="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                                        <div
+                                          className={cn('h-full rounded-full', isMe ? 'bg-indigo-500' : 'bg-slate-300 dark:bg-slate-600')}
+                                          style={{ width: `${width}%` }}
+                                        />
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                              {ranking.length > 4 && (
+                                <p className="pl-8 text-[11px] text-slate-400">
+                                  +{ranking.length - 4} más
+                                </p>
                               )}
                             </div>
+                          )}
+
+                          <div className="mt-3.5 flex justify-end border-t border-slate-100 pt-3 dark:border-slate-800">
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); openJoinModal(challenge); }}
+                              className="rounded-full bg-indigo-600 px-4 py-2 text-xs font-semibold text-white"
+                            >
+                              {isParticipant ? 'Actualizar marca' : 'Unirse'}
+                            </button>
                           </div>
                         </Card>
                       );
                     })}
-                  </div>
-                ) : (
-                  <Card padding="md" rounded="md" variant="white" className="border-dashed text-center">
-                    <p className="text-sm text-slate-500">
-                      {friendsList.length === 0
-                        ? 'Añade amigos para comparar el progreso de rutina.'
-                        : 'Aún no hay historial. Guarda tus RM en Progreso.'}
-                    </p>
-                  </Card>
+                  </SlimeScroll>
                 )}
               </>
             )}
 
             {challengeSubTab !== 'progress' && (
-            <div className="space-y-3.5">
+            <SlimeScroll embed scrollFrom="parent" contentClassName="space-y-3.5">
               {filteredChallenges.map(challenge => {
                 const isFinished = challengeSubTab === 'finished' || new Date(challenge.endDate) <= now;
                 const isParticipant = challenge.participants.some(p => sameUserId(p.userId, user.id));
@@ -1204,7 +1363,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   </Card>
                 );
               })}
-            </div>
+            </SlimeScroll>
             )}
 
             {challengeSubTab !== 'progress' && filteredChallenges.length === 0 && (
@@ -1622,17 +1781,17 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   </div>
                 </div>
                 <div className="rounded-xl bg-white/50 px-3 py-2.5 dark:bg-white/5">
-                  <p className="text-[13px] font-medium text-slate-800 dark:text-slate-100">
+                  <p className="text-[12px] leading-snug text-slate-600 dark:text-slate-300">
                     {createUsePointsSystem
                       ? equitySummary(createType, createBodyWeightScoring)
-                      : 'Gana quien tenga la mejor marca, sin igualar por peso.'}
+                      : 'Gana quien tenga el número más alto. No se mira el peso.'}
                   </p>
                   <button
                     type="button"
                     onClick={() => setCreateEquityOpen(v => !v)}
-                    className="mt-1 text-[11px] font-medium text-indigo-600 dark:text-indigo-300"
+                    className="mt-1.5 text-[11px] font-medium text-indigo-600 dark:text-indigo-300"
                   >
-                    {createEquityOpen ? 'Ocultar ajuste' : '¿Así está bien la equidad?'}
+                    {createEquityOpen ? 'Listo' : 'Cambiar esto'}
                   </button>
                   {createEquityOpen && (
                     <div className="mt-2 space-y-1">
@@ -1666,7 +1825,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                         }}
                         className="w-full rounded-xl px-3 py-2 text-left text-[12px] text-slate-500"
                       >
-                        {createUsePointsSystem ? 'Clasificar solo por marca bruta' : 'Volver a puntos justos'}
+                        {createUsePointsSystem ? 'Usar solo la marca, sin ajustar' : 'Volver a igualar por peso'}
                       </button>
                     </div>
                   )}
@@ -1674,33 +1833,11 @@ export const SocialView: React.FC<SocialViewProps> = ({
                 <div>
                   <label className="mb-1 block text-[11px] text-slate-400">Ejercicio</label>
                   <Input 
-                    placeholder="Dominadas, plancha…" 
+                    placeholder="Dominadas, sentadilla…" 
                     value={createExercise}
                     onChange={(e) => setCreateExercise(e.target.value)}
                     className="h-10 rounded-xl border-white/50 bg-white/60 shadow-none dark:border-white/10 dark:bg-slate-800/60"
                   />
-                  {myExercises && myExercises.length > 0 && (
-                    <div className="mt-1.5 flex flex-wrap gap-1">
-                      {myExercises.slice(0, 10).map(name => (
-                        <button
-                          key={name}
-                          type="button"
-                          onClick={() => {
-                            setCreateExercise(name);
-                            if (!createTitle.trim()) setCreateTitle(`Reto de ${name}`);
-                          }}
-                          className={cn(
-                            'rounded-lg px-2 py-1 text-[11px] font-medium',
-                            createExercise === name
-                              ? 'bg-indigo-600 text-white'
-                              : 'text-slate-600 hover:bg-white/60 dark:text-slate-300 dark:hover:bg-white/5'
-                          )}
-                        >
-                          {name}
-                        </button>
-                      ))}
-                    </div>
-                  )}
                 </div>
                 <div>
                   <label className="mb-1 block text-[11px] text-slate-400">Fecha de fin</label>
@@ -1724,66 +1861,27 @@ export const SocialView: React.FC<SocialViewProps> = ({
         </div>
       </GlassModal>
 
-      {/* Challenge Detail Modal */}
-      {typeof document !== 'undefined' && createPortal(
-        <AnimatePresence>
-          {selectedChallengeDetail && (
-          <motion.div
-            key="challenge-detail-modal"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[100000] flex items-end justify-center p-0 min-h-[100dvh] sm:items-center sm:p-4"
-          >
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setSelectedChallengeDetail(null)}
-              className="fixed inset-0 min-h-[100dvh] bg-slate-900/25 backdrop-blur-md dark:bg-black/45"
-            />
-            <motion.div 
-              initial={{ opacity: 0, y: 24 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 16 }}
-              onClick={(e) => e.stopPropagation()}
-              className="relative z-10 w-full max-w-sm max-h-[78vh] overflow-y-auto rounded-t-[28px] border border-white/50 bg-white/70 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl sm:rounded-[28px] dark:border-white/10 dark:bg-slate-900/65"
-            >
-              <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/40 bg-white/40 px-4 py-3 backdrop-blur-xl dark:border-white/10 dark:bg-slate-900/40">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{selectedChallengeDetail.title}</p>
-                  <p className="text-[11px] text-slate-500">
-                    {selectedChallengeDetail.exercise}
-                    <span className="mx-1">·</span>
-                    {CHALLENGE_TYPE_LABELS[selectedChallengeDetail.type as ChallengeType]}
-                  </p>
-                </div>
-                <button 
-                  type="button"
-                  onClick={() => setSelectedChallengeDetail(null)}
-                  className="rounded-full p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-                  aria-label="Cerrar"
-                >
-                  <X size={18} />
-                </button>
-              </div>
-
-              <div className="px-3 py-2">
+      <GlassModal
+        open={!!selectedChallengeDetail}
+        onClose={() => setSelectedChallengeDetail(null)}
+        title={selectedChallengeDetail?.title}
+        subtitle={
+          selectedChallengeDetail
+            ? `${selectedChallengeDetail.exercise} · ${CHALLENGE_TYPE_LABELS[selectedChallengeDetail.type as ChallengeType]}`
+            : undefined
+        }
+      >
+        {selectedChallengeDetail && (
+          <div>
                 <p className="mb-3 flex items-center gap-1.5 text-[11px] text-slate-500">
                   <Calendar size={12} />
                   Hasta {new Date(selectedChallengeDetail.endDate).toLocaleDateString('es-ES')}
                 </p>
                 <p className="mb-3 rounded-xl border border-white/50 bg-white/40 px-3 py-2 text-[11px] leading-snug text-slate-500 dark:border-white/10 dark:bg-slate-800/40">
-                  {selectedChallengeDetail.usePointsSystem !== false ? (
-                    <>
-                      {selectedChallengeDetail.type === 'weight' && 'Puntos IPF GL: misma vara para hombres y mujeres según peso corporal.'}
-                      {selectedChallengeDetail.type === 'max_reps' &&
-                        'Las reps se igualan por género y, si lo eliges, por peso corporal.'}
-                      {selectedChallengeDetail.type === 'seconds' &&
-                        'El tiempo se iguala casi a la par; el peso corporal solo si lo eliges.'}
-                    </>
-                  ) : (
-                    'Clasificación solo por la mejor marca, sin puntos.'
+                  {bodyWeightScoringSummary(
+                    selectedChallengeDetail.type as ChallengeType,
+                    selectedChallengeDetail.usePointsSystem !== false,
+                    selectedChallengeDetail.bodyWeightScoring
                   )}
                 </p>
 
@@ -1841,13 +1939,9 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   {selectedChallengeDetail.participants.some(p => sameUserId(p.userId, user.id)) ? 'Actualizar marca' : 'Unirse'}
                 </button>
               )}
-              </div>
-            </motion.div>
-          </motion.div>
-          )}
-        </AnimatePresence>,
-        document.body
-      )}
+          </div>
+        )}
+      </GlassModal>
 
       <GlassModal
         open={!!showJoinChallengeModal}
@@ -1965,7 +2059,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   name={friendProfile?.name || showFriendModal.name}
                   username={friendProfile?.username}
                   avatar={friendProfile?.avatar || showFriendModal.avatar}
-                  posts={friendProfile?.postCount ?? 0}
+                  marcas={friendProfile?.trainingMaxes?.length ?? 0}
                   followers={friendProfile?.followerCount ?? 0}
                   following={friendProfile?.followingCount ?? 0}
                   bio={friendProfile?.bio || ''}
@@ -2180,6 +2274,10 @@ export const SocialView: React.FC<SocialViewProps> = ({
         onGoChallenges={() => {
           setShowHomeActivity(false);
           setActiveTab('challenges');
+        }}
+        onGoGym={() => {
+          setShowHomeActivity(false);
+          setActiveTab('checkins');
         }}
         onNotificationsRead={markHomeNotifsRead}
       />

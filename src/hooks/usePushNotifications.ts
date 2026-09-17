@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { apiPut } from '@/src/lib/api';
+import { isNotificationSupported, subscribeToPush } from '@/src/pwa/notifications';
 
 /** Registra el token Expo Push en el backend (necesario para recibir avisos con la app cerrada). */
 export function usePushNotifications(userId: string | null) {
@@ -84,4 +85,11 @@ export function usePushNotifications(userId: string | null) {
 
   // El token Expo lo obtiene solo la capa nativa (client/App.tsx) e inyecta __EXPO_PUSH_TOKEN__
   // en la WebView. No importar expo-notifications aquí: en el navegador fallaría y en WebView es redundante.
+
+  // PWA: si el permiso ya está concedido, (re)suscribe Web Push al entrar.
+  useEffect(() => {
+    if (!userId || !isNotificationSupported()) return;
+    if (Notification.permission !== 'granted') return;
+    void subscribeToPush();
+  }, [userId]);
 }

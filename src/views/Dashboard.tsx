@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { createPortal } from 'react-dom';
 import {
   animate as animateValue,
+  AnimatePresence,
   motion,
   useAnimationControls,
   useMotionValue,
@@ -19,7 +19,6 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { Card } from '@/src/components/ui/Card';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { Button } from '@/src/components/ui/Button';
 import { GlassModal } from '@/src/components/ui/GlassModal';
@@ -65,6 +64,72 @@ const ENTER_ITEM: Variants = {
     transition: { type: 'spring', stiffness: 300, damping: 28, mass: 0.7 },
   },
 };
+
+const PEEK_ROW_H = 58;
+const PEEK_MAX = 2;
+
+type PeekRow = {
+  key: string;
+  kind: 'trophy' | 'pin';
+  title: string;
+  subtitle: string;
+  badge?: string;
+  people?: { key: string; avatar?: string; name: string }[];
+  onClick: () => void;
+};
+
+function PeekColumn({ rows }: { rows: PeekRow[] }) {
+  return (
+    <div
+      className="overflow-y-auto overflow-x-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/[0.04] [scrollbar-width:none] dark:bg-slate-900 dark:ring-white/[0.06] [&::-webkit-scrollbar]:hidden"
+      style={{ maxHeight: PEEK_MAX * PEEK_ROW_H }}
+    >
+      <AnimatePresence initial={false}>
+        {rows.map(row => (
+          <motion.button
+            key={row.key}
+            type="button"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: PEEK_ROW_H }}
+            exit={{ opacity: 0, height: 0 }}
+            whileTap={{ scale: 0.985 }}
+            transition={{ duration: 0.16, ease: EASE_OUT }}
+            onClick={row.onClick}
+            className="flex w-full origin-center items-center gap-2 border-b border-slate-100 px-2.5 text-left last:border-0 dark:border-slate-800 sm:gap-2.5 sm:px-3"
+          >
+            {row.people && row.people.length > 0 ? (
+              <span className="flex shrink-0 -space-x-1.5">
+                {row.people.map(p => (
+                  <Avatar
+                    key={p.key}
+                    src={p.avatar}
+                    name={p.name}
+                    className="h-6 w-6 rounded-full border-2 border-white dark:border-slate-900"
+                  />
+                ))}
+              </span>
+            ) : row.kind === 'trophy' ? (
+              <Trophy size={15} className="shrink-0 text-amber-500" />
+            ) : (
+              <MapPin size={15} className="shrink-0 text-emerald-500" />
+            )}
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[12px] font-semibold text-slate-800 dark:text-slate-100">
+                {row.title}
+              </span>
+              <span className="block truncate text-[10px] text-slate-400">{row.subtitle}</span>
+            </span>
+            {row.badge && (
+              <span className="shrink-0 rounded-full bg-indigo-600 px-1.5 py-0.5 text-[8px] font-semibold text-white">
+                {row.badge}
+              </span>
+            )}
+          </motion.button>
+        ))}
+      </AnimatePresence>
+    </div>
+  );
+}
 
 type StatTone = 'positive' | 'negative' | 'neutral';
 interface StatVariant {
@@ -394,7 +459,7 @@ export interface DashboardProps {
   onCreateRoutine?: () => void;
   onOpenSocial: (
     tab?: 'feed' | 'friends' | 'challenges' | 'checkins' | 'chat',
-    options?: { openCheckInModal?: boolean; from?: 'dashboard' }
+    options?: { openCheckInModal?: boolean; openCreateChallenge?: boolean; from?: 'dashboard' }
   ) => void;
   onJoinFriendCheckIn: (checkIn: GymCheckIn) => void;
   onOpenSettings?: () => void;
@@ -403,6 +468,7 @@ export interface DashboardProps {
   hasRoutine?: boolean;
   /** Se incrementa al volver a Progreso desde otra pestaña; fuerza remount de gráficos y replay de animación. */
   chartEnterKey?: number;
+  pageActive?: boolean;
 }
 
 type ProgressMode = 'week' | 'year';
@@ -471,6 +537,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
   friendCount = 0,
   hasRoutine: hasRoutineProp,
   chartEnterKey = 0,
+  pageActive = true,
 }) => {
   const hasRoutine = hasRoutineProp ?? Boolean(activeRoutineId);
   const mountedAt = useMemo(() => new Date(), []);
@@ -494,6 +561,13 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
   const [selectedMonth, setSelectedMonth] = useState<number>(currentMonth);
   const [totalOpen, setTotalOpen] = useState(false);
   const [selectedTmId, setSelectedTmId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (pageActive) return;
+    setSelectedCheckIn(null);
+    setTotalOpen(false);
+    setSelectedTmId(null);
+  }, [pageActive]);
 
   useEffect(() => {
     setSelectedYear(currentYear);
@@ -632,16 +706,11 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
       const ended = c.status === 'finished' || new Date(c.endDate).getTime() <= nowMs;
       if (ended) return false;
       if (c.participants.some(p => p.userId === user.id)) return false;
-      const creatorId = c.createdBy?.id;
-      if (!creatorId || creatorId === user.id) return false;
+      const creatorId = typeof c.createdBy === 'string' ? c.createdBy : c.createdBy?.id;
+      if (creatorId && creatorId === user.id) return false;
       return true;
     });
   }, [challenges, user.id]);
-
-  const featuredFriendTournament = useMemo(
-    () => sortChallengesByActivity(friendTournamentsToJoin)[0],
-    [friendTournamentsToJoin]
-  );
 
   /**
    * Antes solo se veía uno y el resto quedaba detrás de «Ver todos», con un aviso que
@@ -649,7 +718,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
    * que el apartado sirva para algo sin salir de Progreso.
    */
   const topJoinedChallenges = useMemo(
-    () => sortChallengesByActivity(joinedChallenges).slice(0, 3),
+    () => sortChallengesByActivity(joinedChallenges),
     [joinedChallenges]
   );
 
@@ -669,14 +738,76 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
       .sort((a, b) => Math.max(...b.map(x => x.timestamp)) - Math.max(...a.map(x => x.timestamp)));
   }, [checkIns]);
 
-  const featuredTournament = featuredFriendTournament ?? topJoinedChallenges[0] ?? null;
-  const tournamentMoreCount = Math.max(0, joinedChallenges.length - (featuredFriendTournament ? 0 : 1));
-  const featuredGymGroup = todayCheckInGroups[0] ?? null;
-  const featuredGymAvatars = featuredGymGroup
-    ? (featuredGymGroup.some(ci => ci.userId === user.id)
-      ? [user, ...featuredGymGroup.filter(ci => ci.userId !== user.id)]
-      : featuredGymGroup)
-    : [];
+  const tournamentRows = useMemo<PeekRow[]>(() => {
+    const invites = sortChallengesByActivity(friendTournamentsToJoin);
+    const joined = topJoinedChallenges.filter(c => !invites.some(i => i.id === c.id));
+    const rows: PeekRow[] = [];
+    for (const c of invites) {
+      rows.push({
+        key: `invite-${c.id}`,
+        kind: 'trophy',
+        title: c.title,
+        subtitle: 'Te invitan',
+        badge: 'Unirse',
+        onClick: () => onOpenSocial('challenges', { from: 'dashboard' }),
+      });
+    }
+    for (const c of joined) {
+      rows.push({
+        key: `joined-${c.id}`,
+        kind: 'trophy',
+        title: c.title,
+        subtitle: c.exercise || 'Torneo',
+        onClick: () => onOpenSocial('challenges', { from: 'dashboard' }),
+      });
+    }
+    if (rows.length === 0) {
+      rows.push({
+        key: 'explore',
+        kind: 'trophy',
+        title: 'Explorar torneos',
+        subtitle: 'Crea o únete',
+        onClick: () => onOpenSocial('challenges', { openCreateChallenge: true, from: 'dashboard' }),
+      });
+    }
+    return rows;
+  }, [friendTournamentsToJoin, topJoinedChallenges, onOpenSocial]);
+
+  const gymRows = useMemo<PeekRow[]>(() => {
+    const rows: PeekRow[] = todayCheckInGroups.map(group => {
+      const first = group[0];
+      const hasMe = group.some(ci => ci.userId === user.id);
+      const people = (hasMe
+        ? [user, ...group.filter(ci => ci.userId !== user.id)]
+        : group
+      ).slice(0, 3).map((ci, idx) => ({
+        key: `${(ci as { userId?: string; id?: string }).userId || (ci as { id?: string }).id || idx}`,
+        avatar: (ci as { avatar?: string }).avatar,
+        name: (ci as { name?: string; userName?: string }).name || (ci as { userName?: string }).userName || 'Atleta',
+      }));
+      return {
+        key: `gym-${first.gymName}-${first.time}`,
+        kind: 'pin' as const,
+        title: group.length > 1 ? `${group.length} van al gym` : first.userName,
+        subtitle: `${first.gymName} · ${first.time}`,
+        people,
+        onClick: () => {
+          if (!hasMe) setSelectedCheckIn(first);
+          else onOpenSocial('checkins', { from: 'dashboard' });
+        },
+      };
+    });
+    if (rows.length === 0) {
+      rows.push({
+        key: 'avisar',
+        kind: 'pin',
+        title: 'Avisar que voy',
+        subtitle: 'Diles el gym y la hora',
+        onClick: () => onOpenSocial('checkins', { openCheckInModal: true, from: 'dashboard' }),
+      });
+    }
+    return rows;
+  }, [todayCheckInGroups, user, onOpenSocial]);
 
   const getTMConfig = useCallback(
     (name: string) => tmConfigFor(name, !!user.mbMode),
@@ -1059,6 +1190,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
         <ProgressMiniProfile
           user={user}
           friendCount={friendCount}
+          marcaCount={trainingMaxes.length}
           onOpenSettings={onOpenSettings}
           onUpdateUser={onUpdateUser}
           aside={
@@ -1087,33 +1219,6 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
           }
         />
       </motion.header>
-
-      {hasRoutine && todayCheckInGroups.length > 0 && (
-        <motion.div variants={ENTER_ITEM} initial={false} className="mb-3 sm:mb-4">
-          <button
-            type="button"
-            onClick={() => onOpenSocial('checkins', { from: 'dashboard' })}
-            className="flex w-full items-center gap-3 rounded-2xl bg-white px-3 py-2 text-left shadow-sm dark:bg-slate-900"
-          >
-            <span className="flex -space-x-2">
-              {todayCheckInGroups.flatMap(g => g).slice(0, 4).map((ci, idx) => (
-                <Avatar
-                  key={`${ci.userId}-${idx}`}
-                  src={ci.avatar}
-                  name={ci.userName}
-                  className="h-8 w-8 rounded-full border-2 border-white dark:border-slate-900"
-                />
-              ))}
-            </span>
-            <span className="min-w-0">
-              <span className="block truncate text-sm font-semibold text-slate-800 dark:text-slate-100">Hoy en el gym</span>
-              <span className="text-[11px] text-slate-400">
-                {todayCheckInGroups.flatMap(g => g).length} {todayCheckInGroups.flatMap(g => g).length === 1 ? 'persona' : 'personas'}
-              </span>
-            </span>
-          </button>
-        </motion.div>
-      )}
 
       {!hasRoutine ? (
         <div className="mb-6 sm:mb-8">
@@ -1285,78 +1390,10 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
       <motion.div
         variants={ENTER_ITEM}
         initial={false}
-        className="mb-6 grid grid-cols-2 gap-2 max-[360px]:gap-1.5 max-[400px]:mb-5 sm:mb-8 sm:gap-4 md:mb-10"
+        className="mb-6 grid grid-cols-2 gap-2 max-[360px]:gap-1.5 max-[400px]:mb-5 sm:mb-8 sm:gap-3 md:mb-10"
       >
-        {featuredTournament ? (
-          <button
-            type="button"
-            onClick={() => onOpenSocial('challenges', { from: 'dashboard' })}
-            className="flex min-w-0 items-center gap-2 rounded-2xl bg-white px-3 py-3 text-left shadow-sm ring-1 ring-black/[0.04] dark:bg-slate-900 dark:ring-white/[0.06]"
-          >
-            <Trophy size={16} className="shrink-0 text-amber-500" />
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-[12px] font-semibold text-slate-800 dark:text-slate-100">
-                {featuredTournament.title}
-              </span>
-              <span className="mt-0.5 block truncate text-[10px] text-slate-400">
-                {featuredFriendTournament
-                  ? (friendTournamentsToJoin.length > 1 ? `${friendTournamentsToJoin.length} de amigos` : 'Te invitan')
-                  : `${featuredTournament.exercise}${tournamentMoreCount > 0 ? ` · +${tournamentMoreCount}` : ''}`}
-              </span>
-            </span>
-            {featuredFriendTournament && (
-              <span className="shrink-0 rounded-full bg-indigo-600 px-2 py-0.5 text-[9px] font-semibold text-white">Unirse</span>
-            )}
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => onOpenSocial('challenges', { from: 'dashboard' })}
-            className="flex items-center gap-2 rounded-2xl bg-white px-3 py-3 text-left shadow-sm ring-1 ring-black/[0.04] dark:bg-slate-900 dark:ring-white/[0.06]"
-          >
-            <Trophy size={16} className="shrink-0 text-amber-500" />
-            <span className="min-w-0 truncate text-[12px] font-semibold text-slate-700 dark:text-slate-200">Explorar torneos</span>
-          </button>
-        )}
-        {featuredGymGroup ? (
-          <button
-            type="button"
-            onClick={() => {
-              const hasMe = featuredGymGroup.some(ci => ci.userId === user.id);
-              if (!hasMe) setSelectedCheckIn(featuredGymGroup[0]);
-              else onOpenSocial('checkins', { from: 'dashboard' });
-            }}
-            className="flex min-w-0 items-center gap-2 rounded-2xl bg-white px-3 py-3 text-left shadow-sm ring-1 ring-black/[0.04] dark:bg-slate-900 dark:ring-white/[0.06]"
-          >
-            <div className="flex shrink-0 -space-x-1.5">
-              {featuredGymAvatars.slice(0, 3).map((ci, idx) => (
-                <Avatar
-                  key={`${(ci as any).userId || (ci as any).id || idx}-${idx}`}
-                  src={(ci as any).avatar}
-                  name={(ci as any).name || (ci as any).userName}
-                  className="h-7 w-7 rounded-full border-2 border-white dark:border-slate-900"
-                />
-              ))}
-            </div>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-[12px] font-semibold text-slate-800 dark:text-slate-100">
-                {featuredGymGroup.length > 1 ? `${featuredGymGroup.length} van al gym` : featuredGymGroup[0].userName}
-              </span>
-              <span className="mt-0.5 block truncate text-[10px] text-slate-400">
-                {featuredGymGroup[0].gymName} · {featuredGymGroup[0].time}
-              </span>
-            </span>
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => onOpenSocial('checkins', { openCheckInModal: true, from: 'dashboard' })}
-            className="flex items-center gap-2 rounded-2xl bg-white px-3 py-3 text-left shadow-sm ring-1 ring-black/[0.04] dark:bg-slate-900 dark:ring-white/[0.06]"
-          >
-            <MapPin size={16} className="shrink-0 text-emerald-500" />
-            <span className="min-w-0 truncate text-[12px] font-semibold text-slate-700 dark:text-slate-200">Avisar que voy</span>
-          </button>
-        )}
+        <PeekColumn rows={tournamentRows} />
+        <PeekColumn rows={gymRows} />
       </motion.div>
 
       <GlassModal
@@ -1473,37 +1510,37 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
         </div>
       </GlassModal>
 
-      {selectedCheckIn && typeof document !== 'undefined' && createPortal(
-        <div className="fixed inset-0 flex items-center justify-center px-4 min-h-[100dvh]" style={{ zIndex: 100000 }}>
-          <div
-            className="absolute inset-0 min-h-[100dvh] bg-black/75 backdrop-blur-sm"
-            onClick={() => setSelectedCheckIn(null)}
-          />
-          <Card padding="lg" rounded="2xl" className="relative w-full max-w-sm z-10">
-            <h3 className="text-lg font-black text-slate-900 dark:text-slate-100 mb-2">Vas a ir a la misma hora?</h3>
-            <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">
-              Se enviará una notificación a {selectedCheckIn.userName} indicando que vas a
-              las {selectedCheckIn.time} en {selectedCheckIn.gymName}.
-            </p>
-            <div className="flex gap-2">
-              <Button variant="outline" className="flex-1" onClick={() => setSelectedCheckIn(null)}>
-                No
-              </Button>
-              <Button
-                variant="primary"
-                className="flex-1"
-                onClick={() => {
-                  onJoinFriendCheckIn(selectedCheckIn);
-                  setSelectedCheckIn(null);
-                }}
-              >
-                Si
-              </Button>
-            </div>
-          </Card>
-        </div>,
-        document.body
-      )}
+      <GlassModal
+        open={!!selectedCheckIn}
+        onClose={() => setSelectedCheckIn(null)}
+        title="¿Vas a ir a la misma hora?"
+        subtitle={selectedCheckIn ? `${selectedCheckIn.gymName} · ${selectedCheckIn.time}` : undefined}
+        footer={
+          <div className="flex gap-2">
+            <Button variant="outline" className="flex-1" onClick={() => setSelectedCheckIn(null)}>
+              No
+            </Button>
+            <Button
+              variant="primary"
+              className="flex-1"
+              onClick={() => {
+                if (!selectedCheckIn) return;
+                onJoinFriendCheckIn(selectedCheckIn);
+                setSelectedCheckIn(null);
+              }}
+            >
+              Sí
+            </Button>
+          </div>
+        }
+      >
+        {selectedCheckIn && (
+          <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-400">
+            Se enviará una notificación a {selectedCheckIn.userName} indicando que vas a
+            las {selectedCheckIn.time} en {selectedCheckIn.gymName}.
+          </p>
+        )}
+      </GlassModal>
 
     </motion.div>
   );

@@ -32,5 +32,21 @@
       "type": "image/png",
       "purpose": "maskable"
     }
+  ],
+  "shortcuts": [
+    {
+      "name": "Rutina",
+      "short_name": "Rutina",
+      "description": "Abre tu plan de entrenamiento",
+      "url": "/?pwa=plan",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Social",
+      "short_name": "Social",
+      "description": "Historias, amigos y torneos",
+      "url": "/?pwa=social",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    }
   ]
 }

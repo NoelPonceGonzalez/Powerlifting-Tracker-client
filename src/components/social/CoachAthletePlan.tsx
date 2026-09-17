@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { motion } from 'motion/react';
+import { SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
 import { FileUp, Loader2, Plus, Trash2, X } from 'lucide-react';
 import { apiGet, apiPatch, apiPost } from '@/src/lib/api';
 import { createEmptyTemplate, expandRoutineFromApi } from '@/src/lib/planMaterialize';
@@ -257,8 +259,18 @@ export const CoachAthletePlan: React.FC<CoachAthletePlanProps> = ({ athleteId, a
     // Se abre desde el perfil del atleta, que se pinta a 99000 (ver Social.tsx y Profile.tsx).
     // Con un z-index menor el panel se monta pero queda tapado: el entrenador pulsa
     // «Editar su plan» y no ve nada.
-    <div className="fixed inset-0 z-[99100] flex items-end justify-center bg-slate-950/50 p-0 sm:items-center sm:p-4">
-      <div className="flex max-h-[96vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl dark:bg-slate-900 sm:rounded-3xl">
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={SCREEN_TRANSITION}
+      className="fixed inset-0 z-[99100] flex items-end justify-center bg-slate-950/50 p-0 sm:items-center sm:p-4"
+    >
+      <motion.div
+        initial={SLIME_SHEET_IN}
+        animate={SLIME_SHEET_SHOW}
+        transition={STICKY}
+        className="flex max-h-[96vh] w-full max-w-2xl flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl dark:bg-slate-900 sm:rounded-3xl"
+      >
         <div className="flex items-center gap-3 border-b border-slate-100 px-4 py-3 dark:border-slate-800">
           <div className="min-w-0 flex-1">
             <p className="text-[11px] font-black uppercase tracking-wider text-amber-600">Editando su plan</p>
@@ -419,7 +431,7 @@ export const CoachAthletePlan: React.FC<CoachAthletePlanProps> = ({ athleteId, a
             </button>
           </div>
         )}
-      </div>
+      </motion.div>
 
       {showImport && (
         <React.Suspense fallback={null}>
@@ -435,7 +447,7 @@ export const CoachAthletePlan: React.FC<CoachAthletePlanProps> = ({ athleteId, a
           />
         </React.Suspense>
       )}
-    </div>,
+    </motion.div>,
     document.body
   );
 };

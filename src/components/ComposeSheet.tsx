@@ -2,7 +2,7 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { Camera, Clock, MapPin, X } from 'lucide-react';
-import { SCREEN_TRANSITION } from '@/src/lib/motionPresets';
+import { SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, SLIME_TAP, STICKY } from '@/src/lib/motionPresets';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 
 interface ComposeSheetProps {
@@ -37,10 +37,10 @@ export function ComposeSheet({ open, onClose, onPublish, onGymNow, onGymLater }:
         aria-label="Cerrar"
       />
       <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: 12 }}
-        transition={SCREEN_TRANSITION}
+        initial={SLIME_SHEET_IN}
+        animate={SLIME_SHEET_SHOW}
+        exit={SLIME_SHEET_OUT}
+        transition={STICKY}
         className="relative w-full max-w-sm overflow-hidden rounded-t-[28px] border border-white/50 bg-white/75 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl sm:rounded-[28px] dark:border-white/10 dark:bg-slate-900/70"
       >
         <div className="flex items-center justify-between px-4 pt-4">
@@ -56,10 +56,12 @@ export function ComposeSheet({ open, onClose, onPublish, onGymNow, onGymLater }:
         </div>
 
         <div className="space-y-2 p-4">
-          <button
+          <motion.button
             type="button"
             onClick={onPublish}
-            className="flex w-full items-center gap-3 rounded-2xl border border-white/50 bg-white/55 px-3 py-3 text-left dark:border-white/10 dark:bg-slate-800/50"
+            whileTap={SLIME_TAP}
+            transition={STICKY}
+            className="flex w-full origin-center items-center gap-3 rounded-2xl border border-white/50 bg-white/55 px-3 py-3 text-left dark:border-white/10 dark:bg-slate-800/50"
           >
             <span className="min-w-0 flex-1">
               <span className="block text-sm font-semibold text-slate-900 dark:text-white">Historia</span>
@@ -68,31 +70,35 @@ export function ComposeSheet({ open, onClose, onPublish, onGymNow, onGymLater }:
             <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-indigo-600 text-white">
               <Camera size={20} />
             </span>
-          </button>
+          </motion.button>
 
           <div className="grid grid-cols-2 gap-2">
-            <button
+            <motion.button
               type="button"
               onClick={onGymNow}
-              className="rounded-2xl border border-white/50 bg-white/45 px-3 py-3 text-left dark:border-white/10 dark:bg-slate-800/40"
+              whileTap={SLIME_TAP}
+              transition={STICKY}
+              className="origin-center rounded-2xl border border-white/50 bg-white/45 px-3 py-3 text-left dark:border-white/10 dark:bg-slate-800/40"
             >
               <span className="mb-2 flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-50 text-emerald-600 dark:bg-emerald-950/50 dark:text-emerald-300">
                 <MapPin size={16} />
               </span>
               <span className="block text-[13px] font-semibold text-slate-900 dark:text-white">Estoy en el gym</span>
               <span className="mt-0.5 block text-[11px] text-slate-500">Aviso ahora</span>
-            </button>
-            <button
+            </motion.button>
+            <motion.button
               type="button"
               onClick={onGymLater}
-              className="rounded-2xl border border-white/50 bg-white/45 px-3 py-3 text-left dark:border-white/10 dark:bg-slate-800/40"
+              whileTap={SLIME_TAP}
+              transition={STICKY}
+              className="origin-center rounded-2xl border border-white/50 bg-white/45 px-3 py-3 text-left dark:border-white/10 dark:bg-slate-800/40"
             >
               <span className="mb-2 flex h-9 w-9 items-center justify-center rounded-xl bg-amber-50 text-amber-600 dark:bg-amber-950/50 dark:text-amber-300">
                 <Clock size={16} />
               </span>
               <span className="block text-[13px] font-semibold text-slate-900 dark:text-white">Llego a las…</span>
               <span className="mt-0.5 block text-[11px] text-slate-500">Gym y hora</span>
-            </button>
+            </motion.button>
           </div>
         </div>
       </motion.div>

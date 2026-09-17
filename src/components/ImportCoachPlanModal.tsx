@@ -1,12 +1,14 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion } from 'motion/react';
+import { SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
 import { AlertCircle, CheckCircle2, FileUp, Loader2, X } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { cn } from '@/src/lib/utils';
 import { countPlanExercises, parseCoachPlan, type ParsedPlan } from '@/src/lib/coachPlan/parseCoachPlan';
 import { readPlanFile } from '@/src/lib/coachPlan/readPlanFile';
 import { firstWeekOfYearStartingInMonth, weekStartDateForWeekOfYear } from '@/src/lib/mesocycleWeek';
+import { isAndroid, isIOS } from '@/src/pwa/installPrompt';
 
 export interface ImportCoachPlanResult {
   plan: ParsedPlan;
@@ -42,7 +44,34 @@ interface ImportCoachPlanModalProps {
   onConfirm: (result: ImportCoachPlanResult) => void | Promise<void>;
 }
 
-const ACCEPT = '.docx,.xlsx,.xls,.csv,.pdf,.txt,.md';
+/**
+ * En el móvil un `accept` solo con extensiones hace que Android (Drive) oculte
+ * .docx/.xlsx. Sin filtro el selector enseña Archivos, Drive y Descargas;
+ * el tipo se comprueba al leer el archivo.
+ */
+const DESKTOP_ACCEPT = [
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/msword',
+  'application/vnd.ms-excel',
+  'application/pdf',
+  'text/plain',
+  'text/csv',
+  '.docx',
+  '.doc',
+  '.xlsx',
+  '.xls',
+  '.xlsm',
+  '.csv',
+  '.pdf',
+  '.txt',
+  '.md',
+].join(',');
+
+function filePickerAccept(): string {
+  if (typeof navigator !== 'undefined' && (isAndroid() || isIOS())) return '';
+  return DESKTOP_ACCEPT;
+}
 
 /** «3–9 ago»: las fechas se entienden mejor que el número de semana civil. */
 function formatWeekRange(weekNumber: number, year: number): string {
@@ -172,7 +201,7 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
       const parsed = parseCoachPlan(text);
       if (parsed.weeks.length === 0) {
         setError(
-          'No se ha reconocido ninguna semana. El documento debe indicar "Semana 1", "Semana 2"… y los días ("Lunes:", "Martes:").'
+          'No se ha reconocido ninguna semana. En Word o PDF pon "Semana 1", "Semana 2"…; en Excel vale el nombre de la hoja (S1, Sem 2, Week 1) y los días ("Lunes:", "Martes:").'
         );
         return;
       }
@@ -233,12 +262,14 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
+          transition={SCREEN_TRANSITION}
           onClick={onClose}
           className="fixed inset-0 bg-slate-900/25 backdrop-blur-md dark:bg-black/45"
         />
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
+          initial={SLIME_SHEET_IN}
+          animate={SLIME_SHEET_SHOW}
+          transition={STICKY}
           onClick={e => e.stopPropagation()}
           className="relative z-10 flex max-h-[92dvh] w-full max-w-2xl flex-col overflow-hidden rounded-[28px] border border-white/50 bg-white/75 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl dark:border-white/10 dark:bg-slate-900/70"
         >
@@ -250,7 +281,7 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
               <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
                 {knownCycle
                   ? `Tu ciclo es de ${knownCycle} ${knownCycle === 1 ? 'semana' : 'semanas'}. El archivo llena huecos; no hace falta que traiga el ciclo entero.`
-                  : 'Word, Excel, PDF o texto. El archivo se lee en tu dispositivo, no se sube.'}
+                  : 'Word, Excel, PDF o texto. En el móvil puedes elegir desde Drive, Descargas o Archivos; se lee en el dispositivo, no se sube.'}
               </p>
             </div>
             <button
@@ -266,7 +297,7 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
             <input
               ref={fileInputRef}
               type="file"
-              accept={ACCEPT}
+              accept={filePickerAccept()}
               className="hidden"
               onChange={e => {
                 const f = e.target.files?.[0];
@@ -288,6 +319,11 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
               {fileName && !reading && (
                 <span className="max-w-full truncate text-xs font-medium text-indigo-500 dark:text-indigo-400">
                   {fileName}
+                </span>
+              )}
+              {!fileName && !reading && (
+                <span className="max-w-[16rem] text-center text-[11px] font-medium leading-snug text-indigo-500/80 dark:text-indigo-400/80">
+                  Drive, Descargas o Archivos · Word, Excel o PDF
                 </span>
               )}
             </button>

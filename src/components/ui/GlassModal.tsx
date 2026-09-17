@@ -2,7 +2,7 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { X } from 'lucide-react';
-import { SCREEN_TRANSITION } from '@/src/lib/motionPresets';
+import { SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
 import { cn } from '@/src/lib/utils';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 
@@ -40,7 +40,7 @@ export function GlassModal({
   className,
   persist = false,
   zIndexClass = 'z-[100000]',
-  rise = false,
+  rise: _rise = false,
   sheet = false,
 }: GlassModalProps) {
   useEscapeClose(open && !persist, onClose);
@@ -79,13 +79,10 @@ export function GlassModal({
             className="fixed inset-0 min-h-[100dvh] bg-slate-900/25 backdrop-blur-md dark:bg-black/45"
           />
           <motion.div
-            initial={{ opacity: 0, y: rise ? 48 : 22 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 14 }}
-            transition={rise
-              ? { type: 'spring', stiffness: 380, damping: 32, mass: 0.8 }
-              : SCREEN_TRANSITION
-            }
+            initial={SLIME_SHEET_IN}
+            animate={SLIME_SHEET_SHOW}
+            exit={SLIME_SHEET_OUT}
+            transition={STICKY}
             onClick={e => e.stopPropagation()}
             className={cn(
               'relative z-10 flex w-full flex-col overflow-hidden rounded-t-[28px] border border-white/50 bg-white/70 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl sm:rounded-[28px] dark:border-white/10 dark:bg-slate-900/65',

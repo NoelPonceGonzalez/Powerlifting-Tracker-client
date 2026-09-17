@@ -1,5 +1,7 @@
 import React from 'react';
+import { motion } from 'motion/react';
 import { cn } from '@/src/lib/utils';
+import { SLIME_TAP, STICKY } from '@/src/lib/motionPresets';
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger';
@@ -24,15 +26,17 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     };
 
     return (
-      <button
+      <motion.button
         ref={ref}
+        whileTap={SLIME_TAP}
+        transition={STICKY}
         className={cn(
-          'inline-flex items-center justify-center font-bold transition-all active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none gap-2',
+          'inline-flex origin-center items-center justify-center font-bold disabled:opacity-50 disabled:pointer-events-none gap-2',
           variants[variant],
           sizes[size],
           className
         )}
-        {...props}
+        {...(props as Record<string, unknown>)}
       />
     );
   }

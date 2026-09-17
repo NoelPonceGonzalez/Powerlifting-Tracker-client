@@ -1,3 +1,5 @@
+import { isOfflinePlanPath, offlineGetKey, readOfflineGet, saveOfflineGet } from '@/src/lib/offlineCache';
+
 function isInvalidApiBase(s: string): boolean {
   const t = String(s).trim();
   if (!t || t === 'null') return true;
@@ -128,6 +130,10 @@ function getAuthHeaders(): Record<string, string> {
   return headers;
 }
 
+function planCacheKey(url: URL): string {
+  return offlineGetKey(url.pathname, url.search);
+}
+
 export async function apiGet<T>(path: string, params?: Record<string, string>): Promise<T> {
   const origin = requireApiOrigin(resolveOriginForUrl(path));
   const url = new URL(path.startsWith('/') ? path : `/${path}`, origin);
@@ -139,14 +145,25 @@ export async function apiGet<T>(path: string, params?: Record<string, string>): 
       url.searchParams.set(k, s);
     });
   }
-  const res = await fetch(url.toString(), {
-    headers: getAuthHeaders(),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || err.message || 'Error en la solicitud');
+  const cacheKey = isOfflinePlanPath(url.pathname) ? planCacheKey(url) : null;
+  try {
+    const res = await fetch(url.toString(), {
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || err.message || 'Error en la solicitud');
+    }
+    const data = (await res.json()) as T;
+    if (cacheKey) void saveOfflineGet(cacheKey, data);
+    return data;
+  } catch (err) {
+    if (cacheKey) {
+      const cached = await readOfflineGet<T>(cacheKey);
+      if (cached !== undefined) return cached;
+    }
+    throw err;
   }
-  return res.json();
 }
 
 export async function apiPost<T>(path: string, body: object): Promise<T> {
@@ -217,10 +234,14 @@ export function mediaUrl(key: string): string {
   return `${origin}/api/media/${key}`;
 }
 
-export async function apiDelete(path: string): Promise<void> {
+export async function apiDelete(path: string, body?: object): Promise<void> {
   const origin = requireApiOrigin(resolveOriginForUrl(path));
   const url = `${origin}${path.startsWith('/') ? path : `/${path}`}`;
-  const res = await fetch(url, { method: 'DELETE', headers: getAuthHeaders() });
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: getAuthHeaders(),
+    body: body ? JSON.stringify(body) : undefined,
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(err.error || err.message || 'Error en la solicitud');
