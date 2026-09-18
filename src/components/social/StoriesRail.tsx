@@ -197,6 +197,13 @@ export function StoriesRail({ myId, myAvatar, refreshTick = 0, onAddStory, trail
             setOpenAt(null);
             void load();
           }}
+          onDeleted={postId => {
+            setGroups(prev =>
+              prev
+                .map(g => ({ ...g, items: g.items.filter(s => s.id !== postId) }))
+                .filter(g => g.items.length > 0)
+            );
+          }}
         />
       )}
     </div>

@@ -2,10 +2,11 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, animate, motion, useMotionValue, useTransform } from 'motion/react';
 import { EASE_OUT } from '@/src/lib/motionPresets';
-import { Eye, Heart, Loader2, Plus, Send, X } from 'lucide-react';
+import { Eye, Heart, Loader2, Plus, Send, Trash2, X } from 'lucide-react';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { mediaUrl } from '@/src/lib/api';
-import { addComment, markStoryViewed, toggleLike, type FeedAuthor, type StoryGroup } from '@/src/lib/feedApi';
+import { addComment, markStoryViewed, removePost, toggleLike, type FeedAuthor, type StoryGroup } from '@/src/lib/feedApi';
+import { showAppError } from '@/src/lib/appNotice';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 
 const SOFT = { duration: 0.28, ease: EASE_OUT };
@@ -38,9 +39,10 @@ interface StoryViewerProps {
   startGroup: number;
   onClose: () => void;
   onAddStory?: () => void;
+  onDeleted?: (postId: string) => void;
 }
 
-export function StoryViewer({ groups, startGroup, onClose, onAddStory }: StoryViewerProps) {
+export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted }: StoryViewerProps) {
   const [gi, setGi] = useState(startGroup);
   const [ii, setIi] = useState(0);
   const [liked, setLiked] = useState(false);
@@ -51,6 +53,8 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory }: StoryVi
   const [sentHint, setSentHint] = useState(false);
   const [insights, setInsights] = useState(false);
   const [leaving, setLeaving] = useState(false);
+  const [askDelete, setAskDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const skipTap = useRef(false);
   const busy = useRef(false);
@@ -102,7 +106,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory }: StoryVi
       skipTap.current = false;
       return;
     }
-    if (busy.current || leaving || insights) return;
+    if (busy.current || leaving || insights || askDelete) return;
     const next = neighborOf(groups, giRef.current, iiRef.current, nextDir);
     if (!next) {
       void dismiss(nextDir > 0 ? 'left' : 'right');
@@ -112,7 +116,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory }: StoryVi
     setIi(next.ii);
     x.set(0);
     y.set(0);
-  }, [dismiss, groups, insights, leaving, x, y]);
+  }, [askDelete, dismiss, groups, insights, leaving, x, y]);
 
   useEffect(() => {
     if (!item) return;
@@ -122,6 +126,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory }: StoryVi
     setSentHint(false);
     setPaused(false);
     setInsights(false);
+    setAskDelete(false);
   }, [item?.id]);
 
   useEffect(() => {
@@ -132,9 +137,9 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory }: StoryVi
   useEffect(() => {
     const video = videoRef.current;
     if (!video || item?.mediaType !== 'video') return;
-    if (paused || insights || leaving) video.pause();
+    if (paused || insights || leaving || askDelete) video.pause();
     else void video.play().catch(() => {});
-  }, [paused, insights, leaving, item?.id, item?.mediaType]);
+  }, [paused, insights, leaving, askDelete, item?.id, item?.mediaType]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -151,10 +156,10 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory }: StoryVi
   }, [go]);
 
   useEffect(() => {
-    if (!item || item.mediaType === 'video' || paused || insights || leaving) return;
+    if (!item || item.mediaType === 'video' || paused || insights || leaving || askDelete) return;
     const t = window.setTimeout(() => go(1), 5200);
     return () => window.clearTimeout(t);
-  }, [item?.id, item?.mediaType, paused, insights, leaving, go]);
+  }, [item?.id, item?.mediaType, paused, insights, leaving, askDelete, go]);
 
   const onLike = async () => {
     if (!item || item.mine) return;
@@ -188,6 +193,35 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory }: StoryVi
     }
   };
 
+  const onDeleteThis = async () => {
+    if (!item?.mine || deleting) return;
+    const id = item.id;
+    const leftover = group.items.filter(s => s.id !== id).length;
+    setDeleting(true);
+    try {
+      await removePost(id);
+      setAskDelete(false);
+      onDeleted?.(id);
+      if (leftover === 0) onClose();
+    } catch (e) {
+      showAppError('No se ha podido borrar esta historia.', e);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!groups.length) {
+      if (!leaving) onClose();
+      return;
+    }
+    if (gi >= groups.length || !groups[gi]?.items.length) {
+      if (!leaving) onClose();
+      return;
+    }
+    if (ii >= groups[gi].items.length) setIi(groups[gi].items.length - 1);
+  }, [gi, groups, ii, leaving, onClose]);
+
   const clearHold = () => {
     if (holdTimer.current != null) {
       window.clearTimeout(holdTimer.current);
@@ -197,7 +231,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory }: StoryVi
 
   const onCardPointerDown = (e: React.PointerEvent) => {
     if (Date.now() - openedAt.current < 160) return;
-    if (insights || leaving || busy.current) return;
+    if (insights || leaving || askDelete || busy.current) return;
     if ((e.target as HTMLElement).closest('[data-chrome],input,textarea,form')) return;
     pointer.current = { id: e.pointerId, x: e.clientX, y: e.clientY, t: Date.now(), axis: null };
     holdTimer.current = window.setTimeout(() => setPaused(true), 160);
@@ -327,7 +361,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory }: StoryVi
                   style={
                     idx < ii
                       ? { width: '100%' }
-                      : idx === ii && !paused && !insights && !leaving && item.mediaType !== 'video'
+                      : idx === ii && !paused && !insights && !leaving && !askDelete && item.mediaType !== 'video'
                         ? { width: '100%', animation: 'story-bar 5.2s linear' }
                         : idx === ii
                           ? { width: '100%' }
@@ -357,6 +391,18 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory }: StoryVi
                 aria-label="Añadir otra historia"
               >
                 <Plus size={18} />
+              </button>
+            )}
+            {item.mine && (
+              <button
+                type="button"
+                data-chrome
+                onPointerDown={e => e.stopPropagation()}
+                onClick={() => setAskDelete(true)}
+                className="rounded-full bg-white/15 p-2 text-white"
+                aria-label="Borrar esta historia"
+              >
+                <Trash2 size={18} />
               </button>
             )}
             <button
@@ -445,6 +491,38 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory }: StoryVi
           </button>
         )}
       </motion.div>
+
+      {askDelete && item.mine && (
+        <div
+          data-chrome
+          className="absolute inset-0 z-40 flex items-center justify-center bg-black/55 px-6"
+          onPointerDown={e => e.stopPropagation()}
+        >
+          <div className="w-full max-w-xs rounded-2xl bg-slate-950/95 p-5 text-center shadow-xl">
+            <p className="text-sm font-semibold">¿Borrar esta historia?</p>
+            <p className="mt-1 text-xs text-white/60">Solo se quita esta. Las demás se quedan.</p>
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => setAskDelete(false)}
+                className="h-11 flex-1 rounded-full bg-white/15 text-sm font-medium"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => { void onDeleteThis(); }}
+                className="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-full bg-rose-600 text-sm font-semibold"
+              >
+                {deleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+                Borrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {insights && item.mine && (
         <motion.div
