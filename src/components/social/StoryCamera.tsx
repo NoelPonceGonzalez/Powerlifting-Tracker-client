@@ -490,7 +490,7 @@ export function StoryCamera({ open, onClose, onPublished }: StoryCameraProps) {
         <button
           type="button"
           onClick={() => (file ? discard() : onClose())}
-          className="flex h-10 w-10 items-center justify-center rounded-full bg-black/35"
+          className="app-icon-hit rounded-full bg-black/35"
           aria-label={file ? 'Descartar' : 'Cerrar'}
         >
           <X size={20} />
@@ -509,7 +509,7 @@ export function StoryCamera({ open, onClose, onPublished }: StoryCameraProps) {
           <button
             type="button"
             onClick={() => setFacing(f => (f === 'user' ? 'environment' : 'user'))}
-            className="flex h-10 w-10 items-center justify-center rounded-full bg-black/35"
+            className="app-icon-hit rounded-full bg-black/35"
             aria-label="Cambiar cámara"
           >
             <RefreshCw size={18} />

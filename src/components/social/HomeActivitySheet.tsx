@@ -134,7 +134,7 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
                 <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">Actividad</p>
                 <p className="text-[11px] text-slate-500">Seguimiento, likes, mensajes y lo último</p>
               </div>
-              <button type="button" onClick={onClose} className="rounded-full p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Cerrar">
+              <button type="button" onClick={onClose} className="app-icon-hit rounded-full text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Cerrar">
                 <X size={18} />
               </button>
             </div>

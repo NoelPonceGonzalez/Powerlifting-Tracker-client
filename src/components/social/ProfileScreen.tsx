@@ -221,7 +221,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         <button
           type="button"
           onClick={onBack}
-          className="flex items-center gap-2 text-xs font-black uppercase tracking-wider text-slate-500 hover:text-indigo-600 dark:text-slate-400"
+          className="inline-flex min-h-12 items-center gap-2 text-xs font-black uppercase tracking-wider text-slate-500 hover:text-indigo-600 dark:text-slate-400"
         >
           <ArrowLeft size={16} />
           Volver

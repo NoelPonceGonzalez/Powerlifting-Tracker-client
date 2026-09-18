@@ -298,7 +298,7 @@ export const CoachAthletePlan: React.FC<CoachAthletePlanProps> = ({ athleteId, a
             <FileUp size={14} />
             Word
           </button>
-          <button type="button" onClick={onClose} className="rounded-xl p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Cerrar">
+          <button type="button" onClick={onClose} className="app-icon-hit rounded-xl text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="Cerrar">
             <X size={18} />
           </button>
         </div>

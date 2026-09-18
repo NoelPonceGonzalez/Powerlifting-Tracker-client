@@ -2667,7 +2667,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   <button
                     type="button"
                     onClick={() => setRmListOpen(false)}
-                    className="rounded-full p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                    className="app-icon-hit rounded-full text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
                     aria-label="Cerrar"
                   >
                     <X size={18} />
@@ -2988,7 +2988,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                       setNewExModalError('');
                       setShowAddModal(false);
                     }}
-                    className="p-2 bg-slate-50 dark:bg-slate-800 text-slate-400 hover:text-rose-500 rounded-full transition-colors"
+                    className="app-icon-hit bg-slate-50 text-slate-400 hover:text-rose-500 rounded-full transition-colors dark:bg-slate-800"
                     aria-label="Cerrar"
                   >
                     <X size={20} />
@@ -3246,7 +3246,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
               <button
                 type="button"
                 onClick={() => setSetMediaViewer(null)}
-                className="rounded-xl p-2 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                className="app-icon-hit rounded-xl text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
                 aria-label="Cerrar"
               >
                 <X size={18} />

@@ -22,15 +22,28 @@ export default defineConfig(() => {
       port: 5180,
       strictPort: true,
       // La UI corre en :5173 y la API en :3000; sin proxy el login pega a /health aquí y devuelve 404.
+      // SSE no puede tener timeout: si el proxy cierra el stream, Vite llena la consola de ECONNRESET.
       proxy: {
-        '/api': { target: 'http://127.0.0.1:3000', changeOrigin: true },
+        '/api/sse': {
+          target: 'http://127.0.0.1:3000',
+          changeOrigin: true,
+          timeout: 0,
+          proxyTimeout: 0,
+        },
+        '/api': { target: 'http://127.0.0.1:3000', changeOrigin: true, timeout: 0, proxyTimeout: 0 },
         '/health': { target: 'http://127.0.0.1:3000', changeOrigin: true },
       },
     },
     preview: {
       host: true,
       proxy: {
-        '/api': { target: 'http://127.0.0.1:3000', changeOrigin: true },
+        '/api/sse': {
+          target: 'http://127.0.0.1:3000',
+          changeOrigin: true,
+          timeout: 0,
+          proxyTimeout: 0,
+        },
+        '/api': { target: 'http://127.0.0.1:3000', changeOrigin: true, timeout: 0, proxyTimeout: 0 },
         '/health': { target: 'http://127.0.0.1:3000', changeOrigin: true },
       },
     },

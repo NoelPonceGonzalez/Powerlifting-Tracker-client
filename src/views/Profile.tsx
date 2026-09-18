@@ -33,7 +33,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         <button
           type="button"
           onClick={onBackToProfile}
-          className="inline-flex min-h-11 items-center gap-2 text-xs font-black uppercase tracking-wider text-slate-500 transition-colors hover:text-indigo-600 dark:text-slate-400"
+          className="inline-flex min-h-12 items-center gap-2 text-xs font-black uppercase tracking-wider text-slate-500 transition-colors hover:text-indigo-600 dark:text-slate-400"
         >
           <ArrowLeft size={16} />
           Perfil

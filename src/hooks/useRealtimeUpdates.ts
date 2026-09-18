@@ -19,6 +19,8 @@ interface UseRealtimeUpdatesOptions {
 }
 
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
+let liveSource: EventSource | null = null;
+let liveUrl = '';
 /** Sondeo de respaldo mientras el SSE no está abierto (proxy que corta streams, red móvil, etc.). */
 const FALLBACK_POLL_MS = 60000;
 const CALLBACK_THROTTLE_MS = 2000;
@@ -54,7 +56,13 @@ export function useRealtimeUpdates(
       retryTimerRef.current = null;
     }
     if (esRef.current) {
-      esRef.current.close();
+      if (liveSource === esRef.current) {
+        liveSource.close();
+        liveSource = null;
+        liveUrl = '';
+      } else {
+        esRef.current.close();
+      }
       esRef.current = null;
     }
     setRealtimeOpen(false);
@@ -79,8 +87,18 @@ export function useRealtimeUpdates(
     if (!token) return;
 
     const url = `${base}/api/sse/stream?token=${encodeURIComponent(token)}`;
+    if (liveSource && liveUrl === url && liveSource.readyState !== EventSource.CLOSED) {
+      esRef.current = liveSource;
+      return;
+    }
+    if (liveSource) {
+      liveSource.close();
+      liveSource = null;
+    }
 
     const es = new EventSource(url);
+    liveSource = es;
+    liveUrl = url;
     esRef.current = es;
 
     es.onopen = () => {

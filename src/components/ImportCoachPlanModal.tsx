@@ -286,7 +286,7 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
             </div>
             <button
               onClick={onClose}
-              className="rounded-full bg-slate-50 p-2 text-slate-400 transition-colors hover:text-rose-500 dark:bg-slate-800"
+              className="app-icon-hit rounded-full bg-slate-50 text-slate-400 transition-colors hover:text-rose-500 dark:bg-slate-800"
               aria-label="Cerrar"
             >
               <X size={20} />

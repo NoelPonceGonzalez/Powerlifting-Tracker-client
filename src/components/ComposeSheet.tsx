@@ -48,7 +48,7 @@ export function ComposeSheet({ open, onClose, onPublish, onGymNow, onGymLater }:
           <button
             type="button"
             onClick={onClose}
-            className="rounded-full p-1.5 text-slate-400 hover:bg-white/60 dark:hover:bg-white/10"
+            className="app-icon-hit rounded-full text-slate-400 hover:bg-white/60 dark:hover:bg-white/10"
             aria-label="Cerrar"
           >
             <X size={16} />

@@ -20,6 +20,12 @@ function hoursLeft(expiresAt: string | null): string {
   return `${h} h`;
 }
 
+function firstUnseenIndex(group?: StoryGroup) {
+  if (!group) return 0;
+  const idx = group.items.findIndex(s => !s.viewedByMe);
+  return idx >= 0 ? idx : 0;
+}
+
 function neighborOf(groups: StoryGroup[], gi: number, ii: number, dir: number) {
   const group = groups[gi];
   if (!group) return null;
@@ -30,7 +36,7 @@ function neighborOf(groups: StoryGroup[], gi: number, ii: number, dir: number) {
   const nextG = gi + dir;
   const other = groups[nextG];
   if (!other) return null;
-  const idx = dir > 0 ? 0 : Math.max(0, other.items.length - 1);
+  const idx = dir > 0 ? firstUnseenIndex(other) : Math.max(0, other.items.length - 1);
   return { gi: nextG, ii: idx, group: other, item: other.items[idx] };
 }
 
@@ -40,11 +46,12 @@ interface StoryViewerProps {
   onClose: () => void;
   onAddStory?: () => void;
   onDeleted?: (postId: string) => void;
+  onViewed?: (postId: string) => void;
 }
 
-export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted }: StoryViewerProps) {
+export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted, onViewed }: StoryViewerProps) {
   const [gi, setGi] = useState(startGroup);
-  const [ii, setIi] = useState(0);
+  const [ii, setIi] = useState(() => firstUnseenIndex(groups[startGroup]));
   const [liked, setLiked] = useState(false);
   const [likeCount, setLikeCount] = useState(0);
   const [comment, setComment] = useState('');
@@ -130,9 +137,11 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
   }, [item?.id]);
 
   useEffect(() => {
-    if (!item || item.mine) return;
-    void markStoryViewed(item.id).catch(() => {});
-  }, [item?.id, item?.mine]);
+    if (!item || item.viewedByMe) return;
+    void markStoryViewed(item.id)
+      .then(() => onViewed?.(item.id))
+      .catch(() => {});
+  }, [item?.id, item?.viewedByMe, onViewed]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -387,7 +396,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
                 data-chrome
                 onPointerDown={e => e.stopPropagation()}
                 onClick={() => onAddStory()}
-                className="rounded-full bg-white/15 p-2 text-white"
+                className="app-icon-hit rounded-full bg-white/15 text-white"
                 aria-label="Añadir otra historia"
               >
                 <Plus size={18} />
@@ -399,7 +408,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
                 data-chrome
                 onPointerDown={e => e.stopPropagation()}
                 onClick={() => setAskDelete(true)}
-                className="rounded-full bg-white/15 p-2 text-white"
+                className="app-icon-hit rounded-full bg-white/15 text-white"
                 aria-label="Borrar esta historia"
               >
                 <Trash2 size={18} />
@@ -410,7 +419,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
               data-chrome
               onPointerDown={e => e.stopPropagation()}
               onClick={() => { void dismiss('down'); }}
-              className="rounded-full p-2 text-white/80"
+              className="app-icon-hit rounded-full text-white/80"
               aria-label="Cerrar"
             >
               <X size={20} />

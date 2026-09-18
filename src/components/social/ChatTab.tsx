@@ -387,6 +387,8 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   const [typingLabel, setTypingLabel] = useState('');
   const [attach, setAttach] = useState<File | null>(null);
   const [inboxQ, setInboxQ] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const inboxSearchRef = useRef<HTMLInputElement>(null);
   const [groupPanel, setGroupPanel] = useState(false);
   const [groupNameDraft, setGroupNameDraft] = useState('');
   const [addPick, setAddPick] = useState<string[]>([]);
@@ -406,10 +408,21 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   }, [open, onConversationChange]);
 
   useEscapeClose(!!actionRow, () => setActionRow(null));
-  useEscapeClose(peopleOpen && !open, () => {
+  useEscapeClose(peopleOpen && !open && !searchOpen, () => {
     if (peoplePage === 'requests' || peoplePage === 'friends') setPeoplePage('activity');
     else setPeopleOpen(false);
   });
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    const t = window.setTimeout(() => inboxSearchRef.current?.focus(), 80);
+    return () => window.clearTimeout(t);
+  }, [searchOpen]);
+
+  const closeInboxSearch = () => {
+    setSearchOpen(false);
+    setInboxQ('');
+  };
 
   useEffect(() => {
     setPrefs(readPrefs(myId));
@@ -1213,7 +1226,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
               if (peoplePage === 'requests' || peoplePage === 'friends') setPeoplePage('activity');
               else setPeopleOpen(false);
             }}
-            className="flex min-h-11 min-w-0 items-center gap-2 rounded-full py-2 pr-2 text-slate-500"
+            className="flex min-h-12 min-w-12 items-center gap-2 rounded-full py-2 pr-2 text-slate-500"
             aria-label={
               peoplePage === 'requests' || peoplePage === 'friends' ? 'Volver a actividad' : 'Volver a chats'
             }
@@ -1242,6 +1255,16 @@ export const ChatTab: React.FC<ChatTabProps> = ({
           refreshTick={storyRefreshTick}
           pageActive={pageActive}
           onAddStory={() => onAddStory?.()}
+          leading={
+            <button
+              type="button"
+              onClick={() => setSearchOpen(true)}
+              className="app-icon-hit relative z-30 min-h-12 min-w-12 rounded-full text-slate-900 dark:text-slate-100"
+              aria-label="Buscar chats o a quien sigues"
+            >
+              <Search size={22} strokeWidth={2} />
+            </button>
+          }
           trailing={
             <button
               type="button"
@@ -1249,7 +1272,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
                 setPeoplePage('activity');
                 setPeopleOpen(true);
               }}
-              className="app-icon-hit relative rounded-full text-slate-900 dark:text-slate-100"
+              className="app-icon-hit relative z-30 min-h-12 min-w-12 rounded-full text-slate-900 dark:text-slate-100"
               aria-label={heartBadge > 0 ? `Actividad, ${heartBadge} por aceptar` : 'Actividad'}
             >
               <Heart size={22} strokeWidth={2} />
@@ -1262,10 +1285,6 @@ export const ChatTab: React.FC<ChatTabProps> = ({
           }
         />
       )}
-      {!peopleOpen && (
-        <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Chats</p>
-      )}
-
       {peopleOpen ? (
         <ChatPeoplePanel
           myId={myId}
@@ -1283,89 +1302,125 @@ export const ChatTab: React.FC<ChatTabProps> = ({
         />
       ) : (
       <>
-      <div className="relative">
-        <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-        <input
-          value={inboxQ}
-          onChange={e => setInboxQ(e.target.value)}
-          placeholder="Busca chats o a quien sigues"
-          className="h-11 w-full rounded-2xl bg-white pl-10 pr-4 text-sm text-slate-800 shadow-sm placeholder:text-slate-400 focus:outline-none dark:bg-slate-900 dark:text-slate-100"
-        />
-      </div>
-
-      {visibleRows.length === 0 && searchPeople.length === 0 ? (
+      {rows.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-5 py-14 text-center dark:border-slate-700 dark:bg-slate-900">
           <MessageCircle size={26} className="mx-auto mb-3 text-slate-300" />
           <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
-            {inboxQ.trim() ? 'Nadie con ese nombre' : 'Aún no hay chats'}
+            Aún no hay chats
           </p>
           <p className="mt-1 text-xs text-slate-400">
-            {inboxQ.trim() ? 'Prueba otro nombre.' : 'El corazón es la actividad: solicitudes, follows y likes.'}
+            El corazón es la actividad: solicitudes, follows y likes.
           </p>
         </div>
       ) : (
-        <div className="space-y-5">
-          {visibleRows.length > 0 && (
-            <section>
-              <div className="rounded-3xl bg-white shadow-sm dark:bg-slate-900">
-                <AnimatePresence initial={false}>
-                  {visibleRows.map(row => (
-                    <InboxRow
-                      key={threadKey(row)}
-                      row={row}
-                      highlighted={!!actionRow && threadKey(actionRow) === threadKey(row)}
-                      onLongPress={() => setActionRow(row)}
-                      onDismiss={() => setActionRow(null)}
-                      onPin={() => {
-                        patchPref(row, { pinned: !row.pinned });
-                        setActionRow(null);
-                      }}
-                      onMute={() => {
-                        patchPref(row, { muted: !row.muted });
-                        setActionRow(null);
-                      }}
-                      onProfile={row.peer ? () => {
-                        setActionRow(null);
-                        onOpenMini?.(row.peer!);
-                      } : undefined}
-                      onDelete={() => void wipeThread(row)}
-                      onOpen={() => {
-                        if (row.kind === 'group' && row.group) void openGroup(row.group);
-                        else if (row.peer) void openDm(row.peer);
-                      }}
-                    />
-                  ))}
-                </AnimatePresence>
-              </div>
-            </section>
-          )}
-          {searchPeople.length > 0 && (
-            <section>
-              <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Personas</p>
-              <div className="rounded-3xl bg-white shadow-sm dark:bg-slate-900">
-                {searchPeople.map(person => (
-                  <button
-                    key={person.id}
-                    type="button"
-                    onClick={() => void openDm(person)}
-                    className="flex w-full items-center gap-3 border-b border-slate-100 px-3.5 py-3 text-left last:border-0 dark:border-slate-800"
-                  >
-                    <Face name={person.name} avatar={person.avatar} size={52} />
-                    <span className="min-w-0">
-                      <span className="block truncate text-[15px] font-semibold text-slate-900 dark:text-slate-100">{person.name}</span>
-                      <span className="text-[13px] text-slate-400">Escribir</span>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </section>
-          )}
+        <div className="rounded-3xl bg-white shadow-sm dark:bg-slate-900">
+          <AnimatePresence initial={false}>
+            {rows.map(row => (
+              <InboxRow
+                key={threadKey(row)}
+                row={row}
+                highlighted={!!actionRow && threadKey(actionRow) === threadKey(row)}
+                onLongPress={() => setActionRow(row)}
+                onDismiss={() => setActionRow(null)}
+                onPin={() => {
+                  patchPref(row, { pinned: !row.pinned });
+                  setActionRow(null);
+                }}
+                onMute={() => {
+                  patchPref(row, { muted: !row.muted });
+                  setActionRow(null);
+                }}
+                onProfile={row.peer ? () => {
+                  setActionRow(null);
+                  onOpenMini?.(row.peer!);
+                } : undefined}
+                onDelete={() => void wipeThread(row)}
+                onOpen={() => {
+                  if (row.kind === 'group' && row.group) void openGroup(row.group);
+                  else if (row.peer) void openDm(row.peer);
+                }}
+              />
+            ))}
+          </AnimatePresence>
         </div>
       )}
       </>
       )}
     </div>
     {deleteModal}
+    <GlassModal
+      open={searchOpen}
+      onClose={closeInboxSearch}
+      sheet
+      title="Buscar"
+      subtitle="Chats o a quien sigues"
+    >
+      <div className="relative mb-3">
+        <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+        <input
+          ref={inboxSearchRef}
+          value={inboxQ}
+          onChange={e => setInboxQ(e.target.value)}
+          placeholder="Busca chats o a quien sigues"
+          className="h-11 w-full rounded-2xl bg-white pl-10 pr-4 text-sm text-slate-800 shadow-sm placeholder:text-slate-400 focus:outline-none dark:bg-slate-800 dark:text-slate-100"
+        />
+      </div>
+      {inboxQ.trim() && visibleRows.length === 0 && searchPeople.length === 0 ? (
+        <p className="py-8 text-center text-sm text-slate-400">Nadie con ese nombre</p>
+      ) : (
+        <div className="space-y-4">
+          {visibleRows.map(row => (
+            <button
+              key={threadKey(row)}
+              type="button"
+              onClick={() => {
+                closeInboxSearch();
+                if (row.kind === 'group' && row.group) void openGroup(row.group);
+                else if (row.peer) void openDm(row.peer);
+              }}
+              className="flex w-full items-center gap-3 rounded-2xl px-1 py-2 text-left"
+            >
+              <Face
+                name={row.kind === 'group' && row.group ? row.group.name : row.peer?.name || ''}
+                avatar={row.peer?.avatar ?? row.group?.members[0]?.avatar ?? null}
+                size={48}
+              />
+              <span className="min-w-0">
+                <span className="block truncate text-[15px] font-semibold text-slate-900 dark:text-slate-100">
+                  {row.kind === 'group' && row.group ? row.group.name : row.peer?.name}
+                </span>
+                <span className="block truncate text-[13px] text-slate-400">{inboxPreview(row.lastText)}</span>
+              </span>
+            </button>
+          ))}
+          {searchPeople.length > 0 && (
+            <div>
+              <p className="mb-1 px-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">Personas</p>
+              {searchPeople.map(person => (
+                <button
+                  key={person.id}
+                  type="button"
+                  onClick={() => {
+                    closeInboxSearch();
+                    void openDm(person);
+                  }}
+                  className="flex w-full items-center gap-3 rounded-2xl px-1 py-2 text-left"
+                >
+                  <Face name={person.name} avatar={person.avatar} size={48} />
+                  <span className="min-w-0">
+                    <span className="block truncate text-[15px] font-semibold text-slate-900 dark:text-slate-100">{person.name}</span>
+                    <span className="text-[13px] text-slate-400">Escribir</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+          {!inboxQ.trim() && visibleRows.length === 0 && searchPeople.length === 0 && (
+            <p className="py-8 text-center text-sm text-slate-400">Escribe un nombre para buscar.</p>
+          )}
+        </div>
+      )}
+    </GlassModal>
     </>
   );
 };
