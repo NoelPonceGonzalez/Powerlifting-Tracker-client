@@ -26,7 +26,7 @@ function friendlyAuthError(status: number, serverMessage?: string): string {
   const raw = (serverMessage || '').toLowerCase();
 
   // 503: la API está viva pero sin base de datos. Es temporal y se arregla solo.
-  if (status === 503 || raw.includes('base de datos no está conectada')) {
+  if (status === 502 || status === 503 || raw.includes('base de datos no está conectada')) {
     return 'Estamos reconectando con el servidor. Prueba otra vez en unos segundos.';
   }
   if (status === 429) return 'Demasiados intentos. Espera un minuto y vuelve a probarlo.';
@@ -59,6 +59,34 @@ function authApiUrl(path: string): string {
   }
   const base = getApiBaseUrl();
   return `${base.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/** El proxy Vite responde 502 si el API se está reiniciando; reintentamos un par de veces. */
+async function fetchAuth(url: string, init: RequestInit, attempts = 3): Promise<Response> {
+  let lastError: unknown;
+  for (let i = 0; i < attempts; i++) {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 45000);
+    try {
+      const res = await fetch(url, { ...init, cache: 'no-store', signal: controller.signal });
+      window.clearTimeout(timeout);
+      if ((res.status === 502 || res.status === 503) && i < attempts - 1) {
+        await sleep(650 * (i + 1));
+        continue;
+      }
+      return res;
+    } catch (err) {
+      window.clearTimeout(timeout);
+      lastError = err;
+      if ((err as { name?: string })?.name === 'AbortError' || i === attempts - 1) throw err;
+      await sleep(650 * (i + 1));
+    }
+  }
+  throw lastError;
 }
 
 /** Fallos de red o de conexión, antes de que el servidor llegue a responder. */
@@ -158,21 +186,14 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
       const url = authApiUrl('/api/auth/login');
       const bodyData = { username: username.trim(), password };
 
-      const loginController = new AbortController();
-      const loginTimeout = setTimeout(() => loginController.abort(), 45000);
-      
       let res;
       try {
-        res = await fetch(url, {
+        res = await fetchAuth(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          cache: 'no-store',
           body: JSON.stringify(bodyData),
-          signal: loginController.signal
         });
-        clearTimeout(loginTimeout);
       } catch (fetchError: any) {
-        clearTimeout(loginTimeout);
         console.error('[CLIENT-LOGIN] Error en fetch:', fetchError);
         setError(friendlyNetworkError(fetchError));
         setIsLoading(false);
@@ -239,20 +260,14 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
       const registerUrl = authApiUrl('/api/auth/register');
       console.log('[CLIENT-REGISTER] Enviando registro a:', registerUrl);
       
-      const registerController = new AbortController();
-      const registerTimeout = setTimeout(() => registerController.abort(), 45000);
-      
       let res;
       try {
-        res = await fetch(registerUrl, {
+        res = await fetchAuth(registerUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email: normalizedEmail }),
-          signal: registerController.signal
         });
-        clearTimeout(registerTimeout);
       } catch (fetchError: any) {
-        clearTimeout(registerTimeout);
         console.error('[CLIENT-REGISTER] Error en fetch:', fetchError);
         if (fetchError.name === 'AbortError') {
           throw new Error('El servidor tardó demasiado en responder. Verifica que esté corriendo y accesible desde el emulador.');

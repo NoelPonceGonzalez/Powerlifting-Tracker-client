@@ -2,7 +2,7 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { X } from 'lucide-react';
-import { SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
+import { SCREEN_TRANSITION, SLIME_CARD_IN, SLIME_CARD_OUT, SLIME_CARD_SHOW, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
 import { cn } from '@/src/lib/utils';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 
@@ -23,11 +23,13 @@ interface GlassModalProps {
   rise?: boolean;
   /** Más alto: listas de Chat (amigos, nuevo mensaje). */
   sheet?: boolean;
+  /** Tarjeta flotante centrada también en móvil (perfil de amigo). */
+  center?: boolean;
 }
 
 /**
  * Overlay + panel de cristal: sheet abajo en móvil, tarjeta centrada en desktop.
- * Misma receta en toda la app (actividad, chat, torneos, series).
+ * Con `center`, flota en el medio también en el teléfono (perfil de amigo).
  */
 export function GlassModal({
   open,
@@ -42,6 +44,7 @@ export function GlassModal({
   zIndexClass = 'z-[100000]',
   rise: _rise = false,
   sheet = false,
+  center = false,
 }: GlassModalProps) {
   useEscapeClose(open && !persist, onClose);
 
@@ -66,7 +69,10 @@ export function GlassModal({
           exit={{ opacity: 0 }}
           transition={SCREEN_TRANSITION}
           className={cn(
-            'fixed inset-0 flex min-h-[100dvh] items-end justify-center p-0 sm:items-center sm:p-4',
+            'fixed inset-0 flex min-h-[100dvh] justify-center',
+            center
+              ? 'items-center p-3 sm:p-4'
+              : 'items-end p-0 sm:items-center sm:p-4',
             zIndexClass
           )}
         >
@@ -79,15 +85,20 @@ export function GlassModal({
             className="fixed inset-0 min-h-[100dvh] bg-slate-900/25 backdrop-blur-md dark:bg-black/45"
           />
           <motion.div
-            initial={SLIME_SHEET_IN}
-            animate={SLIME_SHEET_SHOW}
-            exit={SLIME_SHEET_OUT}
+            initial={center ? SLIME_CARD_IN : SLIME_SHEET_IN}
+            animate={center ? SLIME_CARD_SHOW : SLIME_SHEET_SHOW}
+            exit={center ? SLIME_CARD_OUT : SLIME_SHEET_OUT}
             transition={STICKY}
             onClick={e => e.stopPropagation()}
             className={cn(
-              'relative z-10 flex w-full flex-col overflow-hidden rounded-t-[28px] border border-white/50 bg-white/70 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl sm:rounded-[28px] dark:border-white/10 dark:bg-slate-900/65',
-              sheet ? 'min-h-[min(72dvh,100%)] max-h-[min(92dvh,calc(100dvh-env(safe-area-inset-top)))] max-w-lg' : 'max-h-[min(88dvh,calc(100dvh-env(safe-area-inset-top)))]',
-              !sheet && (wide ? 'max-w-lg sm:max-w-xl' : 'max-w-sm'),
+              'relative z-10 flex w-full flex-col overflow-hidden border border-white/50 bg-white/70 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl dark:border-white/10 dark:bg-slate-900/65',
+              center
+                ? 'max-h-[min(88dvh,calc(100dvh-1.5rem-env(safe-area-inset-top)-env(safe-area-inset-bottom)))] w-[min(100%,22rem)] rounded-[28px] sm:w-full sm:max-w-sm'
+                : 'rounded-t-[28px] sm:rounded-[28px]',
+              !center && (sheet
+                ? 'min-h-[min(72dvh,100%)] max-h-[min(92dvh,calc(100dvh-env(safe-area-inset-top)))] max-w-lg'
+                : 'max-h-[min(88dvh,calc(100dvh-env(safe-area-inset-top)))]'),
+              !center && !sheet && (wide ? 'max-w-lg sm:max-w-xl' : 'max-w-sm'),
               className
             )}
           >
@@ -114,7 +125,10 @@ export function GlassModal({
               {children}
             </div>
             {footer && (
-              <div className="shrink-0 border-t border-white/40 bg-white/50 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur-xl dark:border-white/10 dark:bg-slate-900/50">
+              <div className={cn(
+                'shrink-0 border-t border-white/40 bg-white/50 px-4 py-3 backdrop-blur-xl dark:border-white/10 dark:bg-slate-900/50',
+                center ? 'pb-3' : 'pb-[max(0.75rem,env(safe-area-inset-bottom))]'
+              )}>
                 {footer}
               </div>
             )}

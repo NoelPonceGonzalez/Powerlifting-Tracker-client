@@ -78,8 +78,10 @@ export async function subscribeToPush(): Promise<void> {
   const registration = await getServiceWorkerRegistration();
   if (!registration) return;
 
+  const vapidStamp = 'pl-vapid-public';
+  const lastKey = typeof localStorage !== 'undefined' ? localStorage.getItem(vapidStamp) : null;
   const existing = await registration.pushManager.getSubscription();
-  if (existing && !subscriptionMatchesVapid(existing, key)) {
+  if (existing && (lastKey !== key || !subscriptionMatchesVapid(existing, key))) {
     try {
       await existing.unsubscribe();
     } catch {
@@ -96,6 +98,7 @@ export async function subscribeToPush(): Promise<void> {
 
   try {
     await apiPost('/api/notifications/web-push-subscription', subscription.toJSON());
+    if (typeof localStorage !== 'undefined') localStorage.setItem(vapidStamp, key);
   } catch (err) {
     console.warn('[PWA] Suscripción push no registrada en el servidor:', err);
   }

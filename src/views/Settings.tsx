@@ -439,6 +439,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         {/* Danger Zone */}
         <section className="pt-8 border-t border-slate-100 dark:border-slate-700">
           <Button 
+            type="button"
             variant="outline" 
             className="w-full py-6 rounded-2xl border-2 border-rose-100 text-rose-500 hover:bg-rose-50 hover:border-rose-200 flex items-center justify-center gap-2"
             onClick={onLogout}

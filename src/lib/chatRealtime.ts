@@ -3,7 +3,7 @@ export type ChatRealtimeEvent =
       type: 'chat_message';
       peerId?: string;
       groupId?: string;
-      message: {
+      message?: {
         id: string;
         text: string;
         createdAt: string;
@@ -15,6 +15,7 @@ export type ChatRealtimeEvent =
           mediaKey: string;
           mediaType: 'image' | 'video';
           caption?: string;
+          available?: boolean;
         } | null;
         author?: { id: string; name: string; avatar: string | null };
       };

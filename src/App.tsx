@@ -12,12 +12,14 @@ import { LoginView } from '@/src/views/Login';
 import { DashboardView } from '@/src/views/Dashboard';
 import { TrainingPlanView } from '@/src/views/TrainingPlan';
 import { RoutineManagerView } from '@/src/views/RoutineManager';
-import { SocialView, normalizeSocialTab, type SocialTab } from '@/src/views/Social';
+import { SocialView } from '@/src/views/Social';
+import { normalizeSocialTab, type SocialTab } from '@/src/lib/socialTab';
 import { ProfileView } from '@/src/views/Profile';
 
 // Components
 import { useRealtimeUpdates } from '@/src/hooks/useRealtimeUpdates';
 import { isRealtimeOpen } from '@/src/lib/chatRealtime';
+import { primeStoryCamera } from '@/src/pwa/mediaAccess';
 import { SLIME_TAP, STICKY } from '@/src/lib/motionPresets';
 
 // Types
@@ -103,6 +105,7 @@ import {
   type SavedAccount,
 } from '@/src/lib/savedAccounts';
 import { checkInExpiresAtMs, expiresAtFromSaved } from '@/src/lib/checkInExpires';
+import { hasUnseenMark, markSeenIds } from '@/src/lib/unseenMarks';
 
 function mapCheckInFromApi(c: Record<string, unknown>): GymCheckIn {
   const ts =
@@ -595,6 +598,7 @@ export default function App() {
   const [challenges, setChallenges] = useState<Challenge[]>([]);
   const [checkIns, setCheckIns] = useState<GymCheckIn[]>([]);
   const [socialTab, setSocialTab] = useState<SocialTab>('chat');
+  const [socialFriendsFilter, setSocialFriendsFilter] = useState<'all' | 'following' | 'followers'>('all');
   const [savedAccountsState, setSavedAccountsState] = useState<SavedAccount[]>(() => loadSavedAccounts());
   const [addAccountMode, setAddAccountMode] = useState(false);
   const [isSwitchingAccount, setIsSwitchingAccount] = useState(false);
@@ -674,10 +678,12 @@ export default function App() {
         openCreateChallenge?: boolean;
         gymNow?: boolean;
         from?: 'profile' | 'dashboard' | 'chat';
+        friendsFilter?: 'all' | 'following' | 'followers';
       }
     ) => {
       const next = normalizeSocialTab(tab);
       setSocialTab(next);
+      setSocialFriendsFilter(opts?.friendsFilter ?? 'all');
       setSocialNavTick(t => t + 1);
       setView('social');
       if (opts?.from) {
@@ -1676,7 +1682,8 @@ export default function App() {
         apiGet<FriendRequest[]>('/api/social/requests'),
       ]);
       setFriendsList((friendsRes || []).filter(f => f.id !== user?.id));
-      setFriends(requestsRes.map(r => ({ ...r, status: 'pending' as const })));
+      setFriends(requestsRes.map(r => ({ ...r, status: r.status ?? 'pending' })));
+      setStoryRefreshTick(t => t + 1);
       bumpSocialRefresh();
     } catch (e: any) {
       console.error('[Social] Error aceptando solicitud:', e);
@@ -1715,6 +1722,12 @@ export default function App() {
   const handleSendFriendRequest = async (userId: string): Promise<void> => {
     // El error se propaga: Social lo muestra y así no se marca "Enviada" en falso.
     await apiPost('/api/social/requests', { userId });
+    const [friendsRes, requestsRes] = await Promise.all([
+      apiGet<Friend[]>('/api/social/friends').catch(() => null),
+      apiGet<FriendRequest[]>('/api/social/requests').catch(() => null),
+    ]);
+    if (friendsRes) setFriendsList(friendsRes.filter(f => f.id !== user?.id));
+    if (requestsRes) setFriends(requestsRes.map(r => ({ ...r, status: r.status ?? 'pending' })));
     bumpSocialRefresh();
   };
 
@@ -1726,6 +1739,26 @@ export default function App() {
       // ignore
     }
   };
+
+  const socialUnseen = friends.some(r => r.status === 'pending' && !r.needsFollowBack);
+  const [tourneySeenTick, setTourneySeenTick] = useState(0);
+  const activeChallengeIds = useMemo(
+    () => challenges.filter(c => new Date(c.endDate).getTime() > Date.now()).map(c => c.id).filter(Boolean),
+    [challenges]
+  );
+  const tourneyUnseen = useMemo(
+    () => hasUnseenMark('challenges', user?.id ?? '', activeChallengeIds),
+    [user?.id, activeChallengeIds, tourneySeenTick]
+  );
+  useEffect(() => {
+    if (view !== 'social' || socialTab !== 'challenges' || !user?.id) return;
+    if (activeChallengeIds.length === 0) return;
+    markSeenIds('challenges', user.id, activeChallengeIds);
+    setTourneySeenTick(t => t + 1);
+  }, [view, socialTab, user?.id, activeChallengeIds]);
+  const seeRequests = useCallback(() => {
+    /* La marca de Social se queda mientras haya solicitudes. */
+  }, []);
 
   const upsertLocalDailyCheckIn = useCallback((nextCheckIn: GymCheckIn) => {
     const day = new Date(nextCheckIn.timestamp).toDateString();
@@ -3203,6 +3236,8 @@ export default function App() {
       setSavedAccountsState(loadSavedAccounts());
     }
     setUser(userData);
+    setView('dashboard');
+    setAddAccountMode(false);
   }, [user?.id]);
 
   const switchToAccount = useCallback(
@@ -3280,50 +3315,52 @@ export default function App() {
     []
   );
 
-  const handleLogout = useCallback(async () => {
+  const handleLogout = useCallback(() => {
     const uid = user?.id;
-    if (!uid) return;
-    try {
-      const authToken = localStorage.getItem('auth_token');
-      const base = getApiBaseUrl() || '';
-      const expoPush =
-        typeof window !== 'undefined'
-          ? (window as unknown as { __EXPO_PUSH_TOKEN__?: string }).__EXPO_PUSH_TOKEN__
-          : undefined;
-      const webPushEndpoint = await getWebPushEndpoint();
-      await fetch(`${base}/api/auth/logout`, {
-        method: 'POST',
-        headers: {
-          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          ...(expoPush?.trim() ? { token: expoPush.trim() } : {}),
-          ...(webPushEndpoint ? { webPushEndpoint } : {}),
-        }),
-      });
-    } catch {
-      /* ignore */
-    }
-    removeAccount(uid);
-    setSavedAccountsState(loadSavedAccounts());
-    const remaining = loadSavedAccounts();
-    if (remaining.length > 0) {
+    const authToken = localStorage.getItem('auth_token');
+    const expoPush =
+      typeof window !== 'undefined'
+        ? (window as unknown as { __EXPO_PUSH_TOKEN__?: string }).__EXPO_PUSH_TOKEN__
+        : undefined;
+
+    void (async () => {
       try {
-        await switchToAccount(remaining[0].id);
+        const webPushEndpoint = await Promise.race([
+          getWebPushEndpoint(),
+          new Promise<null>(resolve => {
+            window.setTimeout(() => resolve(null), 1200);
+          }),
+        ]);
+        const base = getApiBaseUrl() || '';
+        const ac = new AbortController();
+        const t = window.setTimeout(() => ac.abort(), 2500);
+        await fetch(`${base}/api/auth/logout`, {
+          method: 'POST',
+          headers: {
+            ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            ...(expoPush?.trim() ? { token: expoPush.trim() } : {}),
+            ...(webPushEndpoint ? { webPushEndpoint } : {}),
+          }),
+          signal: ac.signal,
+        });
+        window.clearTimeout(t);
       } catch {
-        localStorage.removeItem('auth_token');
-        setActiveAccountId(null);
-        localStorage.removeItem(AUTH_USER_STORAGE_KEY);
-        setUser(null);
+        /* el cierre local no espera al servidor */
       }
-    } else {
-      localStorage.removeItem('auth_token');
-      setActiveAccountId(null);
-      localStorage.removeItem(AUTH_USER_STORAGE_KEY);
-      setUser(null);
-    }
-  }, [user?.id, switchToAccount]);
+    })();
+
+    if (uid) removeAccount(uid);
+    setSavedAccountsState(loadSavedAccounts());
+    localStorage.removeItem('auth_token');
+    setActiveAccountId(null);
+    localStorage.removeItem(AUTH_USER_STORAGE_KEY);
+    setAddAccountMode(false);
+    setView('dashboard');
+    setUser(null);
+  }, [user?.id]);
 
   const handleRemoveSavedAccount = useCallback(
     (userId: string) => {
@@ -3581,8 +3618,6 @@ export default function App() {
         onCancel={() => setAddAccountMode(false)}
         onLogin={(userData) => {
           handleLoginComplete(userData);
-          setAddAccountMode(false);
-          setView('settings');
         }}
       />
       <AppNoticeHost />
@@ -3778,6 +3813,7 @@ export default function App() {
               challenges={challenges}
               checkIns={checkIns}
               friendCount={friendsList.length}
+              socialRefreshTick={socialRefreshTick}
               onUpdateUser={handleUpdateUser}
               onOpenProgram={openProgramPlan}
               onCreateRoutine={openCreateRoutine}
@@ -3878,6 +3914,7 @@ export default function App() {
               challenges={challenges}
               checkIns={checkIns}
               initialTab={socialTab}
+              openFriendsFilter={socialFriendsFilter}
               socialNavTick={socialNavTick}
               openCheckInModalSignal={openCheckInModalSignal}
               openCreateChallengeSignal={openCreateChallengeSignal}
@@ -3905,8 +3942,13 @@ export default function App() {
               onGoToDashboard={() => setView('dashboard')}
               socialBackTo={socialBackTo}
               onChatConversationChange={setChatConversationOpen}
-              onAddStory={() => setStoryComposerOpen(true)}
+              onAddStory={() => {
+                void primeStoryCamera();
+                setStoryComposerOpen(true);
+              }}
               storyRefreshTick={storyRefreshTick}
+              socialRefreshTick={socialRefreshTick}
+              onSeeRequests={seeRequests}
               onPullRefresh={bumpAllSocial}
               pageActive={view === 'social'}
             />
@@ -3993,7 +4035,12 @@ export default function App() {
                 : "text-slate-400 dark:text-slate-500"
             )}
           >
-            <Users className="size-[17px]" strokeWidth={view === 'social' && socialTab === 'chat' ? 2.35 : 1.9} />
+            <span className="relative">
+              <Users className="size-[17px]" strokeWidth={view === 'social' && socialTab === 'chat' ? 2.35 : 1.9} />
+              {socialUnseen && (
+                <span className="absolute -right-1 -top-0.5 h-2 w-2 rounded-full bg-rose-500 ring-2 ring-white dark:ring-slate-950" />
+              )}
+            </span>
             <span>Social</span>
           </motion.button>
           <motion.button
@@ -4008,7 +4055,12 @@ export default function App() {
                 : "text-slate-400 dark:text-slate-500"
             )}
           >
-            <Trophy className="size-[17px]" strokeWidth={view === 'social' && socialTab === 'challenges' ? 2.35 : 1.9} />
+            <span className="relative">
+              <Trophy className="size-[17px]" strokeWidth={view === 'social' && socialTab === 'challenges' ? 2.35 : 1.9} />
+              {tourneyUnseen && (
+                <span className="absolute -right-1 -top-0.5 h-2 w-2 rounded-full bg-amber-400 ring-2 ring-white dark:ring-slate-950" />
+              )}
+            </span>
             <span>Torneos</span>
           </motion.button>
         </div>
@@ -4019,6 +4071,7 @@ export default function App() {
         onPublish={() => {
           setComposeOpen(false);
           goToSocial('chat');
+          void primeStoryCamera();
           setStoryComposerOpen(true);
         }}
         onGymNow={() => {

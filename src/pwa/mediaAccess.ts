@@ -32,6 +32,33 @@ export function queryMicrophonePermission(): Promise<MediaPermissionState> {
   return queryName('microphone' as PermissionName);
 }
 
+let primedStoryStream: MediaStream | null = null;
+
+/** Llamar en el mismo clic que abre el compositor: iOS solo da cámara si el gesto es reciente. */
+export async function primeStoryCamera(facing: 'user' | 'environment' = 'environment'): Promise<void> {
+  if (!isCameraSupported()) return;
+  primedStoryStream?.getTracks().forEach(t => t.stop());
+  primedStoryStream = null;
+  const tries: MediaStreamConstraints[] = [
+    { video: { facingMode: { ideal: facing } }, audio: false },
+    { video: true, audio: false },
+  ];
+  for (const cons of tries) {
+    try {
+      primedStoryStream = await navigator.mediaDevices.getUserMedia(cons);
+      return;
+    } catch {
+      /* siguiente intento */
+    }
+  }
+}
+
+export function consumePrimedStoryCamera(): MediaStream | null {
+  const stream = primedStoryStream;
+  primedStoryStream = null;
+  return stream;
+}
+
 /**
  * Pide cámara (y micrófono si se puede). Hay que llamarlo desde un clic.
  * Corta el stream al instante: solo sirve para dejar el permiso concedido.

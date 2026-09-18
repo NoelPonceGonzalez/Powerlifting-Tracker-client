@@ -65,6 +65,31 @@ export const SLIME_SHEET_OUT = {
   borderRadius: 36,
 };
 
+/** Tarjeta flotante centrada (perfil de amigo). */
+export const SLIME_CARD_IN = {
+  opacity: 0,
+  y: 18,
+  scaleX: 0.92,
+  scaleY: 1.08,
+  borderRadius: 36,
+};
+
+export const SLIME_CARD_SHOW = {
+  opacity: 1,
+  y: 0,
+  scaleX: 1,
+  scaleY: 1,
+  borderRadius: 28,
+};
+
+export const SLIME_CARD_OUT = {
+  opacity: 0,
+  y: 10,
+  scaleX: 1.04,
+  scaleY: 0.94,
+  borderRadius: 32,
+};
+
 /** Pantalla a pantalla (cámara de historia): sube como blob y llena el móvil. */
 export const SLIME_FULLSCREEN_IN = {
   opacity: 0,

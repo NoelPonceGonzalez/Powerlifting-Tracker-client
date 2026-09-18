@@ -57,7 +57,8 @@ export interface PublicProfile {
   bio: string;
   isSelf: boolean;
   isFriend: boolean;
-  friendshipStatus: 'self' | 'accepted' | 'pending' | 'rejected' | 'none';
+  friendshipStatus: 'self' | 'accepted' | 'pending' | 'rejected' | 'none' | 'follower' | 'following';
+  canSendRequest?: boolean;
   postCount: number;
   friendCount: number;
   athleteCount: number;
@@ -211,6 +212,8 @@ export interface ChatThread {
   isCoach?: boolean;
   /** Chat enviado a alguien que aún no te sigue / no ha aceptado. */
   waiting?: boolean;
+  /** Te han escrito y aún no has aceptado el chat. */
+  incoming?: boolean;
   pinned?: boolean;
   muted?: boolean;
 }
@@ -227,6 +230,7 @@ export interface StoryReply {
   mediaKey: string;
   mediaType: 'image' | 'video';
   caption?: string;
+  available?: boolean;
 }
 
 export interface ChatLine {
@@ -256,6 +260,7 @@ export function fetchChatMessages(peerId: string) {
     locked?: boolean;
     preview?: string;
     online?: boolean;
+    requestId?: string;
   }>(`/api/social/chats/${peerId}/messages`);
 }
 
@@ -284,7 +289,7 @@ export function fetchChatRequests() {
 }
 
 export function answerChatRequest(id: string, decision: 'accept' | 'reject') {
-  return apiPut<{ ok: boolean; peerId?: string }>(`/api/social/chats/chat-requests/${id}/${decision}`, {});
+  return apiPut<{ ok: boolean; peerId?: string; rejected?: boolean }>(`/api/social/chats/chat-requests/${id}/${decision}`, {});
 }
 
 export function createChatGroup(name: string, memberIds: string[], kind: 'group' | 'team' = 'group') {

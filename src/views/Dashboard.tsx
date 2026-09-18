@@ -503,11 +503,12 @@ export interface DashboardProps {
   onCreateRoutine?: () => void;
   onOpenSocial: (
     tab?: 'friends' | 'challenges' | 'checkins' | 'chat',
-    options?: { openCheckInModal?: boolean; openCreateChallenge?: boolean; from?: 'dashboard' }
+    options?: { openCheckInModal?: boolean; openCreateChallenge?: boolean; from?: 'dashboard'; friendsFilter?: 'all' | 'following' | 'followers' }
   ) => void;
   onJoinFriendCheckIn: (checkIn: GymCheckIn) => void;
   onOpenSettings?: () => void;
   friendCount?: number;
+  socialRefreshTick?: number;
   /** false = no hay rutina (se pueden borrar todas). */
   hasRoutine?: boolean;
   /** Se incrementa al volver a Progreso desde otra pestaña; fuerza remount de gráficos y replay de animación. */
@@ -579,6 +580,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
   onJoinFriendCheckIn,
   onOpenSettings,
   friendCount = 0,
+  socialRefreshTick = 0,
   hasRoutine: hasRoutineProp,
   chartEnterKey = 0,
   pageActive = true,
@@ -1218,6 +1220,10 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
           marcaCount={trainingMaxes.length}
           onOpenSettings={onOpenSettings}
           onUpdateUser={onUpdateUser}
+          onOpenFriends={() => onOpenSocial('friends', { friendsFilter: 'following' })}
+          onOpenFollowers={() => onOpenSocial('friends', { friendsFilter: 'followers' })}
+          onOpenFollowing={() => onOpenSocial('friends', { friendsFilter: 'following' })}
+          refreshTick={socialRefreshTick}
           aside={
             canTotal ? (
               <button

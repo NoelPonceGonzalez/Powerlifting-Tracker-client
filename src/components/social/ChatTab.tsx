@@ -1,18 +1,21 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
-import { ArrowLeft, Bell, BellOff, Dumbbell, GraduationCap, Heart, Image as ImageIcon, Loader2, LogOut, MessageCircle, Paperclip, Pencil, Pin, Search, Send, Trash2, User, UserMinus, Users } from 'lucide-react';
+import { ArrowLeft, Bell, BellOff, Dumbbell, GraduationCap, Heart, Image as ImageIcon, Loader2, LogOut, MessageCircle, Paperclip, Pencil, Pin, Search, Send, Trash2, User, UserMinus, UserPlus, Users } from 'lucide-react';
 import { Avatar } from '@/src/components/social/MediaPost';
 import { Button } from '@/src/components/ui/Button';
 import { GlassModal } from '@/src/components/ui/GlassModal';
 import { cn } from '@/src/lib/utils';
 import { apiGet, mediaUrl } from '@/src/lib/api';
+import { showAppError } from '@/src/lib/appNotice';
 import { isRealtimeOpen, subscribeChatRealtime } from '@/src/lib/chatRealtime';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 import { STICKY } from '@/src/lib/motionPresets';
 import type { Friend, FriendRequest, UserSearchResult } from '@/src/types';
+import { AddFriendsModal } from '@/src/components/social/AddFriendsModal';
 import { ChatPeoplePanel } from '@/src/components/social/ChatPeoplePanel';
 import { StoriesRail } from '@/src/components/social/StoriesRail';
+import { StoryReplyCard } from '@/src/components/social/StoryReplyCard';
 import {
   addChatGroupMembers,
   deleteChat,
@@ -27,6 +30,7 @@ import {
   sendChatMessage,
   sendChatTyping,
   sendGroupMessage,
+  answerChatRequest,
   timeAgo,
   type ChatGroupCard,
   type ChatLine,
@@ -40,6 +44,8 @@ type PendingDelete =
 
 interface ChatTabProps {
   myId: string;
+  myAvatar?: string | null;
+  myName?: string | null;
   friends: Friend[];
   startWith?: string | null;
   pending?: FriendRequest[];
@@ -47,6 +53,8 @@ interface ChatTabProps {
   acceptCount?: number;
   onOpened?: () => void;
   onOpenMini?: (person: FeedAuthor) => void;
+  /** Hold en la lista de gente: foto de perfil como historia. */
+  onOpenFullProfile?: (person: FeedAuthor) => void;
   onAcceptRequest?: (id: string) => void;
   onRejectRequest?: (id: string) => void;
   onSendRequest?: (userId: string) => Promise<void>;
@@ -55,6 +63,12 @@ interface ChatTabProps {
   onAddStory?: () => void;
   storyRefreshTick?: number;
   pageActive?: boolean;
+  /** Se incrementa para abrir la lista de amigos. */
+  openFriendsTick?: number;
+  openFriendsFilter?: 'all' | 'following' | 'followers';
+  onSeeRequests?: () => void;
+  /** Toque en Social (nav): volver a historias + lista de chats. */
+  homeTick?: number;
 }
 
 type OpenChat =
@@ -249,6 +263,9 @@ function InboxRow({
                 {row.group?.kind === 'team' ? 'Equipo' : 'Grupo'}
               </span>
             )}
+            {row.incoming && (
+              <span className="shrink-0 text-[10px] font-semibold text-indigo-600">Aceptar chat</span>
+            )}
             {row.waiting && (
               <span className="shrink-0 text-[10px] font-semibold text-amber-600">Esperando</span>
             )}
@@ -356,12 +373,15 @@ function Face({
 
 export const ChatTab: React.FC<ChatTabProps> = ({
   myId,
+  myAvatar: accountAvatar,
+  myName: accountName,
   friends,
   startWith,
   pending = [],
   acceptCount,
   onOpened,
   onOpenMini,
+  onOpenFullProfile,
   onAcceptRequest,
   onRejectRequest,
   onSendRequest,
@@ -370,10 +390,19 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   onAddStory,
   storyRefreshTick = 0,
   pageActive = true,
+  openFriendsTick = 0,
+  openFriendsFilter = 'all',
+  onSeeRequests,
+  homeTick = 0,
 }) => {
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [coach, setCoach] = useState<FeedAuthor | null>(null);
   const [athletes, setAthletes] = useState<FeedAuthor[]>([]);
+  const [myAvatar, setMyAvatar] = useState<string | null>(accountAvatar ?? null);
+
+  useEffect(() => {
+    if (accountAvatar) setMyAvatar(accountAvatar);
+  }, [accountAvatar]);
   const [open, setOpen] = useState<OpenChat | null>(null);
   const [messages, setMessages] = useState<ChatLine[]>([]);
   const [draft, setDraft] = useState('');
@@ -382,6 +411,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   const [searchQ, setSearchQ] = useState('');
   const [searchHits, setSearchHits] = useState<FeedAuthor[]>([]);
   const [waitingPeer, setWaitingPeer] = useState(false);
+  const [incomingPeer, setIncomingPeer] = useState(false);
+  const [incomingRequestId, setIncomingRequestId] = useState<string | null>(null);
+  const [incomingBusy, setIncomingBusy] = useState(false);
   const [prefs, setPrefs] = useState<Record<string, ChatPref>>(() => readPrefs(myId));
   const [peerOnline, setPeerOnline] = useState(false);
   const [typingLabel, setTypingLabel] = useState('');
@@ -397,7 +429,19 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   const [actionRow, setActionRow] = useState<ChatThread | null>(null);
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [peoplePage, setPeoplePage] = useState<'activity' | 'requests' | 'friends'>('activity');
+  const [friendsFilter, setFriendsFilter] = useState<'all' | 'following' | 'followers'>('all');
+  const [addFriendsOpen, setAddFriendsOpen] = useState(false);
   const heartBadge = Math.max(acceptCount ?? 0, pending.length);
+  const goPeople = useCallback((page: 'activity' | 'requests' | 'friends') => {
+    setPeoplePage(page);
+    setPeopleOpen(true);
+    if (page === 'requests') onSeeRequests?.();
+  }, [onSeeRequests]);
+
+  useEffect(() => {
+    if (peopleOpen && peoplePage === 'requests') onSeeRequests?.();
+  }, [peopleOpen, peoplePage, onSeeRequests]);
+
   const bottomRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const lastTyped = useRef(0);
@@ -407,8 +451,31 @@ export const ChatTab: React.FC<ChatTabProps> = ({
     return () => onConversationChange?.(false);
   }, [open, onConversationChange]);
 
+  const lastHomeTick = useRef(homeTick);
+  useEffect(() => {
+    if (lastHomeTick.current === homeTick) return;
+    lastHomeTick.current = homeTick;
+    setOpen(null);
+    setPeopleOpen(false);
+    setPeoplePage('activity');
+    setAddFriendsOpen(false);
+    setSearchOpen(false);
+    setInboxQ('');
+    setGroupPanel(false);
+    setActionRow(null);
+    setAttach(null);
+  }, [homeTick]);
+
+  useEffect(() => {
+    if (!openFriendsTick) return;
+    setOpen(null);
+    setPeopleOpen(true);
+    setPeoplePage('friends');
+    setFriendsFilter(openFriendsFilter === 'followers' ? 'followers' : 'following');
+  }, [openFriendsTick, openFriendsFilter]);
+
   useEscapeClose(!!actionRow, () => setActionRow(null));
-  useEscapeClose(peopleOpen && !open && !searchOpen, () => {
+  useEscapeClose(peopleOpen && !open && !searchOpen && !addFriendsOpen, () => {
     if (peoplePage === 'requests' || peoplePage === 'friends') setPeoplePage('activity');
     else setPeopleOpen(false);
   });
@@ -454,6 +521,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   }, [friends, coach, athletes, myId]);
 
   const friendIds = useMemo(() => new Set(people.map(p => p.id)), [people]);
+  const panelFriendIds = useMemo(() => friends.map(f => f.id), [friends]);
 
   useEffect(() => {
     const q = searchQ.trim();
@@ -485,6 +553,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
       setThreads(inbox.threads);
       setCoach(me?.coach ?? null);
       setAthletes(me?.athletes ?? []);
+      setMyAvatar(me?.avatar || accountAvatar || null);
     } catch {
       /* se puede reintentar al volver a la pestaña */
     } finally {
@@ -517,10 +586,14 @@ export const ChatTab: React.FC<ChatTabProps> = ({
       const res = await fetchChatMessages(author.id);
       setMessages(res.messages);
       setWaitingPeer(!!res.waiting);
+      setIncomingPeer(!!res.incoming);
+      setIncomingRequestId(res.requestId || null);
       setPeerOnline(!!res.online || !!author.online);
     } catch {
       setMessages([]);
       setWaitingPeer(false);
+      setIncomingPeer(false);
+      setIncomingRequestId(null);
     }
   }, []);
 
@@ -577,6 +650,8 @@ export const ChatTab: React.FC<ChatTabProps> = ({
           const res = await fetchChatMessages(open.peer.id);
           setMessages(res.messages);
           setWaitingPeer(!!res.waiting);
+          setIncomingPeer(!!res.incoming);
+          setIncomingRequestId(res.requestId || null);
           setPeerOnline(!!res.online);
         } else {
           const res = await fetchGroupMessages(open.group.id);
@@ -593,6 +668,10 @@ export const ChatTab: React.FC<ChatTabProps> = ({
     return subscribeChatRealtime(event => {
       if (event.type === 'chat_message') {
         const line = event.message;
+        if (!line?.id) {
+          void loadInbox();
+          return;
+        }
         setMessages(prev => {
           if (!open) return prev;
           const matches =
@@ -632,6 +711,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
           kind,
           isCoach: t.isCoach || (!!coach && t.peer?.id === coach.id),
           waiting: !!t.waiting,
+          incoming: !!t.incoming,
           pinned: !!pref.pinned,
           muted: !!pref.muted,
         };
@@ -671,7 +751,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
 
   const send = useCallback(async () => {
     const text = draft.trim();
-    if (!open || sending) return;
+    if (!open || sending || incomingPeer) return;
     if (!text && !attach) return;
     setSending(true);
     setDraft('');
@@ -680,6 +760,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
     try {
       if (open.kind === 'dm') {
         const created = await sendChatMessage(open.peer.id, text, file);
+        if (!created?.id) throw new Error('El mensaje no se ha enviado');
         setWaitingPeer(!!created.requested);
         setMessages(prev => {
           const withoutPreview = prev.filter(line => line.id !== 'preview');
@@ -687,16 +768,50 @@ export const ChatTab: React.FC<ChatTabProps> = ({
         });
       } else {
         const created = await sendGroupMessage(open.group.id, text, file);
+        if (!created?.id) throw new Error('El mensaje no se ha enviado');
         setMessages(prev => [...prev, created]);
       }
       void loadInbox();
-    } catch {
+    } catch (e) {
       setDraft(text);
       setAttach(file);
+      showAppError('No se ha podido enviar el mensaje.', e);
     } finally {
       setSending(false);
     }
-  }, [draft, attach, open, sending, loadInbox]);
+  }, [draft, attach, open, sending, incomingPeer, loadInbox]);
+
+  const answerIncoming = useCallback(async (decision: 'accept' | 'reject') => {
+    if (!incomingRequestId || incomingBusy) return;
+    setIncomingBusy(true);
+    try {
+      const res = await answerChatRequest(incomingRequestId, decision);
+      if (decision === 'reject') {
+        setOpen(null);
+        setMessages([]);
+        setIncomingPeer(false);
+        setIncomingRequestId(null);
+        void loadInbox();
+        return;
+      }
+      setIncomingPeer(false);
+      setIncomingRequestId(null);
+      if (open?.kind === 'dm') {
+        const next = await fetchChatMessages(open.peer.id);
+        setMessages(next.messages);
+        setWaitingPeer(!!next.waiting);
+        setIncomingPeer(!!next.incoming);
+        setIncomingRequestId(next.requestId || null);
+        setPeerOnline(!!next.online);
+      }
+      void loadInbox();
+      void res;
+    } catch (e) {
+      showAppError('No se ha podido responder a la solicitud.', e);
+    } finally {
+      setIncomingBusy(false);
+    }
+  }, [incomingBusy, incomingRequestId, loadInbox, open]);
 
 
   const renameOpenGroup = async () => {
@@ -852,7 +967,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({
           ? peerOnline
             ? 'Tu entrenador · en línea'
             : 'Tu entrenador'
-          : waitingPeer
+          : incomingPeer
+            ? 'Acepta para chatear'
+            : waitingPeer
             ? 'Esperando a que acepte'
             : peerOnline
               ? 'En línea'
@@ -1016,10 +1133,39 @@ export const ChatTab: React.FC<ChatTabProps> = ({
           </div>
         )}
 
+        {open.kind === 'dm' && incomingPeer && (
+          <div className="border-b border-indigo-100 bg-indigo-50 px-4 py-3 dark:border-indigo-900/50 dark:bg-indigo-950/40">
+            <p className="text-[13px] font-semibold text-slate-800 dark:text-slate-100">
+              {open.peer.name} quiere chatear
+            </p>
+            <p className="mt-0.5 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+              No le sigues. Si aceptas, verá si lees el chat y podrás responder. Si lo rechazas, desaparece para los dos.
+            </p>
+            <div className="mt-2.5 flex gap-2">
+              <button
+                type="button"
+                disabled={incomingBusy}
+                onClick={() => void answerIncoming('reject')}
+                className="flex-1 rounded-full bg-white px-3 py-2 text-[12px] font-semibold text-slate-600 shadow-sm dark:bg-slate-900 dark:text-slate-300"
+              >
+                {incomingBusy ? '…' : 'Rechazar'}
+              </button>
+              <button
+                type="button"
+                disabled={incomingBusy}
+                onClick={() => void answerIncoming('accept')}
+                className="flex-1 rounded-full bg-indigo-600 px-3 py-2 text-[12px] font-semibold text-white"
+              >
+                {incomingBusy ? '…' : 'Aceptar chat'}
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="flex-1 space-y-2 overflow-y-auto bg-slate-50/80 px-3 py-4 dark:bg-slate-950/40">
           {open.kind === 'dm' && waitingPeer && (
             <p className="mx-3 rounded-2xl bg-amber-50 px-4 py-3 text-center text-xs font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-              Aún no os seguís los dos. Le ha llegado una solicitud de chat. Hasta que acepte, no podéis hablar.
+              Le ha llegado el mensaje. Como no te sigue, tiene que aceptar para hablar. Tú no le sigues por escribirle.
             </p>
           )}
           {messages.length === 0 && (
@@ -1034,10 +1180,17 @@ export const ChatTab: React.FC<ChatTabProps> = ({
                     ? 'Cuando acepte verá este mensaje.'
                     : friends.some(f => f.id === open.peer.id)
                       ? 'Escribe el primer mensaje.'
-                      : 'Escribe el primer mensaje. Si no te sigue, se le mandará una solicitud.'}
+                      : 'Escribe. Si ya te sigue, habla enseguida. Si no, le llega una solicitud para aceptar el chat.'}
             </p>
           )}
-          {messages.map(line => (
+          {messages.filter(line => line?.id).map(line => (
+            line.storyReply ? (
+              <StoryReplyCard
+                key={line.id}
+                line={line}
+                authorName={!line.mine && open.kind === 'group' ? line.author?.name : undefined}
+              />
+            ) : (
             <div key={line.id} className={cn('flex', line.mine ? 'justify-end' : 'justify-start')}>
               <div
                 className={cn(
@@ -1051,43 +1204,6 @@ export const ChatTab: React.FC<ChatTabProps> = ({
                   <span className="mb-0.5 block text-[10px] font-black uppercase tracking-wider text-indigo-500">
                     {line.author.name}
                   </span>
-                )}
-                {line.storyReply?.mediaKey && (
-                  <div className={cn(
-                    'mb-1.5 flex overflow-hidden rounded-xl',
-                    line.mine ? 'bg-black/20' : 'bg-slate-100 dark:bg-slate-900'
-                  )}>
-                    {line.storyReply.mediaType === 'video' ? (
-                      <video
-                        src={mediaUrl(line.storyReply.mediaKey)}
-                        muted
-                        playsInline
-                        className="h-16 w-12 shrink-0 object-cover"
-                      />
-                    ) : (
-                      <img
-                        src={mediaUrl(line.storyReply.mediaKey)}
-                        alt=""
-                        className="h-16 w-12 shrink-0 object-cover"
-                      />
-                    )}
-                    <span className="min-w-0 px-2 py-1.5">
-                      <span className={cn(
-                        'block text-[10px] font-black uppercase tracking-wider',
-                        line.mine ? 'text-white/70' : 'text-indigo-500'
-                      )}>
-                        {line.mine ? 'Respondiste a la historia' : 'Respondió a tu historia'}
-                      </span>
-                      {line.storyReply.caption && (
-                        <span className={cn(
-                          'mt-0.5 block truncate text-[11px]',
-                          line.mine ? 'text-white/80' : 'text-slate-500'
-                        )}>
-                          {line.storyReply.caption}
-                        </span>
-                      )}
-                    </span>
-                  </div>
                 )}
                 {line.mediaKey && line.mediaType === 'image' && (
                   <a href={mediaUrl(line.mediaKey)} target="_blank" rel="noreferrer" className="mb-1 block">
@@ -1118,6 +1234,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
                 </span>
               </div>
             </div>
+            )
           ))}
           {typingLabel && (
             <p className="px-3 text-[11px] font-bold italic text-slate-400">{typingLabel}</p>
@@ -1154,7 +1271,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
           />
           <button
             type="button"
-            disabled={waitingPeer}
+            disabled={waitingPeer || incomingPeer}
             onClick={() => fileRef.current?.click()}
             className="flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 text-slate-500 disabled:opacity-30 dark:border-slate-700"
             aria-label="Foto o vídeo · 24 h"
@@ -1171,11 +1288,14 @@ export const ChatTab: React.FC<ChatTabProps> = ({
             placeholder={
               talkingToCoach
                 ? 'Mensaje para tu entrenador…'
-                : waitingPeer
+                : incomingPeer
+                  ? 'Acepta el chat para responder'
+                  : waitingPeer
                   ? 'Puedes actualizar la solicitud…'
                   : 'Mensaje…'
             }
-            className="max-h-28 flex-1 resize-none rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 focus:border-indigo-400 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            disabled={incomingPeer}
+            className="max-h-28 flex-1 resize-none rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-900 focus:border-indigo-400 focus:outline-none disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
             onKeyDown={e => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -1186,7 +1306,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
           <motion.button
             type="submit"
             whileTap={{ scale: 0.92 }}
-            disabled={(!draft.trim() && !attach) || sending}
+            disabled={incomingPeer || (!draft.trim() && !attach) || sending}
             className="flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-600 text-white disabled:opacity-40"
             aria-label="Enviar"
           >
@@ -1233,25 +1353,31 @@ export const ChatTab: React.FC<ChatTabProps> = ({
           >
             <ArrowLeft size={18} />
             <span className="text-sm font-semibold text-slate-800 dark:text-slate-100">
-              {peoplePage === 'requests' ? 'Solicitudes' : peoplePage === 'friends' ? 'Amigos' : 'Actividad'}
+              {peoplePage === 'requests'
+                ? 'Solicitudes'
+                : peoplePage === 'friends'
+                  ? friendsFilter === 'followers'
+                    ? 'Seguidores'
+                    : 'Seguidos'
+                  : 'Actividad'}
             </span>
           </button>
           {peoplePage === 'activity' && (
             <button
               type="button"
-              onClick={() => setPeoplePage('friends')}
-              className="ml-auto inline-flex min-h-11 items-center text-sm font-semibold text-indigo-600 dark:text-indigo-400"
+              onClick={() => setAddFriendsOpen(true)}
+              className="app-icon-hit ml-auto rounded-full text-slate-900 dark:text-slate-100"
+              aria-label="Añadir amigos"
             >
-              Amigos
-              {friends.length > 0 && (
-                <span className="ml-1 tabular-nums text-slate-400">{friends.length}</span>
-              )}
+              <UserPlus size={22} strokeWidth={2} />
             </button>
           )}
         </div>
       ) : (
         <StoriesRail
           myId={myId}
+          myAvatar={myAvatar}
+          myName={accountName}
           refreshTick={storyRefreshTick}
           pageActive={pageActive}
           onAddStory={() => onAddStory?.()}
@@ -1268,11 +1394,8 @@ export const ChatTab: React.FC<ChatTabProps> = ({
           trailing={
             <button
               type="button"
-              onClick={() => {
-                setPeoplePage('activity');
-                setPeopleOpen(true);
-              }}
-              className="app-icon-hit relative z-30 min-h-12 min-w-12 rounded-full text-slate-900 dark:text-slate-100"
+              onClick={() => goPeople('activity')}
+              className="app-icon-hit relative z-30 min-h-12 min-w-12 overflow-visible rounded-full text-slate-900 dark:text-slate-100"
               aria-label={heartBadge > 0 ? `Actividad, ${heartBadge} por aceptar` : 'Actividad'}
             >
               <Heart size={22} strokeWidth={2} />
@@ -1290,13 +1413,18 @@ export const ChatTab: React.FC<ChatTabProps> = ({
           myId={myId}
           pending={pending}
           friends={friends}
-          friendIds={friends.map(f => f.id)}
+          friendIds={panelFriendIds}
           page={peoplePage}
-          onPageChange={setPeoplePage}
+          friendsFilter={friendsFilter}
+          onPageChange={page => {
+            setPeoplePage(page);
+            if (page === 'requests') onSeeRequests?.();
+          }}
           onAccept={id => onAcceptRequest?.(id)}
           onReject={id => onRejectRequest?.(id)}
           onSendRequest={onSendRequest}
           onOpenPerson={person => onOpenMini?.({ id: person.id, name: person.name, avatar: person.avatar ?? null })}
+          onHoldPerson={person => onOpenFullProfile?.({ id: person.id, name: person.name, avatar: person.avatar ?? null })}
           busyId={requestBusyId}
           refreshTick={storyRefreshTick}
         />
@@ -1421,6 +1549,13 @@ export const ChatTab: React.FC<ChatTabProps> = ({
         </div>
       )}
     </GlassModal>
+    <AddFriendsModal
+      open={addFriendsOpen}
+      onClose={() => setAddFriendsOpen(false)}
+      myId={myId}
+      onSendRequest={onSendRequest}
+      onHoldPerson={person => onOpenFullProfile?.({ id: person.id, name: person.name, avatar: person.avatar ?? null })}
+    />
     </>
   );
 };
