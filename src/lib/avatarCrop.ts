@@ -1,89 +1,41 @@
-/** Recuadro circular de recorte (vista previa y geometría). */
-export const AVATAR_CROP_BOX = 280;
-
-/** Escala 1 = la foto cubre el círculo entero (como Instagram). */
-export function coverFit(
-  naturalW: number,
-  naturalH: number,
-  scale: number,
-  pos: { x: number; y: number },
-  box = AVATAR_CROP_BOX
-) {
-  const cover = Math.max(box / Math.max(naturalW, 1), box / Math.max(naturalH, 1));
-  const effectiveW = naturalW * cover * scale;
-  const effectiveH = naturalH * cover * scale;
-  const drawX = box / 2 + pos.x - effectiveW / 2;
-  const drawY = box / 2 + pos.y - effectiveH / 2;
-  return { effectiveW, effectiveH, drawX, drawY, cover };
-}
-
-export function clampCoverPos(
-  naturalW: number,
-  naturalH: number,
-  scale: number,
-  pos: { x: number; y: number },
-  box = AVATAR_CROP_BOX
-): { x: number; y: number } {
-  if (naturalW < 1 || naturalH < 1) return pos;
-  const { effectiveW, effectiveH } = coverFit(naturalW, naturalH, scale, pos, box);
-  const maxX = Math.max(0, effectiveW / 2 - box / 2);
-  const maxY = Math.max(0, effectiveH / 2 - box / 2);
-  return {
-    x: Math.max(-maxX, Math.min(maxX, pos.x)),
-    y: Math.max(-maxY, Math.min(maxY, pos.y)),
-  };
-}
-
-export const AVATAR_CROP_MIN_SCALE = 1;
+/** Igual que el encuadre de la historia: caber dentro + blur detrás. */
+export const AVATAR_CROP_MIN_SCALE = 0.35;
 export const AVATAR_CROP_MAX_SCALE = 4;
 
-/** JPEG compacto para guardar en perfil / registro. */
-export function exportCoverCrop(
+/** JPEG del recuadro: fondo desenfocado y la foto encima, como en historias. */
+export function exportFramedAvatar(
   img: HTMLImageElement,
   scale: number,
   pos: { x: number; y: number },
-  outputSize = 320
+  box: number,
+  outputSize = 512
 ): string {
-  const { drawX, drawY, effectiveW, effectiveH } = coverFit(
-    img.naturalWidth,
-    img.naturalHeight,
-    scale,
-    pos
-  );
-  const work = document.createElement('canvas');
-  work.width = AVATAR_CROP_BOX;
-  work.height = AVATAR_CROP_BOX;
-  const wctx = work.getContext('2d');
-  if (!wctx) return '';
-  wctx.fillStyle = '#0f172a';
-  wctx.fillRect(0, 0, AVATAR_CROP_BOX, AVATAR_CROP_BOX);
-  wctx.drawImage(
-    img,
-    0,
-    0,
-    img.naturalWidth,
-    img.naturalHeight,
-    drawX,
-    drawY,
-    effectiveW,
-    effectiveH
-  );
-
-  const out = document.createElement('canvas');
-  out.width = outputSize;
-  out.height = outputSize;
-  const ctx = out.getContext('2d');
+  const nw = Math.max(1, img.naturalWidth);
+  const nh = Math.max(1, img.naturalHeight);
+  const view = Math.max(80, box);
+  const canvas = document.createElement('canvas');
+  canvas.width = outputSize;
+  canvas.height = outputSize;
+  const ctx = canvas.getContext('2d');
   if (!ctx) return '';
-  ctx.fillStyle = '#0f172a';
-  ctx.fillRect(0, 0, outputSize, outputSize);
-  ctx.drawImage(work, 0, 0, AVATAR_CROP_BOX, AVATAR_CROP_BOX, 0, 0, outputSize, outputSize);
-  return out.toDataURL('image/jpeg', 0.84);
-}
 
-export function touchDistance(a: { clientX: number; clientY: number }, b: { clientX: number; clientY: number }) {
-  const dx = a.clientX - b.clientX;
-  const dy = a.clientY - b.clientY;
-  return Math.sqrt(dx * dx + dy * dy);
+  const cover = Math.max(outputSize / nw, outputSize / nh);
+  ctx.filter = 'blur(36px)';
+  ctx.drawImage(img, (outputSize - nw * cover) / 2, (outputSize - nh * cover) / 2, nw * cover, nh * cover);
+  ctx.filter = 'none';
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.fillRect(0, 0, outputSize, outputSize);
+
+  const fit = Math.min(view / nw, view / nh);
+  const ratio = outputSize / view;
+  ctx.save();
+  ctx.translate(outputSize / 2 + pos.x * ratio, outputSize / 2 + pos.y * ratio);
+  ctx.scale(scale, scale);
+  const dw = nw * fit * ratio;
+  const dh = nh * fit * ratio;
+  ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+  ctx.restore();
+  return canvas.toDataURL('image/jpeg', 0.9);
 }
 
 /** Baja fotos enormes antes de recortar para que el gesto no vaya a tirones. */

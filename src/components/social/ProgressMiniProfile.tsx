@@ -1,17 +1,33 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Camera, Settings } from 'lucide-react';
 import { Avatar } from '@/src/components/ui/Avatar';
-import { AvatarCropModal } from '@/src/components/AvatarCropModal';
+import { StoryCamera } from '@/src/components/social/StoryCamera';
 import { fetchProfile, saveBio } from '@/src/lib/feedApi';
-import { downscaleForCrop } from '@/src/lib/avatarCrop';
+import { primeStoryCamera } from '@/src/pwa/mediaAccess';
 import type { User } from '@/src/types';
 
-export function ProfileStat({ value, label }: { value: number; label: string }) {
-  return (
-    <div className="min-w-0 text-center">
+export function ProfileStat({
+  value,
+  label,
+  onClick,
+}: {
+  value: number;
+  label: string;
+  onClick?: () => void;
+}) {
+  const body = (
+    <>
       <p className="text-[16px] font-semibold leading-none text-slate-900 dark:text-slate-100">{value}</p>
       <p className="mt-1 truncate text-[11px] text-slate-500">{label}</p>
-    </div>
+    </>
+  );
+  if (!onClick) {
+    return <div className="min-w-0 text-center">{body}</div>;
+  }
+  return (
+    <button type="button" onClick={onClick} className="min-w-0 text-center">
+      {body}
+    </button>
   );
 }
 
@@ -25,6 +41,9 @@ interface InstagramCoverProps {
   bio: string;
   onAvatarClick?: () => void;
   avatarHint?: boolean;
+  onFriendsClick?: () => void;
+  onFollowersClick?: () => void;
+  onFollowingClick?: () => void;
 }
 
 export function InstagramCover({
@@ -37,6 +56,9 @@ export function InstagramCover({
   bio,
   onAvatarClick,
   avatarHint,
+  onFriendsClick,
+  onFollowersClick,
+  onFollowingClick,
 }: InstagramCoverProps) {
   const photo = (
     <span className="relative block">
@@ -61,8 +83,8 @@ export function InstagramCover({
         )}
         <div className="flex min-w-0 flex-1 justify-around">
           <ProfileStat value={marcas} label="marcas" />
-          <ProfileStat value={followers} label="seguidores" />
-          <ProfileStat value={following} label="seguidos" />
+          <ProfileStat value={followers} label="seguidores" onClick={onFollowersClick ?? onFriendsClick} />
+          <ProfileStat value={following} label="seguidos" onClick={onFollowingClick ?? onFriendsClick} />
         </div>
       </div>
       <div className="mt-3">
@@ -82,6 +104,10 @@ interface ProgressMiniProfileProps {
   marcaCount?: number;
   onOpenSettings?: () => void;
   onUpdateUser?: (updates: Partial<User>) => void;
+  onOpenFriends?: () => void;
+  onOpenFollowers?: () => void;
+  onOpenFollowing?: () => void;
+  refreshTick?: number;
   aside?: React.ReactNode;
 }
 
@@ -91,9 +117,13 @@ export function ProgressMiniProfile({
   marcaCount = 0,
   onOpenSettings,
   onUpdateUser,
+  onOpenFriends,
+  onOpenFollowers,
+  onOpenFollowing,
+  refreshTick = 0,
   aside,
 }: ProgressMiniProfileProps) {
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [camOpen, setCamOpen] = useState(false);
   const [marcas, setMarcas] = useState(marcaCount);
 
   useEffect(() => {
@@ -105,7 +135,6 @@ export function ProgressMiniProfile({
   const [savedBio, setSavedBio] = useState('');
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [cropImage, setCropImage] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -122,7 +151,7 @@ export function ProgressMiniProfile({
     return () => {
       live = false;
     };
-  }, [user.id]);
+  }, [user.id, refreshTick]);
 
   const commitBio = async () => {
     const next = bio.trim().slice(0, 160);
@@ -165,41 +194,30 @@ export function ProgressMiniProfile({
       </div>
 
       <div className="flex items-center gap-3 max-[360px]:gap-2 sm:gap-5">
-        <button
-          type="button"
-          onClick={() => fileRef.current?.click()}
-          className="relative shrink-0 rounded-full"
-          aria-label="Cambiar foto de perfil"
-        >
-          <Avatar
-            src={user.avatar}
-            name={user.name}
-            className="h-16 w-16 rounded-full ring-2 ring-slate-200/80 dark:ring-slate-700 max-[360px]:h-14 max-[360px]:w-14 sm:h-[84px] sm:w-[84px]"
-          />
-          <span className="absolute bottom-0 right-0 flex h-6 w-6 items-center justify-center rounded-full bg-indigo-600 text-white shadow ring-2 ring-slate-50 dark:ring-slate-950">
-            <Camera size={12} strokeWidth={2.4} />
-          </span>
-        </button>
-        <input
-          ref={fileRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={async e => {
-            const file = e.target.files?.[0];
-            e.target.value = '';
-            if (!file || !file.type.startsWith('image/')) return;
-            try {
-              setCropImage(await downscaleForCrop(file));
-            } catch {
-              /* foto inválida */
-            }
-          }}
-        />
+        <div className="relative shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              void primeStoryCamera('user');
+              setCamOpen(true);
+            }}
+            className="relative rounded-full"
+            aria-label="Cambiar foto de perfil"
+          >
+            <Avatar
+              src={user.avatar}
+              name={user.name}
+              className="h-16 w-16 rounded-full ring-2 ring-slate-200/80 dark:ring-slate-700 max-[360px]:h-14 max-[360px]:w-14 sm:h-[84px] sm:w-[84px]"
+            />
+            <span className="absolute bottom-0 right-0 flex h-6 w-6 items-center justify-center rounded-full bg-indigo-600 text-white shadow ring-2 ring-slate-50 dark:ring-slate-950">
+              <Camera size={12} strokeWidth={2.4} />
+            </span>
+          </button>
+        </div>
         <div className="flex min-w-0 flex-1 justify-around">
           <ProfileStat value={marcas} label="marcas" />
-          <ProfileStat value={followers} label="seguidores" />
-          <ProfileStat value={following} label="seguidos" />
+          <ProfileStat value={followers} label="seguidores" onClick={onOpenFollowers ?? onOpenFriends} />
+          <ProfileStat value={following} label="seguidos" onClick={onOpenFollowing ?? onOpenFriends} />
         </div>
       </div>
 
@@ -240,12 +258,19 @@ export function ProgressMiniProfile({
         )}
       </div>
 
-      <AvatarCropModal
-        image={cropImage}
-        onCancel={() => setCropImage(null)}
-        onConfirm={dataUrl => {
-          onUpdateUser?.({ avatar: dataUrl });
-          setCropImage(null);
+      <StoryCamera
+        open={camOpen}
+        mode="avatar"
+        onClose={() => setCamOpen(false)}
+        onPickImage={async file => {
+          setCamOpen(false);
+          const url = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = () => reject(new Error('No se pudo leer la foto'));
+            reader.readAsDataURL(file);
+          }).catch(() => '');
+          if (url) onUpdateUser?.({ avatar: url });
         }}
       />
     </section>

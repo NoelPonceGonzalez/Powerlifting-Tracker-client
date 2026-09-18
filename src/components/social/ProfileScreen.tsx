@@ -41,16 +41,31 @@ interface ProfileScreenProps {
   onSendFriendRequest?: () => Promise<void> | void;
   onOpenProfile?: (userId: string) => void;
   onOpenChat?: (userId: string) => void;
+  onOpenFriends?: (filter?: 'all' | 'following' | 'followers') => void;
   /** Foto actual de la sesión: así Perfil y Progreso enseñan la misma. */
   liveAvatar?: string | null;
 }
 
-function Stat({ value, label }: { value: number | string; label: string }) {
-  return (
-    <div className="text-center">
+function Stat({
+  value,
+  label,
+  onClick,
+}: {
+  value: number | string;
+  label: string;
+  onClick?: () => void;
+}) {
+  const body = (
+    <>
       <p className="text-lg font-black leading-none text-slate-900 dark:text-slate-100">{value}</p>
       <p className="mt-1 text-[11px] text-slate-400">{label}</p>
-    </div>
+    </>
+  );
+  if (!onClick) return <div className="text-center">{body}</div>;
+  return (
+    <button type="button" onClick={onClick} className="text-center">
+      {body}
+    </button>
   );
 }
 
@@ -61,6 +76,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   onSendFriendRequest,
   onOpenProfile,
   onOpenChat,
+  onOpenFriends,
   liveAvatar,
 }) => {
   const [profile, setProfile] = useState<PublicProfile | null>(null);
@@ -247,8 +263,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           </span>
           <div className="flex flex-1 justify-around">
             <Stat value={profile.trainingMaxes?.length ?? 0} label="Marcas" />
-            <Stat value={profile.followerCount} label="Seguidores" />
-            <Stat value={profile.followingCount} label="Siguiendo" />
+            <Stat value={profile.followerCount} label="Seguidores" onClick={() => onOpenFriends?.('followers')} />
+            <Stat value={profile.followingCount} label="Siguiendo" onClick={() => onOpenFriends?.('following')} />
           </div>
         </div>
 
@@ -372,7 +388,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                     </>
                   )}
                 </>
-              ) : profile.friendshipStatus === 'pending' || requestSent ? (
+              ) : profile.friendshipStatus === 'pending' || profile.friendshipStatus === 'following' || requestSent ? (
                 <span className="flex-1 rounded-xl bg-slate-100 py-2.5 text-center text-xs font-black uppercase tracking-wider text-slate-400 dark:bg-slate-800">
                   Solicitud enviada
                 </span>
@@ -387,7 +403,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                     className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-indigo-600 py-2.5 text-xs font-black uppercase tracking-wider text-white"
                   >
                     <UserPlus size={15} />
-                    Añadir amigo
+                    {profile.friendshipStatus === 'follower' ? 'Enviar solicitud' : 'Añadir amigo'}
                   </button>
                 )
               )}

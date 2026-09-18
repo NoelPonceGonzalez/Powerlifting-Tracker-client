@@ -6,6 +6,7 @@ import {
   UserCheck, 
   UserX, 
   UserMinus,
+  UserPlus,
   Trophy,
   MapPin,
   Clock, 
@@ -41,6 +42,7 @@ import { FriendRequest, Friend, Challenge, GymCheckIn, User, UserSearchResult, C
 import { cn } from '@/src/lib/utils';
 import { apiGet, apiPut } from '@/src/lib/api';
 import { PAGE_ENTER_ITEM, PAGE_ENTER_ROOT, VIEW_TRANSITION } from '@/src/lib/motionPresets';
+import { useLongPress } from '@/src/lib/useLongPress';
 import { usePageEnter } from '@/src/lib/usePageEnter';
 import { equitySummary, suggestBodyWeightScoring } from '@/src/lib/challengeEquity';
 import { GlassModal } from '@/src/components/ui/GlassModal';
@@ -67,15 +69,12 @@ import { InstagramCover } from '@/src/components/social/ProgressMiniProfile';
 import { ChatTab } from '@/src/components/social/ChatTab';
 import { HomeActivitySheet } from '@/src/components/social/HomeActivitySheet';
 import { ProfileScreen } from '@/src/components/social/ProfileScreen';
+import { ProfilePhotoViewer } from '@/src/components/social/ProfilePhotoViewer';
 import { Avatar as FeedAvatar } from '@/src/components/social/MediaPost';
 import { usePullToRefresh } from '@/src/lib/usePullToRefresh';
+import { normalizeSocialTab, type SocialTab } from '@/src/lib/socialTab';
 
-export type SocialTab = 'friends' | 'challenges' | 'checkins' | 'chat';
-
-export function normalizeSocialTab(tab?: string | null): SocialTab {
-  if (tab === 'friends' || tab === 'challenges' || tab === 'checkins' || tab === 'chat') return tab;
-  return 'chat';
-}
+export type { SocialTab };
 
 const TAB_LABELS: Record<SocialTab, string> = {
   friends: 'Amigos',
@@ -91,11 +90,14 @@ interface SocialViewProps {
   challenges: Challenge[];
   checkIns: GymCheckIn[];
   initialTab?: SocialTab;
+  openFriendsFilter?: 'all' | 'following' | 'followers';
   /** Se incrementa desde el dashboard para abrir el modal de check-in en Actividad. */
   openCheckInModalSignal?: number;
   openCreateChallengeSignal?: number;
   onAddStory?: () => void;
   storyRefreshTick?: number;
+  /** Check-ins, torneos y actividad in-app (likes, follows, RMs). */
+  socialRefreshTick?: number;
   checkInIntent?: 'now' | 'later' | null;
   onAccept: (id: string) => void;
   onReject: (id: string) => void;
@@ -138,6 +140,8 @@ interface SocialViewProps {
   socialBackTo?: 'profile' | 'dashboard' | 'chat';
   /** Cada toque de la nav fuerza la pestaña (Social/Torneos). */
   socialNavTick?: number;
+  /** Ha abierto la lista de solicitudes: se quita la marca de la nav. */
+  onSeeRequests?: () => void;
   /** Rutinas del usuario local (para detectar si ya copió la del amigo por nombre). */
   myRoutines?: { id: string; name: string }[];
   /** Ejercicios de la rutina activa: atajo para crear el torneo sobre algo que ya entrenas. */
@@ -698,6 +702,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
   challenges, 
   checkIns,
   initialTab = 'chat',
+  openFriendsFilter = 'all',
   onAccept, 
   onReject,
   onSendFriendRequest,
@@ -718,11 +723,13 @@ export const SocialView: React.FC<SocialViewProps> = ({
   onGoToDashboard,
   socialBackTo = 'dashboard',
   socialNavTick = 0,
+  onSeeRequests,
   onChatConversationChange,
   openCheckInModalSignal = 0,
   openCreateChallengeSignal = 0,
   onAddStory,
   storyRefreshTick = 0,
+  socialRefreshTick = 0,
   checkInIntent = null,
   onPullRefresh,
   pageActive = true,
@@ -757,6 +764,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [openFriendTm, setOpenFriendTm] = useState<{ id?: string; name: string; value: number; mode: string } | null>(null);
   /** Perfil abierto a pantalla completa (amigo, resultado de búsqueda o entrenador). */
   const [viewingProfileId, setViewingProfileId] = useState<string | null>(null);
+  const [photoPerson, setPhotoPerson] = useState<{ id: string; name: string; avatar?: string | null } | null>(null);
   const [friendProfile, setFriendProfile] = useState<{
     name: string;
     avatar: string;
@@ -769,7 +777,10 @@ export const SocialView: React.FC<SocialViewProps> = ({
     athleteCount?: number;
     trainingMaxes: { id?: string; name: string; value: number; mode: string }[];
     trainingMaxesAll?: { name: string; mode: string; linkedExercise?: string }[];
+    friendshipStatus?: string;
+    canSendRequest?: boolean;
   } | null>(null);
+  const [friendRequestBusy, setFriendRequestBusy] = useState(false);
   const [copyingFriendRoutine, setCopyingFriendRoutine] = useState(false);
   const [friendActionError, setFriendActionError] = useState<string | null>(null);
   const [gymName, setGymName] = useState('');
@@ -789,7 +800,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
   }, [onPullRefresh]);
   const { pull: pagePull, busy: pageRefreshing } = usePullToRefresh(
     socialRootRef,
-    !chatOpen && !viewingProfileId,
+    !chatOpen && !viewingProfileId && !photoPerson,
     runPullRefresh
   );
 
@@ -826,7 +837,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [joinError, setJoinError] = useState('');
   const [joinSubmitting, setJoinSubmitting] = useState(false);
 
-  const pendingRequests = requests.filter(r => r.status === 'pending');
+  const pendingRequests = requests.filter(r => r.status === 'pending' && !r.needsFollowBack);
 
   /** Quién te ha pedido ser su entrenador: se acepta o se rechaza desde Actividad. */
   const [coachRequests, setCoachRequests] = useState<CoachRequest[]>([]);
@@ -838,6 +849,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [chatPeerId, setChatPeerId] = useState<string | null>(null);
   const [showHomeActivity, setShowHomeActivity] = useState(false);
   const [friendsFromChat, setFriendsFromChat] = useState(false);
+  const [friendsPageTick, setFriendsPageTick] = useState(0);
+  const [friendsFilter, setFriendsFilter] = useState<'all' | 'following' | 'followers'>('all');
   const activityBadge = pendingRequests.length + coachRequests.length + groupInvites.length + chatAsks.length;
   const markHomeNotifsRead = useCallback(() => {}, []);
 
@@ -909,9 +922,16 @@ export const SocialView: React.FC<SocialViewProps> = ({
 
   /** Nav de abajo: Social/Torneos siempre gana, aunque hayas abierto Amigos o Gym por dentro. */
   useEffect(() => {
-    setActiveTab(normalizeSocialTab(initialTab));
+    const tab = normalizeSocialTab(initialTab);
+    if (tab === 'friends') {
+      setActiveTab('chat');
+      setFriendsFilter(openFriendsFilter === 'followers' ? 'followers' : 'following');
+      setFriendsPageTick(t => t + 1);
+    } else {
+      setActiveTab(tab);
+    }
     prevInitialTabPropRef.current = initialTab;
-  }, [initialTab, socialNavTick]);
+  }, [initialTab, openFriendsFilter, socialNavTick]);
 
   /** Al cambiar de pestaña por la barra, se cierran hojas sueltas. El check-in pedido en el mismo tick se reabre después. */
   const lastNavTick = useRef(socialNavTick);
@@ -930,6 +950,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
     setViewingProfileId(null);
     setShowCheckInModal(false);
     setEditingCheckIn(null);
+    setChatPeerId(null);
+    setChatOpen(false);
   }, [socialNavTick]);
 
   useEscapeClose(!!unfriendConfirmFriend, () => setUnfriendConfirmFriend(null));
@@ -1017,10 +1039,9 @@ export const SocialView: React.FC<SocialViewProps> = ({
     return () => clearTimeout(t);
   }, [search]);
 
-  const friendIdSet = useMemo(() => new Set(friendsList.map(f => f.id)), [friendsList]);
   const searchResultsVisible = useMemo(
-    () => searchResults.filter(r => r.id !== user.id && !friendIdSet.has(r.id)),
-    [searchResults, friendIdSet, user.id]
+    () => searchResults.filter(r => r.id !== user.id),
+    [searchResults, user.id]
   );
 
   const now = new Date();
@@ -1134,6 +1155,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
         postCount: cover?.postCount ?? 0,
         followerCount: cover?.followerCount ?? 0,
         followingCount: cover?.followingCount ?? 0,
+        friendshipStatus: cover?.friendshipStatus,
+        canSendRequest: cover?.canSendRequest,
       });
     } catch {
       setFriendRoutine(null);
@@ -1149,6 +1172,17 @@ export const SocialView: React.FC<SocialViewProps> = ({
     setFriendProfile(null);
     setOpenFriendTm(null);
   }, []);
+
+  const goToFriendsPage = useCallback((filter: 'all' | 'following' | 'followers' = 'following') => {
+    closeFriendSheet();
+    setViewingProfileId(null);
+    setShowHomeActivity(false);
+    setChatPeerId(null);
+    setFriendsFromChat(false);
+    setFriendsFilter(filter === 'followers' ? 'followers' : 'following');
+    setActiveTab('chat');
+    setFriendsPageTick(t => t + 1);
+  }, [closeFriendSheet]);
 
   const handleCopyAndActivate = useCallback(async () => {
     if (!friendRoutine || !onCopyFriendRoutine) return;
@@ -1414,26 +1448,21 @@ export const SocialView: React.FC<SocialViewProps> = ({
               {searchLoading && searchResultsVisible.length === 0 ? (
                 <p className="px-2 py-3 text-xs text-slate-400">Buscando…</p>
               ) : searchResultsVisible.length === 0 ? (
-                <p className="px-2 py-3 text-xs text-slate-400">Nadie con ese nombre. Tus amigos no salen aquí.</p>
+                <p className="px-2 py-3 text-xs text-slate-400">Nadie con ese nombre.</p>
               ) : (
                 searchResultsVisible.map(u => (
-                  <button
+                  <SearchHitRow
                     key={u.id}
-                    type="button"
-                    onClick={() => {
+                    user={u}
+                    onOpen={() => {
                       void openFriendModal({ id: u.id, name: u.name, avatar: u.avatar });
                       setSearch('');
                     }}
-                    className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left transition-colors hover:bg-slate-50 dark:hover:bg-slate-800"
-                  >
-                    <FeedAvatar name={u.name} avatar={u.avatar ?? null} size={36} />
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-bold text-slate-800 dark:text-slate-100">{u.name}</span>
-                      <span className="block text-[11px] text-slate-400">
-                        {u.friendshipStatus === 'pending' ? 'Solicitud enviada' : 'Ver perfil'}
-                      </span>
-                    </span>
-                  </button>
+                    onHold={() => {
+                      setSearch('');
+                      setPhotoPerson({ id: u.id, name: u.name, avatar: u.avatar });
+                    }}
+                  />
                 ))
               )}
             </motion.div>
@@ -1446,12 +1475,15 @@ export const SocialView: React.FC<SocialViewProps> = ({
         <div className={activeTab === 'chat' ? undefined : 'hidden'} aria-hidden={activeTab !== 'chat'}>
             <ChatTab
               myId={user.id}
+              myAvatar={user.avatar}
+              myName={user.name}
               friends={friendsList}
               startWith={chatPeerId}
               pending={pendingRequests}
               acceptCount={activityBadge}
               onOpened={() => setChatPeerId(null)}
               onOpenMini={person => openFriendModal({ id: person.id, name: person.name, avatar: person.avatar ?? undefined })}
+              onOpenFullProfile={person => setPhotoPerson(person)}
               onAcceptRequest={id => void handleRequestAction(id, onAccept)}
               onRejectRequest={id => void handleRequestAction(id, onReject)}
               onSendRequest={onSendFriendRequest}
@@ -1461,8 +1493,12 @@ export const SocialView: React.FC<SocialViewProps> = ({
                 onChatConversationChange?.(open);
               }}
               onAddStory={onAddStory}
-              storyRefreshTick={storyRefreshTick}
+              storyRefreshTick={storyRefreshTick + socialRefreshTick + socialNavTick}
+              onSeeRequests={onSeeRequests}
               pageActive={pageActive && activeTab === 'chat'}
+              openFriendsTick={friendsPageTick}
+              openFriendsFilter={friendsFilter}
+              homeTick={socialNavTick}
             />
         </div>
 
@@ -1502,9 +1538,22 @@ export const SocialView: React.FC<SocialViewProps> = ({
                         <Avatar src={req.avatar} name={req.name} className="w-12 h-12 rounded-full border-2 border-slate-100 dark:border-slate-700" />
                         <div>
                           <h3 className="font-bold text-slate-900 dark:text-slate-100">{req.name}</h3>
-                          <p className="text-xs text-slate-500">Quiere ser tu amigo</p>
+                          <p className="text-xs text-slate-500">
+                            {req.needsFollowBack ? 'Te sigue · envíale solicitud para ser amigos' : 'Quiere ser tu amigo'}
+                          </p>
                         </div>
                       </div>
+                      {req.needsFollowBack ? (
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          disabled={!onSendFriendRequest || !req.userId || acceptRejectLoadingId === req.userId}
+                          onClick={() => req.userId && onSendFriendRequest && void handleRequestAction(req.userId, onSendFriendRequest)}
+                          className="rounded-full px-3"
+                        >
+                          {acceptRejectLoadingId === req.userId ? <Loader2 size={16} className="animate-spin" /> : 'Enviar solicitud'}
+                        </Button>
+                      ) : (
                       <div className="flex gap-2">
                         <Button 
                           variant="outline" 
@@ -1525,6 +1574,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                           {acceptRejectLoadingId === req.id ? <Loader2 size={18} className="animate-spin" /> : <UserCheck size={18} />}
                         </Button>
                       </div>
+                      )}
                     </Card>
                   ))}
                   {chatAsks.map(ask => (
@@ -2796,13 +2846,19 @@ export const SocialView: React.FC<SocialViewProps> = ({
       {viewingProfileId && viewingProfileId !== user.id && typeof document !== 'undefined' && createPortal(
         <motion.div
           key="profile-screen"
-          initial={{ opacity: 0, x: 24 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-          className="fixed inset-0 overflow-y-auto bg-slate-50 dark:bg-slate-950"
-          style={{ zIndex: 99000 }}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="fixed inset-0 z-[99000] flex items-end justify-center bg-slate-900/40 p-0 backdrop-blur-sm sm:items-center sm:p-5"
+          onClick={() => setViewingProfileId(null)}
         >
-          <div className="app-page mx-auto max-w-2xl">
+          <motion.div
+            initial={{ opacity: 0, y: 28, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+            onClick={e => e.stopPropagation()}
+            className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-t-[28px] bg-slate-50 shadow-2xl sm:rounded-[28px] dark:bg-slate-950"
+          >
+            <div className="app-page mx-auto max-w-2xl">
             <ProfileScreen
               userId={viewingProfileId}
               liveAvatar={viewingProfileId === user.id ? user.avatar : undefined}
@@ -2820,17 +2876,22 @@ export const SocialView: React.FC<SocialViewProps> = ({
                 setChatPeerId(peerId);
                 setActiveTab('chat');
               }}
+              onOpenFriends={goToFriendsPage}
             />
-          </div>
+            </div>
+          </motion.div>
         </motion.div>,
         document.body
+      )}
+
+      {photoPerson && (
+        <ProfilePhotoViewer person={photoPerson} onClose={() => setPhotoPerson(null)} />
       )}
 
       <GlassModal
         open={!!showFriendModal}
         onClose={closeFriendSheet}
-        rise
-        sheet
+        center
         title={friendProfile?.name || showFriendModal?.name || 'Perfil'}
         subtitle={
           friendProfile?.coach
@@ -2842,6 +2903,37 @@ export const SocialView: React.FC<SocialViewProps> = ({
         footer={
           showFriendModal ? (
             <div className="flex gap-2">
+              {friendProfile?.canSendRequest || friendProfile?.friendshipStatus === 'follower' ? (
+                <Button
+                  variant="primary"
+                  className="flex-1 rounded-xl"
+                  disabled={friendRequestBusy || !onSendFriendRequest}
+                  onClick={async () => {
+                    if (!onSendFriendRequest) return;
+                    setFriendRequestBusy(true);
+                    try {
+                      await onSendFriendRequest(showFriendModal.id);
+                      setFriendProfile(prev =>
+                        prev
+                          ? { ...prev, canSendRequest: false, friendshipStatus: 'pending' }
+                          : prev
+                      );
+                    } catch (e: any) {
+                      setFriendActionError(e?.message || 'No se pudo enviar la solicitud.');
+                    } finally {
+                      setFriendRequestBusy(false);
+                    }
+                  }}
+                >
+                  {friendRequestBusy ? <Loader2 size={16} className="animate-spin" /> : <UserPlus size={16} />}
+                  Enviar solicitud
+                </Button>
+              ) : friendProfile?.friendshipStatus === 'pending' || friendProfile?.friendshipStatus === 'following' ? (
+                <Button variant="outline" className="flex-1 rounded-xl" disabled>
+                  Solicitud enviada
+                </Button>
+              ) : (
+                <>
               {onUnfriend && (
                 <Button
                   variant="outline"
@@ -2863,6 +2955,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
               >
                 Escribir
               </Button>
+                </>
+              )}
             </div>
           ) : undefined
         }
@@ -2878,6 +2972,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   followers={friendProfile?.followerCount ?? 0}
                   following={friendProfile?.followingCount ?? 0}
                   bio={friendProfile?.bio || ''}
+                  onFollowersClick={() => goToFriendsPage('followers')}
+                  onFollowingClick={() => goToFriendsPage('following')}
                 />
                 {friendProfile?.coach && (
                   <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] font-bold text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300">
@@ -3017,7 +3113,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
       <GlassModal
         open={!!unfriendConfirmFriend}
         onClose={() => setUnfriendConfirmFriend(null)}
-        rise
+        center
         zIndexClass="z-[100050]"
         title="¿Dejar de ser amigo?"
         subtitle={unfriendConfirmFriend?.name}
@@ -3052,6 +3148,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
 
       <HomeActivitySheet
         open={showHomeActivity}
+        refreshTick={storyRefreshTick + socialRefreshTick + socialNavTick}
         onClose={() => setShowHomeActivity(false)}
         pendingRequests={pendingRequests}
         chatAsks={chatAsks}
@@ -3063,6 +3160,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
         coachRequestBusyId={coachRequestBusyId}
         onAcceptFriend={id => void handleRequestAction(id, onAccept)}
         onRejectFriend={id => void handleRequestAction(id, onReject)}
+        onSendFriendRequest={onSendFriendRequest}
         onAnswerChat={(id, decision) => {
           void answerChatAsk(id, decision);
           if (decision === 'accept') setShowHomeActivity(false);
@@ -3076,10 +3174,6 @@ export const SocialView: React.FC<SocialViewProps> = ({
           setShowHomeActivity(false);
           const friend = friendsList.find(f => f.id === id);
           void openFriendModal(friend || { id, name: 'Atleta' });
-        }}
-        onGoFriends={() => {
-          setShowHomeActivity(false);
-          setActiveTab('friends');
         }}
         onOpenChat={peerId => {
           setShowHomeActivity(false);
@@ -3099,3 +3193,50 @@ export const SocialView: React.FC<SocialViewProps> = ({
     </motion.div>
   );
 };
+
+function searchHitLabel(u: UserSearchResult): string {
+  if (u.friendshipStatus === 'accepted' || u.friendshipStatus === 'following') return 'Siguiendo';
+  if (u.friendshipStatus === 'pending') return 'Solicitud enviada';
+  if (u.friendshipStatus === 'follower') return 'Te sigue';
+  return 'Ver perfil';
+}
+
+function SearchHitRow({
+  user: u,
+  onOpen,
+  onHold,
+}: {
+  user: UserSearchResult;
+  onOpen: () => void;
+  onHold: () => void;
+}) {
+  const hold = useLongPress(onHold);
+  const following = u.friendshipStatus === 'accepted' || u.friendshipStatus === 'following';
+  return (
+    <button
+      type="button"
+      onPointerDown={hold.onPointerDown}
+      onPointerUp={hold.onPointerUp}
+      onPointerCancel={hold.onPointerCancel}
+      onPointerLeave={hold.onPointerLeave}
+      onContextMenu={hold.onContextMenu}
+      onClick={e => {
+        if (hold.suppressClick(e)) return;
+        onOpen();
+      }}
+      className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left transition-colors hover:bg-slate-50 dark:hover:bg-slate-800"
+    >
+      <FeedAvatar name={u.name} avatar={u.avatar ?? null} size={36} />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-bold text-slate-800 dark:text-slate-100">{u.name}</span>
+        <span className="block text-[11px] text-slate-400">{searchHitLabel(u)}</span>
+      </span>
+      {following && (
+        <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+          <Check size={12} />
+          Siguiendo
+        </span>
+      )}
+    </button>
+  );
+}

@@ -213,6 +213,8 @@ export interface FriendRequest {
   avatar?: string;
   email?: string;
   status: 'pending' | 'accepted' | 'rejected';
+  /** Ya aceptaste su follow: falta que le envíes tú la solicitud. */
+  needsFollowBack?: boolean;
 }
 
 export interface Friend {
@@ -222,6 +224,16 @@ export interface Friend {
   avatar?: string;
 }
 
+export type FriendsFilter = 'all' | 'following' | 'followers';
+
+export interface ConnectionPerson {
+  id: string;
+  name: string;
+  avatar?: string;
+  canSendRequest?: boolean;
+  kind?: 'mutual' | 'following' | 'follower';
+}
+
 export interface UserSearchResult {
   id: string;
   name: string;
@@ -229,7 +241,8 @@ export interface UserSearchResult {
   username?: string;
   avatar?: string;
   bodyWeight?: number;
-  friendshipStatus: 'accepted' | 'pending' | 'rejected' | null;
+  friendshipStatus: 'accepted' | 'pending' | 'rejected' | 'follower' | 'following' | null;
   /** 'outgoing' = la enviaste tú; 'incoming' = te la enviaron a ti. */
   friendshipDirection?: 'incoming' | 'outgoing' | null;
+  canSendRequest?: boolean;
 }

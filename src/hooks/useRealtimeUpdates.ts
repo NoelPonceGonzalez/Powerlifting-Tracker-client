@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { getApiBaseUrl } from '@/src/lib/api';
 import { emitChatRealtime, setRealtimeOpen, type ChatRealtimeEvent } from '@/src/lib/chatRealtime';
+import { emitSocialRealtime } from '@/src/lib/socialRealtime';
 import { showLocalNotification } from '@/src/pwa/notifications';
 
 export type SseEventType =
@@ -108,9 +109,18 @@ export function useRealtimeUpdates(
 
     const handleEvent = (e: MessageEvent) => {
       try {
-        const data = JSON.parse(e.data) as { type: string; fromName?: string; preview?: string };
+        const data = JSON.parse(e.data) as {
+          type: string;
+          fromName?: string;
+          preview?: string;
+          postId?: string;
+          kind?: string;
+          likeCount?: number;
+          fromId?: string;
+        };
         switch (data.type) {
           case 'social_update':
+            emitSocialRealtime(data);
             throttleCall(lastSocialAt.current, optionsRef.current.onSocialUpdate);
             if (document.hidden) {
               void showLocalNotification('Nueva actividad', 'Tienes avisos en Social', {
@@ -149,7 +159,7 @@ export function useRealtimeUpdates(
           case 'chat_message': {
             const chat = data as ChatRealtimeEvent;
             emitChatRealtime(chat);
-            if (document.hidden && chat.type === 'chat_message' && !chat.message?.mine) {
+            if (document.hidden && chat.type === 'chat_message' && chat.message && !chat.message.mine) {
               void showLocalNotification(
                 chat.message.author?.name || 'Nuevo mensaje',
                 chat.message.text || 'Te han escrito en el chat',

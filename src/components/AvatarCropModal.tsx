@@ -1,15 +1,11 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { ZoomIn, ZoomOut } from 'lucide-react';
 import { GlassModal } from '@/src/components/ui/GlassModal';
 import { Button } from '@/src/components/ui/Button';
 import {
-  AVATAR_CROP_BOX,
   AVATAR_CROP_MAX_SCALE,
   AVATAR_CROP_MIN_SCALE,
-  clampCoverPos,
-  coverFit,
-  exportCoverCrop,
-  touchDistance,
+  exportFramedAvatar,
 } from '@/src/lib/avatarCrop';
 
 interface AvatarCropModalProps {
@@ -21,113 +17,78 @@ interface AvatarCropModalProps {
 export function AvatarCropModal({ image, onCancel, onConfirm }: AvatarCropModalProps) {
   const [pos, setPos] = useState({ x: 0, y: 0 });
   const [scale, setScale] = useState(1);
-  const [natural, setNatural] = useState({ w: 0, h: 0 });
+  const [box, setBox] = useState(280);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const areaRef = useRef<HTMLDivElement | null>(null);
   const posRef = useRef(pos);
   const scaleRef = useRef(scale);
   posRef.current = pos;
   scaleRef.current = scale;
-  const dragRef = useRef<{ pointerId: number; startX: number; startY: number; origX: number; origY: number } | null>(
-    null
-  );
-  const pinchRef = useRef<{ startDist: number; startScale: number } | null>(null);
+  const pointers = useRef(new Map<number, { x: number; y: number }>());
+  const pan = useRef<{ x: number; y: number; fx: number; fy: number } | null>(null);
+  const pinch = useRef<{ dist: number; scale: number } | null>(null);
+  const maskId = useId().replace(/:/g, '');
 
   useEffect(() => {
     setPos({ x: 0, y: 0 });
     setScale(1);
-    setNatural({ w: 0, h: 0 });
   }, [image]);
 
   useLayoutEffect(() => {
-    if (!image || natural.w < 1) return;
-    setPos((prev) => clampCoverPos(natural.w, natural.h, scale, prev));
-  }, [image, scale, natural.w, natural.h]);
+    const el = areaRef.current;
+    if (!el || !image) return;
+    const sync = () => setBox(el.clientWidth || 280);
+    sync();
+    const ro = new ResizeObserver(sync);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [image]);
 
   const applyScale = useCallback((next: number) => {
-    const clamped = Math.max(AVATAR_CROP_MIN_SCALE, Math.min(AVATAR_CROP_MAX_SCALE, next));
-    setScale(clamped);
+    setScale(Math.max(AVATAR_CROP_MIN_SCALE, Math.min(AVATAR_CROP_MAX_SCALE, next)));
   }, []);
 
-  useEffect(() => {
-    if (!image) return;
-    const el = areaRef.current;
-    if (!el) return;
-
-    const onTouchStart = (e: TouchEvent) => {
-      if (e.touches.length === 2) {
-        pinchRef.current = {
-          startDist: touchDistance(e.touches[0], e.touches[1]),
-          startScale: scaleRef.current,
-        };
-        dragRef.current = null;
-      }
-    };
-    const onTouchMove = (e: TouchEvent) => {
-      if (e.touches.length === 2) {
-        e.preventDefault();
-        if (!pinchRef.current) {
-          pinchRef.current = {
-            startDist: touchDistance(e.touches[0], e.touches[1]),
-            startScale: scaleRef.current,
-          };
-        }
-        const d = touchDistance(e.touches[0], e.touches[1]);
-        applyScale(pinchRef.current.startScale * (d / Math.max(pinchRef.current.startDist, 1)));
-      }
-    };
-    const onTouchEnd = (e: TouchEvent) => {
-      if (e.touches.length < 2) pinchRef.current = null;
-    };
-    el.addEventListener('touchstart', onTouchStart, { passive: true });
-    el.addEventListener('touchmove', onTouchMove, { passive: false });
-    el.addEventListener('touchend', onTouchEnd);
-    el.addEventListener('touchcancel', onTouchEnd);
-    return () => {
-      el.removeEventListener('touchstart', onTouchStart);
-      el.removeEventListener('touchmove', onTouchMove);
-      el.removeEventListener('touchend', onTouchEnd);
-      el.removeEventListener('touchcancel', onTouchEnd);
-    };
-  }, [image, applyScale]);
-
   const onPointerDown = (e: React.PointerEvent) => {
-    if (e.pointerType === 'touch' && (e as unknown as { isPrimary?: boolean }).isPrimary === false) return;
-    areaRef.current?.setPointerCapture(e.pointerId);
-    dragRef.current = {
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      origX: posRef.current.x,
-      origY: posRef.current.y,
-    };
-  };
-  const onPointerMove = (e: React.PointerEvent) => {
-    if (!dragRef.current || dragRef.current.pointerId !== e.pointerId) return;
-    if (pinchRef.current) return;
-    const next = {
-      x: dragRef.current.origX + (e.clientX - dragRef.current.startX),
-      y: dragRef.current.origY + (e.clientY - dragRef.current.startY),
-    };
-    const img = imgRef.current;
-    const nw = img?.naturalWidth ?? natural.w;
-    const nh = img?.naturalHeight ?? natural.h;
-    setPos(nw && nh ? clampCoverPos(nw, nh, scaleRef.current, next) : next);
-  };
-  const onPointerUp = (e: React.PointerEvent) => {
-    if (dragRef.current?.pointerId === e.pointerId) dragRef.current = null;
-    if (areaRef.current?.hasPointerCapture?.(e.pointerId)) {
-      areaRef.current.releasePointerCapture(e.pointerId);
+    e.stopPropagation();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.current.size === 1) {
+      pan.current = { x: e.clientX, y: e.clientY, fx: posRef.current.x, fy: posRef.current.y };
+      pinch.current = null;
+    } else if (pointers.current.size === 2) {
+      const [a, b] = [...pointers.current.values()];
+      pinch.current = { dist: Math.hypot(a.x - b.x, a.y - b.y), scale: scaleRef.current };
+      pan.current = null;
     }
   };
 
-  const layout =
-    image && natural.w > 0 && natural.h > 0 ? coverFit(natural.w, natural.h, scale, pos) : null;
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!pointers.current.has(e.pointerId)) return;
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch.current && pointers.current.size >= 2) {
+      const [a, b] = [...pointers.current.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      applyScale(pinch.current.scale * (d / Math.max(1, pinch.current.dist)));
+      return;
+    }
+    const start = pan.current;
+    if (!start) return;
+    setPos({
+      x: start.fx + (e.clientX - start.x),
+      y: start.fy + (e.clientY - start.y),
+    });
+  };
+
+  const onPointerUp = (e: React.PointerEvent) => {
+    pointers.current.delete(e.pointerId);
+    if (pointers.current.size < 2) pinch.current = null;
+    if (pointers.current.size === 0) pan.current = null;
+  };
 
   const confirm = () => {
     const img = imgRef.current;
     if (!img || img.naturalWidth < 1) return;
-    const dataUrl = exportCoverCrop(img, scale, pos);
+    const dataUrl = exportFramedAvatar(img, scale, pos, box);
     if (dataUrl) onConfirm(dataUrl);
   };
 
@@ -135,15 +96,16 @@ export function AvatarCropModal({ image, onCancel, onConfirm }: AvatarCropModalP
     <GlassModal
       open={!!image}
       onClose={onCancel}
-      title="Encuadrar foto"
-      subtitle="Arrastra la imagen. Pellizca o usa la barra para acercar."
+      center
+      title="Mi foto"
+      subtitle="El círculo es tu foto. Arrastra o pellizca para encuadrar."
       footer={
         <div className="flex gap-2">
           <Button variant="outline" className="flex-1 rounded-xl" onClick={onCancel}>
             Cancelar
           </Button>
           <Button variant="primary" className="flex-1 rounded-xl" onClick={confirm}>
-            Usar foto
+            Mi foto
           </Button>
         </div>
       }
@@ -151,46 +113,54 @@ export function AvatarCropModal({ image, onCancel, onConfirm }: AvatarCropModalP
       <div className="space-y-4">
         <div
           ref={areaRef}
-          className="relative mx-auto overflow-hidden rounded-full bg-slate-900 touch-none"
-          style={{ width: AVATAR_CROP_BOX, height: AVATAR_CROP_BOX, touchAction: 'none', maxWidth: '100%' }}
+          className="relative mx-auto aspect-square w-full overflow-hidden rounded-[24px] bg-black touch-none"
+          style={{ touchAction: 'none' }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerUp}
-          onWheel={(e) => {
+          onWheel={e => {
             e.preventDefault();
-            applyScale(scaleRef.current + (e.deltaY > 0 ? -0.12 : 0.12));
+            e.stopPropagation();
+            applyScale(scaleRef.current * (e.deltaY > 0 ? 0.92 : 1.08));
           }}
         >
           {image && (
-            <img
-              ref={imgRef}
-              src={image}
-              alt=""
-              draggable={false}
-              className="absolute select-none"
-              onLoad={(e) => {
-                const t = e.currentTarget;
-                setNatural({ w: t.naturalWidth, h: t.naturalHeight });
-              }}
-              style={
-                layout
-                  ? {
-                      left: layout.drawX,
-                      top: layout.drawY,
-                      width: layout.effectiveW,
-                      height: layout.effectiveH,
-                    }
-                  : { visibility: 'hidden' }
-              }
-            />
+            <>
+              <img
+                src={image}
+                alt=""
+                draggable={false}
+                className="pointer-events-none absolute inset-0 h-full w-full scale-110 object-cover opacity-40 blur-2xl"
+              />
+              <div className="pointer-events-none absolute inset-0 bg-black/20" />
+              <img
+                ref={imgRef}
+                src={image}
+                alt=""
+                draggable={false}
+                className="pointer-events-none absolute left-1/2 top-1/2 max-h-full max-w-full object-contain"
+                style={{
+                  transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px)) scale(${scale})`,
+                }}
+              />
+              <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden>
+                <defs>
+                  <mask id={maskId}>
+                    <rect width="100%" height="100%" fill="white" />
+                    <circle cx="50%" cy="50%" r="46%" fill="black" />
+                  </mask>
+                </defs>
+                <rect width="100%" height="100%" fill="rgba(0,0,0,0.55)" mask={`url(#${maskId})`} />
+                <circle cx="50%" cy="50%" r="46%" fill="none" stroke="white" strokeWidth="3" />
+              </svg>
+            </>
           )}
-          <div className="pointer-events-none absolute inset-0 rounded-full ring-[18px] ring-black/45" />
         </div>
         <div className="flex items-center gap-3">
           <button
             type="button"
-            onClick={() => applyScale(scale - 0.15)}
+            onClick={() => applyScale(scale - 0.12)}
             className="rounded-xl bg-slate-100 p-2.5 dark:bg-slate-800"
             aria-label="Alejar"
           >
@@ -202,12 +172,12 @@ export function AvatarCropModal({ image, onCancel, onConfirm }: AvatarCropModalP
             max={AVATAR_CROP_MAX_SCALE}
             step={0.05}
             value={scale}
-            onChange={(e) => applyScale(parseFloat(e.target.value))}
+            onChange={e => applyScale(parseFloat(e.target.value))}
             className="flex-1 accent-indigo-600"
           />
           <button
             type="button"
-            onClick={() => applyScale(scale + 0.15)}
+            onClick={() => applyScale(scale + 0.12)}
             className="rounded-xl bg-slate-100 p-2.5 dark:bg-slate-800"
             aria-label="Acercar"
           >

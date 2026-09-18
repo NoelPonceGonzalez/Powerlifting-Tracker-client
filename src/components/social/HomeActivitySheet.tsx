@@ -22,6 +22,7 @@ export interface AppNotification {
 
 interface HomeActivitySheetProps {
   open: boolean;
+  refreshTick?: number;
   onClose: () => void;
   pendingRequests: FriendRequest[];
   chatAsks: ChatAsk[];
@@ -33,11 +34,11 @@ interface HomeActivitySheetProps {
   coachRequestBusyId: string | null;
   onAcceptFriend: (id: string) => void;
   onRejectFriend: (id: string) => void;
+  onSendFriendRequest?: (userId: string) => Promise<void> | void;
   onAnswerChat: (id: string, decision: 'accept' | 'reject') => void;
   onAnswerGroup: (id: string, decision: 'accept' | 'reject') => void;
   onAnswerCoach: (id: string, decision: 'accept' | 'reject') => void;
   onOpenProfile: (userId: string) => void;
-  onGoFriends: () => void;
   onOpenChat?: (peerId: string) => void;
   onGoChallenges?: () => void;
   onGoGym?: () => void;
@@ -45,6 +46,16 @@ interface HomeActivitySheetProps {
 }
 
 const REQUEST_TYPES = new Set(['friend_request', 'chat_request', 'group_invite', 'coach_request']);
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const TEST_NOTE = /prueba|aviso de prueba|notificaciones ya llegan/i;
+
+function isLiveActivityNote(note: AppNotification): boolean {
+  if (REQUEST_TYPES.has(note.type)) return false;
+  const text = `${note.title || ''} ${note.message || ''}`;
+  if (TEST_NOTE.test(text)) return false;
+  const at = new Date(note.createdAt).getTime();
+  return Number.isFinite(at) && Date.now() - at <= WEEK_MS;
+}
 
 function notifIcon(type: string) {
   if (type === 'post_like') return <Heart size={14} className="text-rose-500" fill="currentColor" />;
@@ -61,6 +72,7 @@ function notifIcon(type: string) {
 
 export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
   open,
+  refreshTick = 0,
   onClose,
   pendingRequests,
   chatAsks,
@@ -72,11 +84,11 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
   coachRequestBusyId,
   onAcceptFriend,
   onRejectFriend,
+  onSendFriendRequest,
   onAnswerChat,
   onAnswerGroup,
   onAnswerCoach,
   onOpenProfile,
-  onGoFriends,
   onOpenChat,
   onGoChallenges,
   onGoGym,
@@ -95,10 +107,11 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
     apiPut('/api/notifications/read-all', {})
       .then(() => onNotificationsRead?.())
       .catch(() => {});
-  }, [open, onNotificationsRead]);
+  }, [open, refreshTick, onNotificationsRead]);
 
-  const requestCount = pendingRequests.length + chatAsks.length + groupInvites.length + coachRequests.length;
-  const recent = notes.filter(n => !REQUEST_TYPES.has(n.type));
+  const inbox = pendingRequests.filter(r => !r.needsFollowBack);
+  const requestCount = inbox.length + chatAsks.length + groupInvites.length + coachRequests.length;
+  const recent = notes.filter(isLiveActivityNote);
 
   if (typeof document === 'undefined') return null;
 
@@ -148,12 +161,14 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
                   </p>
                 ) : (
                   <>
-                    {pendingRequests.map(req => (
+                    {inbox.map(req => (
                       <div key={req.id} className="flex items-center gap-3 rounded-2xl bg-white/70 px-3 py-2.5 dark:bg-slate-800/50">
                         <Avatar src={req.avatar} name={req.name} className="h-10 w-10 shrink-0 rounded-full" />
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{req.name}</p>
-                          <p className="text-[11px] text-slate-400">Quiere ser tu amigo</p>
+                          <p className="text-[11px] text-slate-400">
+                            Quiere seguirte
+                          </p>
                         </div>
                         <div className="flex shrink-0 gap-1.5">
                           <button
@@ -329,14 +344,6 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
                   ))
                 )}
               </section>
-
-              <button
-                type="button"
-                onClick={onGoFriends}
-                className="w-full rounded-2xl bg-white/70 py-3 text-sm font-medium text-indigo-600 dark:bg-slate-800/50 dark:text-indigo-300"
-              >
-                Ver amigos
-              </button>
             </div>
           </motion.div>
         </motion.div>

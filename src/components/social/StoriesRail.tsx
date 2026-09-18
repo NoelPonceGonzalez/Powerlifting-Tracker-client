@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Plus } from 'lucide-react';
 import { Avatar } from '@/src/components/ui/Avatar';
-import { fetchStories, type StoryGroup } from '@/src/lib/feedApi';
+import { fetchOwnProfile, fetchStories, type StoryGroup } from '@/src/lib/feedApi';
 import { StoryViewer } from '@/src/components/social/StoryViewer';
 import { cn } from '@/src/lib/utils';
 import { isRealtimeOpen } from '@/src/lib/chatRealtime';
@@ -9,6 +9,7 @@ import { isRealtimeOpen } from '@/src/lib/chatRealtime';
 interface StoriesRailProps {
   myId: string;
   myAvatar?: string | null;
+  myName?: string | null;
   refreshTick?: number;
   onAddStory: () => void;
   leading?: React.ReactNode;
@@ -41,19 +42,19 @@ function ringStyle(items: Array<{ viewedByMe?: boolean }>, forceUnseen: boolean)
 function Bubble({
   name,
   avatar,
+  avatarName,
   unseen,
   add,
   items = [],
-  caption,
   onClick,
   onAdd,
 }: {
   name: string;
   avatar?: string | null;
+  avatarName?: string | null;
   unseen: boolean;
   add?: boolean;
   items?: Array<{ viewedByMe?: boolean }>;
-  caption?: string;
   onClick: () => void;
   onAdd?: () => void;
 }) {
@@ -71,7 +72,7 @@ function Bubble({
         style={ringStyle(items, false)}
       >
         <span className="relative block h-full w-full rounded-full bg-[var(--app-bg)] p-[2px]">
-          <Avatar src={avatar} name={name} className="h-full w-full rounded-full" />
+          <Avatar src={avatar} name={avatarName || name} className="h-full w-full rounded-full" />
           {add && (
             <span
               role={onAdd ? 'button' : undefined}
@@ -87,11 +88,6 @@ function Bubble({
       <span className="mt-1.5 block truncate px-0.5 text-[11px] font-medium leading-tight text-slate-700 dark:text-slate-300">
         {name}
       </span>
-      {caption && (
-        <span className="block truncate px-0.5 text-[10px] text-slate-400 dark:text-slate-500">
-          {caption}
-        </span>
-      )}
     </button>
   );
 }
@@ -102,15 +98,30 @@ function dropItem(list: StoryGroup[], postId: string) {
     .filter(g => g.items.length > 0);
 }
 
-export function StoriesRail({ myId, myAvatar, refreshTick = 0, onAddStory, leading, trailing, pageActive = true }: StoriesRailProps) {
+export function StoriesRail({ myId, myAvatar, myName, refreshTick = 0, onAddStory, leading, trailing, pageActive = true }: StoriesRailProps) {
   const [groups, setGroups] = useState<StoryGroup[]>([]);
   const [openAt, setOpenAt] = useState<number | null>(null);
   const [watching, setWatching] = useState<StoryGroup[] | null>(null);
+  const [myFace, setMyFace] = useState<string | null>(myAvatar ?? null);
+  const [myLabel, setMyLabel] = useState(myName || '');
+
+  useEffect(() => {
+    if (myAvatar) setMyFace(myAvatar);
+  }, [myAvatar]);
+
+  useEffect(() => {
+    if (myName) setMyLabel(myName);
+  }, [myName]);
 
   const load = useCallback(async () => {
     try {
-      const r = await fetchStories();
+      const [r, me] = await Promise.all([
+        fetchStories(),
+        fetchOwnProfile().catch(() => null),
+      ]);
       setGroups(Array.isArray(r.groups) ? r.groups : []);
+      if (me?.avatar) setMyFace(me.avatar);
+      if (me?.name) setMyLabel(me.name);
     } catch {
       /* se deja lo último visto */
     }
@@ -132,7 +143,10 @@ export function StoriesRail({ myId, myAvatar, refreshTick = 0, onAddStory, leadi
     return () => window.clearInterval(id);
   }, [load, pageActive]);
 
-  const mine = groups.find(g => g.author.id === myId);
+  const mineRaw = groups.find(g => g.author.id === myId);
+  const mine = mineRaw
+    ? { ...mineRaw, author: { ...mineRaw.author, avatar: myFace || mineRaw.author.avatar } }
+    : undefined;
   const others = groups.filter(g => g.author.id !== myId && g.items.length > 0);
   const unseen = others.filter(groupUnseen);
   const seen = others.filter(g => !groupUnseen(g));
@@ -142,10 +156,16 @@ export function StoriesRail({ myId, myAvatar, refreshTick = 0, onAddStory, leadi
   }, [mine, unseen, seen]);
 
   const openGroup = (authorId: string) => {
-    const idx = ordered.findIndex(g => g.author.id === authorId);
+    if (authorId === myId && mine && mine.items.length > 0) {
+      setWatching([mine]);
+      setOpenAt(0);
+      return;
+    }
+    const rest = [...unseen, ...seen];
+    const idx = rest.findIndex(g => g.author.id === authorId);
     if (idx < 0) return;
-    setWatching(ordered);
-    setOpenAt(idx);
+    setWatching(rest.slice(idx));
+    setOpenAt(0);
   };
 
   const closeViewer = () => {
@@ -164,7 +184,7 @@ export function StoriesRail({ myId, myAvatar, refreshTick = 0, onAddStory, leadi
             <div className="flex h-12 w-12 shrink-0 items-center justify-center">
               {leading}
             </div>
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-visible">
               {trailing}
             </div>
           </div>
@@ -174,16 +194,16 @@ export function StoriesRail({ myId, myAvatar, refreshTick = 0, onAddStory, leadi
             {mine && mine.items.length > 0 ? (
               <Bubble
                 name="Tu historia"
-                avatar={mine.author.avatar}
+                avatarName={myLabel || mine.author.name}
+                avatar={myFace || mine.author.avatar}
                 unseen={groupUnseen(mine)}
                 add
                 items={mine.items}
-                caption={mine.items.length > 1 ? `${mine.items.length} hoy` : groupUnseen(mine) ? 'Nueva' : 'Vista'}
                 onClick={() => openGroup(myId)}
                 onAdd={onAddStory}
               />
             ) : (
-              <Bubble name="Tu historia" avatar={myAvatar} unseen={false} add onClick={onAddStory} />
+              <Bubble name="Tu historia" avatarName={myLabel} avatar={myFace} unseen={false} add onClick={onAddStory} />
             )}
             {unseen.map(g => (
               <Bubble
