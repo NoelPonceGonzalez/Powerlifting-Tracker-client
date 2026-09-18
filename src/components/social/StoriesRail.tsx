@@ -138,51 +138,48 @@ export function StoriesRail({ myId, myAvatar, refreshTick = 0, onAddStory, trail
 
   return (
     <div className="-mx-1">
-      <div className="flex items-center gap-0">
-        <div className="app-h-scroll min-w-0 flex-1 px-1 py-1.5">
-          <div className="flex w-max gap-3 pr-3">
-            {mine && mine.items.length > 0 ? (
-              <Bubble
-                name="Tu historia"
-                avatar={mine.author.avatar}
-                unseen
-                add
-                segments={mine.items.length}
-                caption={mine.items.length > 1 ? `${mine.items.length} hoy` : 'Añade +'}
-                onClick={() => openGroup(myId)}
-                onAdd={onAddStory}
-              />
-            ) : (
-              <Bubble name="Tu historia" avatar={myAvatar} unseen={false} add onClick={onAddStory} />
-            )}
-            {unseen.map(g => (
-              <Bubble
-                key={g.author.id}
-                name={g.author.name.split(' ')[0]}
-                avatar={g.author.avatar}
-                unseen
-                segments={g.items.length}
-                onClick={() => openGroup(g.author.id)}
-              />
-            ))}
-            {seen.map(g => (
-              <Bubble
-                key={g.author.id}
-                name={g.author.name.split(' ')[0]}
-                avatar={g.author.avatar}
-                unseen={false}
-                segments={g.items.length}
-                onClick={() => openGroup(g.author.id)}
-              />
-            ))}
-          </div>
+      {trailing && (
+        <div className="relative z-20 -mb-1 flex justify-end pr-0.5">
+          {trailing}
         </div>
-        {trailing && (
-          <div className="relative z-20 shrink-0 self-center bg-[var(--app-bg)] pl-1">
-            <div className="pointer-events-none absolute -left-7 top-0 bottom-0 w-7 bg-gradient-to-r from-transparent to-[var(--app-bg)]" />
-            {trailing}
-          </div>
-        )}
+      )}
+      <div className="app-h-scroll min-w-0 px-1 pb-1.5">
+        <div className="flex w-max gap-3 pr-3">
+          {mine && mine.items.length > 0 ? (
+            <Bubble
+              name="Tu historia"
+              avatar={mine.author.avatar}
+              unseen
+              add
+              segments={mine.items.length}
+              caption={mine.items.length > 1 ? `${mine.items.length} hoy` : 'Añade +'}
+              onClick={() => openGroup(myId)}
+              onAdd={onAddStory}
+            />
+          ) : (
+            <Bubble name="Tu historia" avatar={myAvatar} unseen={false} add onClick={onAddStory} />
+          )}
+          {unseen.map(g => (
+            <Bubble
+              key={g.author.id}
+              name={g.author.name.split(' ')[0]}
+              avatar={g.author.avatar}
+              unseen
+              segments={g.items.length}
+              onClick={() => openGroup(g.author.id)}
+            />
+          ))}
+          {seen.map(g => (
+            <Bubble
+              key={g.author.id}
+              name={g.author.name.split(' ')[0]}
+              avatar={g.author.avatar}
+              unseen={false}
+              segments={g.items.length}
+              onClick={() => openGroup(g.author.id)}
+            />
+          ))}
+        </div>
       </div>
 
       {openAt != null && ordered[openAt] && (
