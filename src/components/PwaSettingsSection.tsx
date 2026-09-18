@@ -25,9 +25,9 @@ const StatusChip: React.FC<{ tone: 'ok' | 'warn'; children: React.ReactNode }> =
 export const PwaSettingsSection: React.FC = () => {
   const { isInstalled, needsManualInstructions, install } = useInstallPrompt();
   const { permission, isSupported, isBlocked, requesting, request, sendTestNotification } = useWebNotifications();
-  const { camera, galleryReady, requestingCamera, requestCamera, openGallery } = useMediaAccess();
+  const { camera, galleryReady, requestingCamera, requestCamera, enableGallery } = useMediaAccess();
   const [showIosSteps, setShowIosSteps] = useState(false);
-  const [galleryOk, setGalleryOk] = useState(false);
+  const [askedCamera, setAskedCamera] = useState(false);
   const [testingPush, setTestingPush] = useState(false);
   const [testPushMsg, setTestPushMsg] = useState('');
 
@@ -234,11 +234,11 @@ export const PwaSettingsSection: React.FC = () => {
               <p className="text-xs leading-snug text-slate-500 dark:text-slate-400">
                 {camera === 'unsupported'
                   ? 'Este dispositivo no puede abrir la cámara desde el navegador.'
-                  : camera === 'denied'
-                    ? 'Bloqueada. Actívala en los ajustes del sitio.'
-                    : camera === 'granted'
-                      ? 'Lista para historias y fotos de perfil.'
-                      : 'Haz falta para grabar o hacer foto desde la app.'}
+                  : camera === 'granted'
+                    ? 'Lista para historias y fotos de perfil.'
+                    : camera === 'denied' && askedCamera
+                      ? 'El móvil la ha bloqueado. Actívala en los ajustes del sitio (candado o «Sitio») y pulsa Activar otra vez.'
+                      : 'Pulsa Activar: te saldrá Permitir. Luego se queda activa para historias y la foto de perfil.'}
               </p>
             </div>
           </div>
@@ -251,11 +251,13 @@ export const PwaSettingsSection: React.FC = () => {
               type="button"
               size="sm"
               variant="primary"
-              disabled={camera === 'unsupported' || camera === 'denied' || requestingCamera}
-              onClick={() => void requestCamera()}
+              disabled={camera === 'unsupported' || requestingCamera}
+              onClick={() => {
+                void requestCamera().then(() => setAskedCamera(true));
+              }}
               className="w-full shrink-0 uppercase tracking-widest min-[360px]:w-auto"
             >
-              {requestingCamera ? 'Pidiendo…' : 'Activar'}
+              {requestingCamera ? 'Pidiendo…' : camera === 'denied' && askedCamera ? 'Reintentar' : 'Activar'}
             </Button>
           )}
         </div>
@@ -266,7 +268,7 @@ export const PwaSettingsSection: React.FC = () => {
             <div
               className={cn(
                 'flex size-11 shrink-0 items-center justify-center rounded-2xl transition-colors',
-                galleryOk
+                galleryReady
                   ? 'bg-emerald-500 text-white shadow-md shadow-emerald-200/60 dark:shadow-emerald-950/40'
                   : 'bg-violet-50 text-violet-600 dark:bg-violet-950/40 dark:text-violet-300'
               )}
@@ -276,13 +278,13 @@ export const PwaSettingsSection: React.FC = () => {
             <div className="min-w-0">
               <p className="font-bold text-slate-900 dark:text-slate-100">Activar galería</p>
               <p className="text-xs leading-snug text-slate-500 dark:text-slate-400">
-                {galleryOk
-                  ? 'Puedes elegir fotos y vídeos de tu móvil.'
-                  : 'Da permiso para subir una historia o cambiar la foto de perfil.'}
+                {galleryReady
+                  ? 'Lista. Al elegir una foto el móvil puede pedirte acceso a tus imágenes.'
+                  : 'Actívala aquí. Al subir una historia o cambiar la foto te pedirá permiso.'}
               </p>
             </div>
           </div>
-          {galleryOk ? (
+          {galleryReady ? (
             <StatusChip tone="ok">
               <Check size={14} /> Activa
             </StatusChip>
@@ -291,12 +293,7 @@ export const PwaSettingsSection: React.FC = () => {
               type="button"
               size="sm"
               variant="primary"
-              disabled={!galleryReady}
-              onClick={() => {
-                void openGallery().then((file) => {
-                  if (file) setGalleryOk(true);
-                });
-              }}
+              onClick={enableGallery}
               className="w-full shrink-0 uppercase tracking-widest min-[360px]:w-auto"
             >
               Activar

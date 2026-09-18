@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
-import { ArrowLeft, Bell, BellOff, Dumbbell, GraduationCap, Heart, Image as ImageIcon, Loader2, LogOut, MessageCircle, Paperclip, Pencil, Pin, Search, Send, Trash2, User, UserMinus, UserPlus, Users } from 'lucide-react';
+import { ArrowLeft, Bell, BellOff, Camera, Dumbbell, GraduationCap, Heart, Image as ImageIcon, Loader2, LogOut, MessageCircle, Paperclip, Pencil, Pin, Search, Send, Trash2, User, UserMinus, UserPlus, Users } from 'lucide-react';
 import { Avatar } from '@/src/components/social/MediaPost';
 import { Button } from '@/src/components/ui/Button';
 import { GlassModal } from '@/src/components/ui/GlassModal';
@@ -12,6 +12,8 @@ import { isRealtimeOpen, subscribeChatRealtime } from '@/src/lib/chatRealtime';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 import { STICKY } from '@/src/lib/motionPresets';
 import type { Friend, FriendRequest, UserSearchResult } from '@/src/types';
+import { StoryCamera } from '@/src/components/social/StoryCamera';
+import { FILE_INPUT_VISUAL, GALLERY_MEDIA_ACCEPT, primeStoryCamera } from '@/src/pwa/mediaAccess';
 import { AddFriendsModal } from '@/src/components/social/AddFriendsModal';
 import { ChatPeoplePanel } from '@/src/components/social/ChatPeoplePanel';
 import { StoriesRail } from '@/src/components/social/StoriesRail';
@@ -425,6 +427,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   const [peerOnline, setPeerOnline] = useState(false);
   const [typingLabel, setTypingLabel] = useState('');
   const [attach, setAttach] = useState<File | null>(null);
+  const [camOpen, setCamOpen] = useState(false);
   const [inboxQ, setInboxQ] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
   const inboxSearchRef = useRef<HTMLInputElement>(null);
@@ -457,6 +460,10 @@ export const ChatTab: React.FC<ChatTabProps> = ({
     onConversationChange?.(!!open);
     return () => onConversationChange?.(false);
   }, [open, onConversationChange]);
+
+  useEffect(() => {
+    setCamOpen(false);
+  }, [open]);
 
   const lastHomeTick = useRef(homeTick);
   useEffect(() => {
@@ -821,13 +828,13 @@ export const ChatTab: React.FC<ChatTabProps> = ({
     else void sendChatTyping({ groupId: open.group.id });
   }, [open, waitingPeer]);
 
-  const send = useCallback(async () => {
+  const send = useCallback(async (picked?: File | null) => {
     const text = draft.trim();
+    const file = picked !== undefined ? picked : attach;
     if (!open || sending || incomingPeer) return;
-    if (!text && !attach) return;
+    if (!text && !file) return;
     setSending(true);
     setDraft('');
-    const file = attach;
     setAttach(null);
     try {
       if (open.kind === 'dm') {
@@ -1333,8 +1340,8 @@ export const ChatTab: React.FC<ChatTabProps> = ({
           <input
             ref={fileRef}
             type="file"
-            accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime,video/webm"
-            className="hidden"
+            accept={GALLERY_MEDIA_ACCEPT}
+            className={FILE_INPUT_VISUAL}
             onChange={e => {
               const file = e.target.files?.[0] || null;
               setAttach(file);
@@ -1345,10 +1352,21 @@ export const ChatTab: React.FC<ChatTabProps> = ({
             type="button"
             disabled={waitingPeer || incomingPeer}
             onClick={() => fileRef.current?.click()}
-            className="flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 text-slate-500 disabled:opacity-30 dark:border-slate-700"
-            aria-label="Foto o vídeo · 24 h"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-slate-200 text-slate-500 disabled:opacity-30 dark:border-slate-700"
+            aria-label="Galería · foto o vídeo"
           >
             <Paperclip size={16} />
+          </button>
+          <button
+            type="button"
+            disabled={waitingPeer || incomingPeer}
+            onClick={() => {
+              void primeStoryCamera().then(() => setCamOpen(true));
+            }}
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-slate-200 text-slate-500 disabled:opacity-30 dark:border-slate-700"
+            aria-label="Cámara · toca foto, mantén para vídeo"
+          >
+            <Camera size={16} />
           </button>
           <textarea
             value={draft}
@@ -1388,10 +1406,22 @@ export const ChatTab: React.FC<ChatTabProps> = ({
       </div>
     );
 
+    const chatCam = (
+      <StoryCamera
+        open={camOpen}
+        mode="chat"
+        onClose={() => setCamOpen(false)}
+        onPickImage={file => {
+          setCamOpen(false);
+          void send(file);
+        }}
+      />
+    );
     if (typeof document === 'undefined') {
       return (
         <>
           {conversation}
+          {chatCam}
           {deleteModal}
         </>
       );
@@ -1402,6 +1432,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
           <div className="fixed inset-0 z-[80] flex flex-col bg-slate-50 dark:bg-slate-950">{conversation}</div>,
           document.body
         )}
+        {chatCam}
         {deleteModal}
       </>
     );

@@ -208,8 +208,7 @@ export function ProgressMiniProfile({
           <button
             type="button"
             onClick={() => {
-              void primeStoryCamera('user');
-              setCamOpen(true);
+              void primeStoryCamera('user').then(() => setCamOpen(true));
             }}
             className="relative rounded-full"
             aria-label="Cambiar foto de perfil"

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { Image as ImageIcon, Loader2, RefreshCw, RotateCw, X } from 'lucide-react';
@@ -10,7 +10,9 @@ import {
   STORY_VIDEO_BITRATE,
   STORY_VIDEO_MAX_SEC,
   STORY_VIDEO_MIN_SEC,
+  estimateClipBytes,
   extractStoryThumbnails,
+  formatStoryBytes,
   formatStoryTime,
   needsStoryPrepare,
   probeVideoDuration,
@@ -18,210 +20,112 @@ import {
 } from '@/src/lib/storyVideo';
 import { StoryTrimStrip } from '@/src/components/social/StoryTrimStrip';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
-import { consumePrimedStoryCamera } from '@/src/pwa/mediaAccess';
+import {
+  consumePrimedStoryCamera,
+  FILE_INPUT_VISUAL,
+  GALLERY_MEDIA_ACCEPT,
+  GALLERY_PHOTOS_ACCEPT,
+  markCameraGranted,
+  markGalleryReady,
+  queryCameraPermission,
+} from '@/src/pwa/mediaAccess';
 import { cn } from '@/src/lib/utils';
 
 interface StoryCameraProps {
   open: boolean;
   onClose: () => void;
   onPublished?: (post: FeedPost) => void;
-  /** Perfil: misma cámara y galería, solo foto; se encuadra aquí en círculo. */
-  mode?: 'story' | 'avatar';
+  /** Perfil: solo foto. Chat: foto o vídeo y se entrega al hilo. */
+  mode?: 'story' | 'avatar' | 'chat';
   onPickImage?: (file: File) => void;
 }
 
-const CLIP_PRESETS = [15, 30, 45, 60] as const;
 const MIN_IMG = 72;
 const MAX_IMG_MUL = 8;
 
-type FrameXform = { x: number; y: number; w: number; h: number; rot: number; turns: number };
-type HandleId = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
-const EMPTY_FRAME: FrameXform = { x: 0, y: 0, w: 0, h: 0, rot: 0, turns: 0 };
+type FrameXform = { x: number; y: number; w: number; h: number; rot: number; turns: number; tilt: number };
+const EMPTY_FRAME: FrameXform = { x: 0, y: 0, w: 0, h: 0, rot: 0, turns: 0, tilt: 0 };
+
+function frameAngle(f: FrameXform) {
+  return ((f.turns % 4) + 4) % 4 * 90 + (f.tilt || 0);
+}
 
 function visOf(f: FrameXform) {
   return f.rot % 180 === 0 ? { visW: f.w, visH: f.h } : { visW: f.h, visH: f.w };
 }
 
-function fromVis(visW: number, visH: number, rot: number, x: number, y: number, turns: number): FrameXform {
-  return rot % 180 === 0 ? { x, y, w: visW, h: visH, rot, turns } : { x, y, w: visH, h: visW, rot, turns };
+function fromVis(
+  visW: number,
+  visH: number,
+  rot: number,
+  x: number,
+  y: number,
+  turns: number,
+  tilt = 0
+): FrameXform {
+  return rot % 180 === 0
+    ? { x, y, w: visW, h: visH, rot, turns, tilt }
+    : { x, y, w: visH, h: visW, rot, turns, tilt };
 }
 
-function coverXform(fw: number, fh: number, nw: number, nh: number, turns: number): FrameXform {
+function coverXform(fw: number, fh: number, nw: number, nh: number, turns: number, tilt = 0): FrameXform {
   const rot = ((turns % 4) + 4) % 4 * 90;
   const swap = rot % 180 !== 0;
   const s = swap ? Math.max(fw / Math.max(1, nh), fh / Math.max(1, nw)) : Math.max(fw / Math.max(1, nw), fh / Math.max(1, nh));
-  return { x: 0, y: 0, w: nw * s, h: nh * s, rot, turns };
+  return { x: 0, y: 0, w: nw * s, h: nh * s, rot, turns, tilt };
 }
 
-function imageContained(f: FrameXform, fw: number, fh: number) {
-  if (f.w <= 0 || f.h <= 0 || fw <= 0 || fh <= 0) return false;
-  const { visW, visH } = visOf(f);
-  const left = fw / 2 + f.x - visW / 2;
-  const top = fh / 2 + f.y - visH / 2;
-  return left >= -1 && top >= -1 && left + visW <= fw + 1 && top + visH <= fh + 1;
+function clampUniform(visW: number, visH: number, fw: number, fh: number) {
+  const a = visW / Math.max(1, visH);
+  const min = MIN_IMG;
+  const max = Math.max(fw, fh) * MAX_IMG_MUL;
+  let w = visW;
+  let h = visH;
+  if (w < min) {
+    w = min;
+    h = w / a;
+  }
+  if (h < min) {
+    h = min;
+    w = h * a;
+  }
+  if (w > max) {
+    w = max;
+    h = w / a;
+  }
+  if (h > max) {
+    h = max;
+    w = h * a;
+  }
+  return { visW: w, visH: h };
 }
 
-function handleCursor(h: HandleId) {
-  if (h === 'n' || h === 's') return 'ns-resize';
-  if (h === 'e' || h === 'w') return 'ew-resize';
-  if (h === 'ne' || h === 'sw') return 'nesw-resize';
-  return 'nwse-resize';
-}
-
-const CORNER_HANDLES: HandleId[] = ['nw', 'ne', 'se', 'sw'];
-const EDGE_HANDLES: HandleId[] = ['n', 'e', 's', 'w'];
-
-function CornerBracket({ corner }: { corner: HandleId }) {
-  const bar = 'absolute rounded-full bg-white shadow-[0_1px_6px_rgba(0,0,0,0.45)]';
-  if (corner === 'nw') {
-    return (
-      <>
-        <span className={cn(bar, 'left-0 top-0 h-[2.5px] w-5')} />
-        <span className={cn(bar, 'left-0 top-0 h-5 w-[2.5px]')} />
-      </>
-    );
-  }
-  if (corner === 'ne') {
-    return (
-      <>
-        <span className={cn(bar, 'right-0 top-0 h-[2.5px] w-5')} />
-        <span className={cn(bar, 'right-0 top-0 h-5 w-[2.5px]')} />
-      </>
-    );
-  }
-  if (corner === 'se') {
-    return (
-      <>
-        <span className={cn(bar, 'bottom-0 right-0 h-[2.5px] w-5')} />
-        <span className={cn(bar, 'bottom-0 right-0 h-5 w-[2.5px]')} />
-      </>
-    );
-  }
+function frameDirty(f: FrameXform, fw: number, fh: number, nw: number, nh: number) {
+  const base = coverXform(fw, fh, nw, nh, 0, 0);
   return (
-    <>
-      <span className={cn(bar, 'bottom-0 left-0 h-[2.5px] w-5')} />
-      <span className={cn(bar, 'bottom-0 left-0 h-5 w-[2.5px]')} />
-    </>
+    Math.abs(f.x) > 1.5 ||
+    Math.abs(f.y) > 1.5 ||
+    Math.abs(f.tilt || 0) > 0.8 ||
+    ((f.turns % 4) + 4) % 4 !== 0 ||
+    Math.abs(f.w - base.w) > 3 ||
+    Math.abs(f.h - base.h) > 3
   );
 }
 
-function PhotoHandles({
-  frame,
-  fw,
-  fh,
-  avatarOnly,
-  onHandleDown,
-  onHandleMove,
-  onHandleUp,
-}: {
-  frame: FrameXform;
-  fw: number;
-  fh: number;
-  avatarOnly: boolean;
-  onHandleDown: (handle: HandleId, e: React.PointerEvent) => void;
-  onHandleMove: (e: React.PointerEvent) => void;
-  onHandleUp: (e: React.PointerEvent) => void;
-}) {
-  const dimMaskId = useId().replace(/:/g, '');
-  const { visW, visH } = visOf(frame);
-  const left = fw / 2 + frame.x - visW / 2;
-  const top = fh / 2 + frame.y - visH / 2;
-  const contained = imageContained(frame, fw, fh);
-  const inset = contained ? 0 : 1;
-  const boxL = contained ? left : inset;
-  const boxT = contained ? top : inset;
-  const boxW = contained ? visW : fw - inset * 2;
-  const boxH = contained ? visH : fh - inset * 2;
-  const points: Record<HandleId, { x: number; y: number }> = {
-    nw: { x: boxL, y: boxT },
-    n: { x: boxL + boxW / 2, y: boxT },
-    ne: { x: boxL + boxW, y: boxT },
-    e: { x: boxL + boxW, y: boxT + boxH / 2 },
-    se: { x: boxL + boxW, y: boxT + boxH },
-    s: { x: boxL + boxW / 2, y: boxT + boxH },
-    sw: { x: boxL, y: boxT + boxH },
-    w: { x: boxL, y: boxT + boxH / 2 },
+function mediaLayerStyle(frame: FrameXform): React.CSSProperties {
+  if (frame.w <= 0) {
+    return {
+      width: '100%',
+      height: '100%',
+      objectFit: 'cover',
+      transform: 'translate(-50%, -50%)',
+    };
+  }
+  return {
+    width: frame.w,
+    height: frame.h,
+    transform: `translate(-50%, -50%) translate(${frame.x}px, ${frame.y}px) rotate(${frameAngle(frame)}deg)`,
   };
-  const edgeHit = (id: HandleId) => {
-    if (id === 'n') return { left: boxL, top: boxT - 14, width: boxW, height: 28 };
-    if (id === 's') return { left: boxL, top: boxT + boxH - 14, width: boxW, height: 28 };
-    if (id === 'e') return { left: boxL + boxW - 14, top: boxT, width: 28, height: boxH };
-    return { left: boxL - 14, top: boxT, width: 28, height: boxH };
-  };
-  return (
-    <div className="pointer-events-none absolute inset-0 z-10">
-      {contained && boxW > 0 && boxH > 0 && (
-        <svg className="absolute inset-0 h-full w-full" aria-hidden>
-          <defs>
-            <mask id={dimMaskId}>
-              <rect width="100%" height="100%" fill="white" />
-              <rect x={boxL} y={boxT} width={boxW} height={boxH} fill="black" />
-            </mask>
-          </defs>
-          <rect width="100%" height="100%" fill="rgba(0,0,0,0.42)" mask={`url(#${dimMaskId})`} />
-        </svg>
-      )}
-      <div
-        className={cn(
-          'absolute border border-white/35',
-          avatarOnly ? 'border-dashed border-white/25' : 'border-solid'
-        )}
-        style={{ left: boxL, top: boxT, width: boxW, height: boxH }}
-      />
-      <div
-        className="pointer-events-none absolute w-px bg-white/[0.08]"
-        style={{ left: boxL + boxW * 0.333, top: boxT, height: boxH }}
-      />
-      <div
-        className="pointer-events-none absolute w-px bg-white/[0.08]"
-        style={{ left: boxL + boxW * 0.666, top: boxT, height: boxH }}
-      />
-      <div
-        className="pointer-events-none absolute h-px bg-white/[0.08]"
-        style={{ left: boxL, top: boxT + boxH * 0.333, width: boxW }}
-      />
-      <div
-        className="pointer-events-none absolute h-px bg-white/[0.08]"
-        style={{ left: boxL, top: boxT + boxH * 0.666, width: boxW }}
-      />
-      {CORNER_HANDLES.map(id => (
-        <div
-          key={id}
-          data-frame-handle={id}
-          role="presentation"
-          className="pointer-events-auto absolute z-20 h-11 w-11"
-          style={{
-            left: points[id].x,
-            top: points[id].y,
-            transform: 'translate(-50%, -50%)',
-            cursor: handleCursor(id),
-            touchAction: 'none',
-          }}
-          onPointerDown={e => onHandleDown(id, e)}
-          onPointerMove={onHandleMove}
-          onPointerUp={onHandleUp}
-          onPointerCancel={onHandleUp}
-        >
-          <div className="relative h-5 w-5">
-            <CornerBracket corner={id} />
-          </div>
-        </div>
-      ))}
-      {EDGE_HANDLES.map(id => (
-        <div
-          key={id}
-          data-frame-handle={id}
-          role="presentation"
-          className="pointer-events-auto absolute z-[15]"
-          style={{ ...edgeHit(id), cursor: handleCursor(id), touchAction: 'none' }}
-          onPointerDown={e => onHandleDown(id, e)}
-          onPointerMove={onHandleMove}
-          onPointerUp={onHandleUp}
-          onPointerCancel={onHandleUp}
-        />
-      ))}
-    </div>
-  );
 }
 
 function keepFile(file: File) {
@@ -238,12 +142,16 @@ function pickRecorderMime(): string | undefined {
 
 export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPickImage }: StoryCameraProps) {
   const avatarOnly = mode === 'avatar';
+  const chatMode = mode === 'chat';
   const videoRef = useRef<HTMLVideoElement>(null);
   const previewRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const holdTimer = useRef<number | null>(null);
+  const micWait = useRef<Promise<void> | null>(null);
+  const holdArmed = useRef(false);
+  const ignoreCancelUntil = useRef(0);
   const galleryRef = useRef<HTMLInputElement>(null);
   const startY = useRef<number | null>(null);
   const trimAbort = useRef({ cancelled: false });
@@ -252,20 +160,8 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
   const frameRef = useRef<FrameXform>(EMPTY_FRAME);
   const imgNatRef = useRef<{ w: number; h: number } | null>(null);
   const pointers = useRef(new Map<number, { x: number; y: number }>());
-  const pinch = useRef<{ dist: number; w: number; h: number } | null>(null);
+  const pinch = useRef<{ dist: number; w: number; h: number; angle: number; tilt: number } | null>(null);
   const pan = useRef<{ x: number; y: number; fx: number; fy: number } | null>(null);
-  const resizeRef = useRef<{
-    handle: HandleId;
-    startX: number;
-    startY: number;
-    contained: boolean;
-    fw: number;
-    fh: number;
-    x: number;
-    y: number;
-    visW: number;
-    visH: number;
-  } | null>(null);
   const frameBoxRef = useRef<HTMLDivElement | null>(null);
   const camGen = useRef(0);
 
@@ -301,7 +197,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     setCamReady(false);
   }, []);
 
-  const startStream = useCallback(async (mode: 'user' | 'environment') => {
+  const startStream = useCallback(async (mode: 'user' | 'environment', fromGesture = false) => {
     const gen = ++camGen.current;
     setCamError(false);
     setCamDenied(false);
@@ -335,8 +231,10 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
         if (streamRef.current === stream) streamRef.current = null;
         return false;
       }
+      markCameraGranted();
       setCamReady(true);
       setCamError(false);
+      setCamDenied(false);
       return true;
     };
     const primed = consumePrimedStoryCamera();
@@ -346,6 +244,15 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     if (!navigator.mediaDevices?.getUserMedia) {
       if (!stale()) setCamError(true);
       return;
+    }
+    if (!fromGesture) {
+      const perm = await queryCameraPermission();
+      if (stale()) return;
+      if (perm !== 'granted') {
+        setCamDenied(false);
+        setCamError(true);
+        return;
+      }
     }
     const tries: MediaStreamConstraints[] = [
       { video: { facingMode: { ideal: mode } }, audio: false },
@@ -363,7 +270,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
       }
     }
     if (!stale()) {
-      setCamDenied(denied);
+      setCamDenied(denied && fromGesture);
       setCamError(true);
     }
   }, []);
@@ -529,7 +436,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     const token = { cancelled: false };
     trimAbort.current = token;
     setThumbs([]);
-    void extractStoryThumbnails(file, 10, token, (dataUrl, index) => {
+    void extractStoryThumbnails(file, 14, token, (dataUrl, index) => {
       setThumbs(prev => {
         const next = prev.slice();
         next[index] = dataUrl;
@@ -549,6 +456,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
 
   const acceptFile = (selected: File | null) => {
     if (!selected) return;
+    markGalleryReady();
     if (avatarOnly && !selected.type.startsWith('image/')) {
       setError('Para el perfil solo vale una foto.');
       return;
@@ -559,6 +467,8 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     }
     setError(null);
     setJustPublished(false);
+    setFrame(EMPTY_FRAME);
+    imgNatRef.current = null;
     const kept = keepFile(selected);
     if (!kept.type.startsWith('video/')) {
       setDuration(null);
@@ -590,7 +500,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     const video = videoRef.current;
     if (!video || !video.videoWidth) {
       setError('La cámara aún no está lista. Espera un segundo o pulsa para reintentar.');
-      void startStream(facing);
+      void startStream(facing, true);
       return;
     }
     const canvas = document.createElement('canvas');
@@ -609,18 +519,37 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     }, 'image/jpeg', 0.92);
   };
 
-  const startRecording = () => {
+  const ensureMic = () => {
     const stream = streamRef.current;
-    if (!stream || typeof MediaRecorder === 'undefined') return;
-    if (stream.getAudioTracks().length === 0) {
-      const gen = camGen.current;
-      void navigator.mediaDevices?.getUserMedia({ audio: true, video: false }).then(mic => {
-        if (camGen.current !== gen || streamRef.current !== stream) {
+    if (!stream) {
+      micWait.current = Promise.resolve();
+      return micWait.current;
+    }
+    if (stream.getAudioTracks().some(t => t.readyState === 'live')) {
+      micWait.current = Promise.resolve();
+      return micWait.current;
+    }
+    micWait.current = navigator.mediaDevices
+      .getUserMedia({ audio: true, video: false })
+      .then(mic => {
+        if (streamRef.current !== stream) {
           mic.getTracks().forEach(t => t.stop());
           return;
         }
-        mic.getAudioTracks().forEach(t => stream.addTrack(t));
-      }).catch(() => {});
+        mic.getAudioTracks().forEach(t => {
+          if (!stream.getAudioTracks().some(x => x.id === t.id)) stream.addTrack(t);
+        });
+      })
+      .catch(() => undefined);
+    return micWait.current;
+  };
+
+  const startRecording = () => {
+    const stream = streamRef.current;
+    if (!stream) return;
+    if (typeof MediaRecorder === 'undefined') {
+      setError('Este móvil no puede grabar aquí. Elige un vídeo de la galería.');
+      return;
     }
     const mime = pickRecorderMime();
     const rec = mime
@@ -638,7 +567,13 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
       setRecording(false);
     };
     recorderRef.current = rec;
-    rec.start();
+    try {
+      rec.start();
+    } catch {
+      setError('No se ha podido grabar. Prueba de nuevo o elige un vídeo de la galería.');
+      return;
+    }
+    ignoreCancelUntil.current = Date.now() + 450;
     setRecording(true);
     setRecMs(0);
   };
@@ -649,27 +584,55 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     try { rec.stop(); } catch { /* ignore */ }
   };
 
-  const onShutterDown = () => {
+  const onShutterDown = (e: React.PointerEvent) => {
     if (file || saving || justPublished) return;
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* iOS antiguo */
+    }
     if (avatarOnly) return;
+    holdArmed.current = true;
+    void ensureMic();
     holdTimer.current = window.setTimeout(() => {
       holdTimer.current = null;
-      startRecording();
-    }, 180);
+      if (!holdArmed.current) return;
+      const ready = micWait.current ?? Promise.resolve();
+      void Promise.race([ready, new Promise<void>(r => window.setTimeout(r, 140))]).then(() => {
+        if (!holdArmed.current) return;
+        startRecording();
+      });
+    }, 200);
   };
 
-  const onShutterUp = () => {
+  const finishShutter = () => {
     if (avatarOnly) {
       takePhoto();
       return;
     }
+    holdArmed.current = false;
     if (holdTimer.current != null) {
       window.clearTimeout(holdTimer.current);
       holdTimer.current = null;
       takePhoto();
       return;
     }
-    if (recording) stopRecording();
+    if (recording || recorderRef.current?.state === 'recording') stopRecording();
+  };
+
+  const onShutterUp = (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    finishShutter();
+  };
+
+  const onShutterCancel = () => {
+    if (Date.now() < ignoreCancelUntil.current) return;
+    if (holdTimer.current != null) return;
+    if (recording) return;
+    holdArmed.current = false;
   };
 
   const discard = () => {
@@ -682,20 +645,10 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     imgNatRef.current = null;
     setFrame(EMPTY_FRAME);
     dropPreviewUrl();
-    void startStream(facing);
+    void startStream(facing, true);
   };
 
   const clipLen = Math.max(0, trimEnd - trimStart);
-
-  const setClipPreset = (sec: number) => {
-    if (duration == null) return;
-    const next = Math.min(sec, duration, STORY_VIDEO_MAX_SEC);
-    setTrimStart(s => {
-      const start = Math.min(s, Math.max(0, duration - next));
-      setTrimEnd(start + next);
-      return start;
-    });
-  };
 
   const onTrimChange = (start: number, end: number) => {
     setTrimStart(start);
@@ -716,11 +669,32 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
       let toSend = file;
       if (file.type.startsWith('image/')) {
         toSend = await exportFramedPhoto(file, false);
-      } else if (file.type.startsWith('video/') && duration != null && needsStoryPrepare(file, duration, trimStart, clipLen)) {
-        toSend = await trimVideoFile(file, trimStart, trimStart + clipLen);
+      } else if (file.type.startsWith('video/') && duration != null) {
+        const f = frameRef.current;
+        const box = frameBoxRef.current;
+        const nat = imgNatRef.current;
+        const fw = box?.clientWidth || boxSize.w || 1;
+        const fh = box?.clientHeight || boxSize.h || 1;
+        const moved = !!(nat && frameDirty(f, fw, fh, nat.w, nat.h));
+        if (moved || needsStoryPrepare(file, duration, trimStart, clipLen)) {
+          toSend = await trimVideoFile(file, trimStart, trimStart + clipLen, {
+            rotationDeg: frameAngle(f),
+            x: f.x,
+            y: f.y,
+            w: f.w,
+            h: f.h,
+            viewW: fw,
+            viewH: fh,
+          });
+        }
       }
       if (toSend.size > STORY_UPLOAD_MAX_BYTES) {
         throw new Error('Pesa más de lo que aguanta el servidor. Recorta a 1 min o menos.');
+      }
+      if (chatMode) {
+        onPickImage?.(toSend);
+        onClose();
+        return;
       }
       const post = await publishMedia(toSend, { kind: 'story' });
       onPublished?.(post);
@@ -744,7 +718,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     imgNatRef.current = null;
     setFrame(EMPTY_FRAME);
     dropPreviewUrl();
-    void startStream(facing);
+    void startStream(facing, true);
   };
 
   const onPreviewLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
@@ -760,8 +734,19 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     }
   };
 
+  const onVideoMeta = (e: React.SyntheticEvent<HTMLVideoElement>) => {
+    const v = e.currentTarget;
+    if (!v.videoWidth || !v.videoHeight) return;
+    imgNatRef.current = { w: v.videoWidth, h: v.videoHeight };
+    if (frameRef.current.w > 0) return;
+    const box = frameBoxRef.current;
+    if (box && box.clientWidth > 2) {
+      setFrame(coverXform(box.clientWidth, box.clientHeight, v.videoWidth, v.videoHeight, 0));
+    }
+  };
+
   useEffect(() => {
-    if (!file || file.type.startsWith('video/')) return;
+    if (!file) return;
     const el = frameBoxRef.current;
     if (!el) return;
     const sync = () => {
@@ -769,7 +754,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
       const fh = el.clientHeight;
       setBoxSize({ w: fw, h: fh });
       if (imgNatRef.current && frameRef.current.w === 0 && fw > 2 && fh > 2) {
-        setFrame(coverXform(fw, fh, imgNatRef.current.w, imgNatRef.current.h, frameRef.current.turns));
+        setFrame(coverXform(fw, fh, imgNatRef.current.w, imgNatRef.current.h, frameRef.current.turns, frameRef.current.tilt));
       }
     };
     sync();
@@ -799,18 +784,19 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     ctx.filter = 'none';
     ctx.fillStyle = 'rgba(0,0,0,0.22)';
     ctx.fillRect(0, 0, W, H);
-    let { x, y, w, h, rot, turns } = frameRef.current;
+    let { x, y, w, h, rot, turns, tilt } = frameRef.current;
     if (w <= 0 || h <= 0) {
-      const filled = coverXform(vw, vh, img.width, img.height, turns);
+      const filled = coverXform(vw, vh, img.width, img.height, turns, tilt);
       x = filled.x;
       y = filled.y;
       w = filled.w;
       h = filled.h;
       rot = filled.rot;
+      tilt = filled.tilt;
     }
     ctx.save();
     ctx.translate(W / 2 + x * (W / vw), H / 2 + y * (H / vh));
-    ctx.rotate((rot * Math.PI) / 180);
+    ctx.rotate(((rot + (tilt || 0)) * Math.PI) / 180);
     ctx.drawImage(img, -(w * W / vw) / 2, -(h * H / vh) / 2, w * (W / vw), h * (H / vh));
     ctx.restore();
     const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92));
@@ -819,40 +805,10 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     return new File([blob], square ? 'perfil.jpg' : 'historia.jpg', { type: 'image/jpeg' });
   };
 
-  const clampSize = (visW: number, visH: number, fw: number, fh: number) => ({
-    visW: Math.min(fw * MAX_IMG_MUL, Math.max(MIN_IMG, visW)),
-    visH: Math.min(fh * MAX_IMG_MUL, Math.max(MIN_IMG, visH)),
-  });
-
-  const onHandleDown = (handle: HandleId, e: React.PointerEvent) => {
-    if (saving || fileRef.current?.type.startsWith('video/')) return;
+  const onFramePointerDown = (e: React.PointerEvent) => {
+    if (saving) return;
     e.stopPropagation();
     e.preventDefault();
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    const box = frameBoxRef.current;
-    const fw = box?.clientWidth || boxSize.w;
-    const fh = box?.clientHeight || boxSize.h;
-    const { visW, visH } = visOf(frame);
-    resizeRef.current = {
-      handle,
-      startX: e.clientX,
-      startY: e.clientY,
-      contained: imageContained(frame, fw, fh),
-      fw,
-      fh,
-      x: frame.x,
-      y: frame.y,
-      visW,
-      visH,
-    };
-    pan.current = null;
-    pinch.current = null;
-  };
-
-  const onFramePointerDown = (e: React.PointerEvent) => {
-    if (saving || fileRef.current?.type.startsWith('video/')) return;
-    if ((e.target as HTMLElement).closest('[data-frame-handle]')) return;
-    e.stopPropagation();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pointers.current.size === 1) {
@@ -861,53 +817,31 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     } else if (pointers.current.size === 2) {
       const [a, b] = [...pointers.current.values()];
       const { visW, visH } = visOf(frame);
-      pinch.current = { dist: Math.hypot(a.x - b.x, a.y - b.y), w: visW, h: visH };
+      pinch.current = {
+        dist: Math.hypot(a.x - b.x, a.y - b.y),
+        w: visW || 1,
+        h: visH || 1,
+        angle: Math.atan2(b.y - a.y, b.x - a.x),
+        tilt: frame.tilt || 0,
+      };
       pan.current = null;
     }
   };
 
   const onFramePointerMove = (e: React.PointerEvent) => {
-    const resize = resizeRef.current;
-    if (resize) {
-      const dx = e.clientX - resize.startX;
-      const dy = e.clientY - resize.startY;
-      const handle = resize.handle;
-      if (resize.contained) {
-        let left = resize.x - resize.visW / 2;
-        let top = resize.y - resize.visH / 2;
-        let right = resize.x + resize.visW / 2;
-        let bottom = resize.y + resize.visH / 2;
-        if (handle.includes('e')) right = Math.max(left + MIN_IMG, right + dx);
-        if (handle.includes('w')) left = Math.min(right - MIN_IMG, left + dx);
-        if (handle.includes('s')) bottom = Math.max(top + MIN_IMG, bottom + dy);
-        if (handle.includes('n')) top = Math.min(bottom - MIN_IMG, top + dy);
-        const next = clampSize(right - left, bottom - top, resize.fw, resize.fh);
-        setFrame(fromVis(next.visW, next.visH, frameRef.current.rot, (left + right) / 2, (top + bottom) / 2, frameRef.current.turns));
-      } else {
-        let visW = resize.visW;
-        let visH = resize.visH;
-        const sx = visW / Math.max(1, resize.fw);
-        const sy = visH / Math.max(1, resize.fh);
-        if (handle.includes('e')) visW += dx * sx;
-        if (handle.includes('w')) visW -= dx * sx;
-        if (handle.includes('s')) visH += dy * sy;
-        if (handle.includes('n')) visH -= dy * sy;
-        const next = clampSize(visW, visH, resize.fw, resize.fh);
-        setFrame(fromVis(next.visW, next.visH, frameRef.current.rot, resize.x, resize.y, frameRef.current.turns));
-      }
-      return;
-    }
     if (!pointers.current.has(e.pointerId)) return;
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pinch.current && pointers.current.size >= 2) {
       const [a, b] = [...pointers.current.values()];
       const d = Math.hypot(a.x - b.x, a.y - b.y);
       const ratio = d / Math.max(1, pinch.current.dist);
+      const deg = (Math.atan2(b.y - a.y, b.x - a.x) - pinch.current.angle) * (180 / Math.PI);
+      const tilt = pinch.current.tilt + deg;
       const box = frameBoxRef.current;
       const fw = box?.clientWidth || boxSize.w || 1;
       const fh = box?.clientHeight || boxSize.h || 1;
-      const next = clampSize(pinch.current.w * ratio, pinch.current.h * ratio, fw, fh);
-      setFrame(f => fromVis(next.visW, next.visH, f.rot, f.x, f.y, f.turns));
+      const next = clampUniform(pinch.current.w * ratio, pinch.current.h * ratio, fw, fh);
+      setFrame(f => fromVis(next.visW, next.visH, f.rot, f.x, f.y, f.turns, tilt));
       return;
     }
     const start = pan.current;
@@ -923,19 +857,33 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     pointers.current.delete(e.pointerId);
     if (pointers.current.size < 2) pinch.current = null;
     if (pointers.current.size === 0) pan.current = null;
-    resizeRef.current = null;
   };
 
-  const rotatePhoto = () => {
+  const rotateMedia = () => {
     setFrame(f => {
       const turns = f.turns + 1;
       const box = frameBoxRef.current;
       const nat = imgNatRef.current;
-      if (!box || !nat || box.clientWidth < 2 || box.clientHeight < 2) {
+      if (!box || !nat || box.clientWidth < 2) {
         return { ...f, turns, rot: ((turns % 4) + 4) % 4 * 90 };
       }
-      return coverXform(box.clientWidth, box.clientHeight, nat.w, nat.h, turns);
+      return { ...coverXform(box.clientWidth, box.clientHeight, nat.w, nat.h, turns, f.tilt), x: f.x, y: f.y };
     });
+  };
+
+  const resetEdit = () => {
+    if (duration != null) {
+      const len = Math.min(STORY_VIDEO_MAX_SEC, duration);
+      setTrimStart(0);
+      setTrimEnd(Math.max(STORY_VIDEO_MIN_SEC, len));
+    }
+    const box = frameBoxRef.current;
+    const nat = imgNatRef.current;
+    if (box && nat && box.clientWidth > 2) {
+      setFrame(coverXform(box.clientWidth, box.clientHeight, nat.w, nat.h, 0, 0));
+      return;
+    }
+    setFrame(EMPTY_FRAME);
   };
 
   useEffect(() => {
@@ -956,7 +904,12 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
 
   const isVideo = !!file?.type.startsWith('video/');
   const recSec = Math.min(STORY_VIDEO_MAX_SEC, Math.floor(recMs / 1000));
-  const tooLong = duration != null && duration > STORY_VIDEO_MAX_SEC + 0.15;
+  const clipEstimate =
+    isVideo && file && duration != null
+      ? Math.abs(frameAngle(frame)) > 0.8
+        ? Math.round((STORY_VIDEO_BITRATE / 8) * Math.max(0.4, clipLen))
+        : estimateClipBytes(file, duration, trimStart, clipLen)
+      : 0;
 
   if (typeof document === 'undefined') return null;
 
@@ -970,7 +923,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
       transition={STICKY}
       className={cn(
         'fixed inset-0 z-[140000] origin-bottom overflow-hidden text-white',
-        file && !isVideo ? 'bg-transparent' : 'bg-black'
+        'bg-black'
       )}
       onTouchStart={e => {
         if (file || justPublished) return;
@@ -990,8 +943,8 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
       <input
         ref={galleryRef}
         type="file"
-        accept={avatarOnly ? 'image/*' : 'image/*,video/*'}
-        className="hidden"
+        accept={avatarOnly ? GALLERY_PHOTOS_ACCEPT : GALLERY_MEDIA_ACCEPT}
+        className={FILE_INPUT_VISUAL}
         onChange={e => {
           const picked = e.target.files?.[0] ?? null;
           acceptFile(picked);
@@ -1020,15 +973,22 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center">
               <p className="text-sm font-semibold text-white/80">
                 {camDenied
-                  ? 'Sin permiso de cámara. Actívalo en el navegador y reintenta.'
-                  : 'No se ha podido abrir la cámara.'}
+                  ? 'La cámara está bloqueada. Actívala en los ajustes del sitio (candado o «Sitio») y pulsa de nuevo.'
+                  : 'Necesitamos la cámara. Pulsa Permitir cuando te lo pida el móvil.'}
               </p>
               <button
                 type="button"
-                onClick={() => void startStream(facing)}
+                onClick={() => void startStream(facing, true)}
                 className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-900"
               >
-                Reintentar
+                {camDenied ? 'Reintentar' : 'Permitir cámara'}
+              </button>
+              <button
+                type="button"
+                onClick={openGallery}
+                className="rounded-full bg-white/15 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/30"
+              >
+                Elegir de la galería
               </button>
             </div>
           )}
@@ -1036,18 +996,8 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
       )}
 
       {file && previewUrl && (
-        isVideo ? (
-          <video
-            ref={previewRef}
-            src={previewUrl}
-            muted
-            playsInline
-            className="absolute inset-0 h-full w-full object-contain bg-black"
-            onError={revivePreview}
-          />
-        ) : (
           <div
-            className="absolute inset-0 touch-none"
+            className="absolute inset-0 touch-none bg-black"
             onPointerDown={onFramePointerDown}
             onPointerMove={onFramePointerMove}
             onPointerUp={onFramePointerUp}
@@ -1059,36 +1009,39 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
               const fh = box?.clientHeight || boxSize.h || 1;
               const ratio = e.deltaY > 0 ? 0.94 : 1.06;
               const { visW, visH } = visOf(frame);
-              const next = clampSize(visW * ratio, visH * ratio, fw, fh);
-              setFrame(fromVis(next.visW, next.visH, frame.rot, frame.x, frame.y, frame.turns));
+              const next = clampUniform(visW * ratio, visH * ratio, fw, fh);
+              setFrame(fromVis(next.visW, next.visH, frame.rot, frame.x, frame.y, frame.turns, frame.tilt));
             }}
           >
-            <div className="absolute inset-0 bg-zinc-950" />
-            <img
-              src={previewUrl}
-              alt=""
-              draggable={false}
-              className="pointer-events-none absolute inset-0 h-full w-full scale-125 object-cover opacity-[0.38] blur-[72px]"
-            />
-            <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/30 via-transparent to-black/40" />
-            <div className="absolute inset-x-0 top-[max(3rem,calc(env(safe-area-inset-top)+2.25rem))] bottom-[max(7rem,calc(env(safe-area-inset-bottom)+6rem))] flex items-center justify-center px-2">
-              <div
-                className={cn(
-                  'relative',
-                  avatarOnly
-                    ? 'aspect-square h-full max-h-full max-w-full'
-                    : 'aspect-[9/16] h-full max-h-full max-w-full'
-                )}
-              >
-                <div
-                  ref={frameBoxRef}
-                  className={cn(
-                    'absolute inset-0 overflow-hidden bg-black/30 shadow-[0_24px_80px_rgba(0,0,0,0.55)]',
-                    avatarOnly
-                      ? 'rounded-full ring-2 ring-white/85 ring-offset-2 ring-offset-black/20'
-                      : 'rounded-[20px] ring-1 ring-white/20'
-                  )}
-                >
+            {!avatarOnly && !isVideo && (
+              <img
+                src={previewUrl}
+                alt=""
+                draggable={false}
+                className="pointer-events-none absolute inset-0 h-full w-full scale-125 object-cover opacity-[0.28] blur-[80px]"
+              />
+            )}
+            <div
+              className={cn(
+                'absolute overflow-hidden',
+                avatarOnly
+                  ? 'left-1/2 top-1/2 aspect-square w-[min(78vw,20rem)] -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-white/85 ring-offset-2 ring-offset-black/30'
+                  : 'inset-0'
+              )}
+            >
+              <div ref={frameBoxRef} className="absolute inset-0">
+                {isVideo ? (
+                  <video
+                    ref={previewRef}
+                    src={previewUrl}
+                    muted
+                    playsInline
+                    onLoadedMetadata={onVideoMeta}
+                    onError={revivePreview}
+                    className="pointer-events-none absolute left-1/2 top-1/2 max-w-none select-none"
+                    style={mediaLayerStyle(frame)}
+                  />
+                ) : (
                   <img
                     data-story-preview
                     src={previewUrl}
@@ -1096,38 +1049,13 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
                     draggable={false}
                     onLoad={onPreviewLoad}
                     onError={revivePreview}
-                    className="absolute left-1/2 top-1/2 max-w-none select-none transition-transform duration-300 ease-out"
-                    style={
-                      frame.w > 0
-                        ? {
-                            width: frame.w,
-                            height: frame.h,
-                            transform: `translate(-50%, -50%) translate(${frame.x}px, ${frame.y}px) rotate(${frame.turns * 90}deg)`,
-                          }
-                        : {
-                            width: '100%',
-                            height: '100%',
-                            objectFit: 'cover',
-                            transform: 'translate(-50%, -50%)',
-                          }
-                    }
-                  />
-                </div>
-                {frame.w > 0 && boxSize.w > 0 && (
-                  <PhotoHandles
-                    frame={frame}
-                    fw={boxSize.w}
-                    fh={boxSize.h}
-                    avatarOnly={avatarOnly}
-                    onHandleDown={onHandleDown}
-                    onHandleMove={onFramePointerMove}
-                    onHandleUp={onFramePointerUp}
+                    className="pointer-events-none absolute left-1/2 top-1/2 max-w-none select-none"
+                    style={mediaLayerStyle(frame)}
                   />
                 )}
               </div>
             </div>
           </div>
-        )
       )}
 
       {justPublished && (
@@ -1196,52 +1124,32 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
         ) : file ? (
           <div className="space-y-3">
             {isVideo && duration != null && (
-              <div className="rounded-[22px] border border-white/15 bg-black/45 px-3 py-2.5 backdrop-blur-xl">
-                <p className="mb-2 text-[11px] font-semibold text-white/80">
-                  {tooLong
-                    ? `Dura ${formatStoryTime(duration)}. Arrastra las asas: solo se sube 1 min.`
-                    : file.size > STORY_UPLOAD_MAX_BYTES
-                      ? 'Pesa mucho: recorta aquí el tramo y se comprime al subir.'
-                      : `Este clip cabe entero (${formatStoryTime(duration)}). Puedes acortarlo.`}
-                </p>
-                <StoryTrimStrip
-                  duration={duration}
-                  start={trimStart}
-                  end={trimEnd}
-                  thumbs={thumbs}
-                  playhead={playhead}
-                  onChange={onTrimChange}
-                />
-                {duration > STORY_VIDEO_MIN_SEC + 0.2 && (
-                  <div className="mt-2 flex gap-1.5">
-                    {CLIP_PRESETS.filter(s => s <= duration + 0.01 && s <= STORY_VIDEO_MAX_SEC).map(s => (
-                      <button
-                        key={s}
-                        type="button"
-                        onClick={() => setClipPreset(s)}
-                        className={cn(
-                          'rounded-full px-2.5 py-1 text-[11px] font-bold',
-                          Math.abs(clipLen - s) < 0.2 ? 'bg-white text-slate-900' : 'bg-white/15 text-white/80'
-                        )}
-                      >
-                        {s}s
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+              <StoryTrimStrip
+                duration={duration}
+                start={trimStart}
+                end={trimEnd}
+                thumbs={thumbs}
+                playhead={playhead}
+                sizeLabel={formatStoryBytes(clipEstimate)}
+                onChange={onTrimChange}
+              />
             )}
-            <div className="flex items-center justify-between gap-3">
-              {!isVideo && (
-                <button
-                  type="button"
-                  onClick={rotatePhoto}
-                  className="flex h-11 w-11 items-center justify-center rounded-full bg-black/35 backdrop-blur-md ring-1 ring-white/15"
-                  aria-label="Girar imagen"
-                >
-                  <RotateCw size={18} />
-                </button>
-              )}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={rotateMedia}
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-black/35 backdrop-blur-md ring-1 ring-white/15"
+                aria-label="Girar"
+              >
+                <RotateCw size={18} />
+              </button>
+              <button
+                type="button"
+                onClick={resetEdit}
+                className="rounded-full bg-black/35 px-3 py-2 text-[12px] font-semibold text-white/90 ring-1 ring-white/15 backdrop-blur-md"
+              >
+                Restablecer
+              </button>
               <button
                 type="button"
                 disabled={saving || probing}
@@ -1252,12 +1160,14 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
                   {saving || probing ? <Loader2 size={16} className="animate-spin" /> : 'Yo'}
                 </span>
                 {saving
-                  ? isVideo && duration != null && needsStoryPrepare(file, duration, trimStart, clipLen)
+                  ? isVideo && duration != null && (Math.abs(frameAngle(frame)) > 0.8 || needsStoryPrepare(file, duration, trimStart, clipLen))
                     ? 'Recortando…'
                     : 'Subiendo…'
                   : avatarOnly
                     ? 'Mi foto'
-                    : 'Tu historia'}
+                    : chatMode
+                      ? 'Enviar'
+                      : 'Tu historia'}
               </button>
             </div>
           </div>
@@ -1275,13 +1185,15 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
               type="button"
               onPointerDown={onShutterDown}
               onPointerUp={onShutterUp}
-              onPointerCancel={onShutterUp}
+              onPointerCancel={onShutterCancel}
+              onTouchStart={e => e.stopPropagation()}
               onContextMenu={e => e.preventDefault()}
               className={cn(
-                'relative mb-1 h-[72px] w-[72px] rounded-full border-[4px] border-white bg-white/25',
+                'relative mb-1 h-[72px] w-[72px] touch-none select-none rounded-full border-[4px] border-white bg-white/25',
                 recording && 'scale-110 border-rose-500 bg-rose-500/30'
               )}
-              aria-label="Disparar"
+              style={{ WebkitTouchCallout: 'none' } as React.CSSProperties}
+              aria-label={avatarOnly ? 'Hacer foto' : 'Toca foto · mantén pulsado para vídeo'}
             >
               {recording && (
                 <span
@@ -1299,14 +1211,16 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
           <p className="mt-3 text-center text-[11px] text-white/55">
             {avatarOnly
               ? 'Solo foto · luego la encuadras en círculo'
-              : 'Foto o vídeo · máximo 1 min · un archivo más largo se recorta aquí'}
+              : chatMode
+                ? 'Toca para foto · mantén pulsado para vídeo · se borra en 24 h'
+                : 'Toca para foto · mantén pulsado para vídeo · máximo 1 min'}
           </p>
         )}
-        {file && !isVideo && !justPublished && (
+        {file && !justPublished && (
           <p className="mt-3 text-center text-[11px] text-white/50">
-            {avatarOnly
-              ? 'Arrastra o pellizca para encuadrar · gira con ↻'
-              : 'Arrastra para mover · pellizca para escalar · gira con ↻'}
+            {isVideo
+              ? 'Arrastra para mover · pellizca para tamaño · dos dedos o ↻ para girar · tira abajo para el tiempo'
+              : 'Arrastra para mover · pellizca para tamaño · dos dedos o ↻ para girar'}
           </p>
         )}
         {error && <p className="mt-2 text-center text-xs font-semibold text-rose-300">{error}</p>}

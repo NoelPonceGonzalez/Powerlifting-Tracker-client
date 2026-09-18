@@ -3,7 +3,15 @@
  * Sin él el navegador no ofrece instalar la app ni pueden llegar notificaciones push.
  */
 
+import { SW_UPDATE_EVENT } from '@/src/pwa/swUpdate';
+
 const SW_URL = '/sw.js';
+/** Comprueba si hay build nuevo en Vercel (sesiones largas abiertas). */
+const UPDATE_CHECK_MS = 30 * 60 * 1000;
+
+function notifyUpdateAvailable(): void {
+  window.dispatchEvent(new CustomEvent(SW_UPDATE_EVENT));
+}
 
 export function isServiceWorkerSupported(): boolean {
   return typeof navigator !== 'undefined' && 'serviceWorker' in navigator;
@@ -31,21 +39,35 @@ export function registerServiceWorker(): void {
     try {
       const registration = await navigator.serviceWorker.register(SW_URL, { scope: '/' });
 
-      // Al desplegar una versión nueva, activarla en cuanto termine de instalarse.
+      const signalIfWaiting = () => {
+        if (registration.waiting && navigator.serviceWorker.controller) {
+          notifyUpdateAvailable();
+        }
+      };
+
+      // Al desplegar una versión nueva, avisar en la UI (el usuario pulsa «Actualizar»).
       registration.addEventListener('updatefound', () => {
         const installing = registration.installing;
         if (!installing) return;
         installing.addEventListener('statechange', () => {
           if (installing.state === 'installed' && navigator.serviceWorker.controller) {
-            installing.postMessage({ type: 'SKIP_WAITING' });
+            notifyUpdateAvailable();
           }
         });
       });
 
+      signalIfWaiting();
+
+      const checkForUpdates = () => {
+        void registration.update().catch(() => undefined);
+      };
+
       // Buscar actualizaciones al volver a la app (sesiones largas en móvil).
       document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') void registration.update().catch(() => undefined);
+        if (document.visibilityState === 'visible') checkForUpdates();
       });
+
+      window.setInterval(checkForUpdates, UPDATE_CHECK_MS);
     } catch (err) {
       console.error('[PWA] No se pudo registrar el service worker:', err);
     }

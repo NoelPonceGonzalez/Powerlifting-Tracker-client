@@ -264,8 +264,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <input
                   ref={galleryInputRef}
                   type="file"
-                  accept="image/*"
-                  className="hidden"
+                  accept="image/*,.heic,.heif,.jpg,.jpeg,.png,.webp,.gif"
+                  className="pointer-events-none absolute h-px w-px overflow-hidden opacity-0"
                   onChange={(e) => {
                     handleAvatarFile(e.target.files?.[0]);
                     e.target.value = '';

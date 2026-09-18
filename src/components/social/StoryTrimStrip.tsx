@@ -10,6 +10,7 @@ interface StoryTrimStripProps {
   end: number;
   thumbs: string[];
   playhead?: number;
+  sizeLabel?: string;
   onChange: (start: number, end: number) => void;
 }
 
@@ -33,7 +34,7 @@ function clampWindow(start: number, end: number, duration: number): { start: num
   return { start: a, end: b };
 }
 
-export function StoryTrimStrip({ duration, start, end, thumbs, playhead, onChange }: StoryTrimStripProps) {
+export function StoryTrimStrip({ duration, start, end, thumbs, playhead, sizeLabel, onChange }: StoryTrimStripProps) {
   const barRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ kind: DragKind; grab: number; len: number; start: number; end: number } | null>(null);
 
@@ -43,7 +44,7 @@ export function StoryTrimStrip({ duration, start, end, thumbs, playhead, onChang
     playhead != null && duration > 0 ? Math.min(100, Math.max(0, (playhead / duration) * 100)) : null;
 
   const slots = useMemo(() => {
-    const n = Math.max(thumbs.length, 8);
+    const n = Math.max(thumbs.length, 10);
     return Array.from({ length: n }, (_, i) => thumbs[i] || '');
   }, [thumbs]);
 
@@ -89,9 +90,9 @@ export function StoryTrimStrip({ duration, start, end, thumbs, playhead, onChang
   };
 
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-2">
       <div
-        className="relative px-2"
+        className="relative"
         onPointerMove={e => {
           if (e.buttons) move(e.clientX);
         }}
@@ -100,7 +101,7 @@ export function StoryTrimStrip({ duration, start, end, thumbs, playhead, onChang
       >
         <div
           ref={barRef}
-          className="relative h-[4.35rem] touch-none select-none overflow-hidden rounded-2xl bg-white/10 ring-1 ring-white/20"
+          className="relative h-[4.5rem] touch-none select-none overflow-hidden rounded-lg bg-zinc-900"
         >
           <div className="absolute inset-0 flex">
             {slots.map((src, i) => (
@@ -108,52 +109,59 @@ export function StoryTrimStrip({ duration, start, end, thumbs, playhead, onChang
                 {src ? (
                   <img src={src} alt="" className="h-full w-full object-cover" draggable={false} />
                 ) : (
-                  <div className="h-full w-full bg-gradient-to-b from-indigo-500/25 to-slate-900/80" />
+                  <div className="h-full w-full bg-gradient-to-b from-zinc-700 to-zinc-950" />
                 )}
-                {i < slots.length - 1 && <span className="absolute inset-y-0 right-0 w-px bg-black/35" />}
+                {i < slots.length - 1 && <span className="absolute inset-y-0 right-0 w-px bg-black/40" />}
               </div>
             ))}
           </div>
 
-          <div className="absolute inset-y-0 left-0 bg-black/55" style={{ width: `${leftPct}%` }} />
-          <div className="absolute inset-y-0 right-0 bg-black/55" style={{ width: `${Math.max(0, 100 - leftPct - widthPct)}%` }} />
+          <div className="absolute inset-y-0 left-0 bg-black/60" style={{ width: `${leftPct}%` }} />
+          <div
+            className="absolute inset-y-0 right-0 bg-black/60"
+            style={{ width: `${Math.max(0, 100 - leftPct - widthPct)}%` }}
+          />
 
           {headPct != null && (
             <div
-              className="pointer-events-none absolute inset-y-1 w-0.5 rounded-full bg-rose-400 shadow-[0_0_8px_rgba(251,113,133,0.8)]"
+              className="pointer-events-none absolute inset-y-0 w-0.5 bg-white/90"
               style={{ left: `${headPct}%` }}
             />
           )}
         </div>
 
         <div
-          className="absolute inset-y-0"
+          className="absolute -top-1 bottom-0"
           style={{
-            left: `calc(0.5rem + (100% - 1rem) * ${leftPct / 100})`,
-            width: `calc((100% - 1rem) * ${Math.max(widthPct, 6) / 100})`,
+            left: `${leftPct}%`,
+            width: `${Math.max(widthPct, 8)}%`,
           }}
           onPointerDown={e => {
             e.currentTarget.setPointerCapture(e.pointerId);
             const r = e.currentTarget.getBoundingClientRect();
-            const edge = 22;
+            const edge = 28;
             const kind: DragKind =
               e.clientX <= r.left + edge ? 'start' : e.clientX >= r.right - edge ? 'end' : 'window';
             begin(kind, e.clientX);
             move(e.clientX);
           }}
         >
-          <div className="pointer-events-none absolute inset-0 rounded-xl border-[2.5px] border-white shadow-[0_0_0_1px_rgba(99,102,241,0.45)]" />
+          <div className="pointer-events-none absolute inset-x-0 top-1 bottom-0 border-y-[3px] border-white" />
+          <div className="pointer-events-none absolute inset-y-0 left-0 w-[3px] bg-white" />
+          <div className="pointer-events-none absolute inset-y-0 right-0 w-[3px] bg-white" />
           <Handle side="start" />
           <Handle side="end" />
         </div>
       </div>
 
-      <div className="flex items-center justify-between px-0.5 text-[10px] font-bold tabular-nums text-white/70">
-        <span>{formatStoryTime(start)}</span>
-        <span className="rounded-full bg-indigo-500/80 px-2 py-0.5 text-white">
+      <div className="flex items-center justify-between px-0.5 text-[12px] font-semibold tabular-nums text-white/80">
+        <span>
           {formatStoryTime(end - start)}
+          {sizeLabel ? ` · ${sizeLabel}` : ''}
         </span>
-        <span>{formatStoryTime(end)}</span>
+        <span className="text-[11px] font-medium text-white/45">
+          {formatStoryTime(start)}–{formatStoryTime(end)}
+        </span>
       </div>
     </div>
   );
@@ -163,14 +171,11 @@ function Handle({ side }: { side: 'start' | 'end' }) {
   return (
     <div
       className={cn(
-        'absolute inset-y-0 z-10 flex w-5 items-center justify-center',
+        'absolute top-0 z-10 flex h-5 w-5 -translate-y-1/2 items-center justify-center',
         side === 'start' ? 'left-0 -translate-x-1/2' : 'right-0 translate-x-1/2'
       )}
     >
-      <span className="flex h-[2.15rem] w-[1.15rem] items-center justify-center rounded-full bg-white shadow-lg shadow-black/30 ring-2 ring-indigo-400/70">
-        <span className="h-3 w-0.5 rounded-full bg-indigo-500" />
-        <span className="ml-0.5 h-3 w-0.5 rounded-full bg-indigo-500" />
-      </span>
+      <span className="h-[18px] w-[18px] rounded-full bg-white shadow-[0_1px_6px_rgba(0,0,0,0.45)] ring-2 ring-black/20" />
     </div>
   );
 }

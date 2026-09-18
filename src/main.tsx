@@ -4,6 +4,7 @@ import App from './App.tsx';
 import './index.css';
 import { API_URL } from './config';
 import { InstallPrompt } from '@/src/components/InstallPrompt';
+import { UpdatePrompt } from '@/src/components/UpdatePrompt';
 import { initInstallPrompt } from '@/src/pwa/installPrompt';
 import { registerServiceWorker } from '@/src/pwa/serviceWorker';
 
@@ -48,6 +49,7 @@ function Root() {
       <App />
       {/* Fuera de App para que el aviso también aparezca en la pantalla de login */}
       <InstallPrompt />
+      <UpdatePrompt />
     </>
   );
 }

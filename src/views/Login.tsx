@@ -938,8 +938,8 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
                   <input
                     ref={avatarInputRef}
                     type="file"
-                    accept="image/*"
-                    className="hidden"
+                    accept="image/*,.heic,.heif,.jpg,.jpeg,.png,.webp,.gif"
+                    className="pointer-events-none absolute h-px w-px overflow-hidden opacity-0"
                     onChange={async (e) => {
                       const file = e.target.files?.[0];
                       e.target.value = '';

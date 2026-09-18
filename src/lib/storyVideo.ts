@@ -16,6 +16,15 @@ export function formatStoryTime(sec: number): string {
   return `${m}:${r.toString().padStart(2, '0')}`;
 }
 
+/** Peso que se muestra en la tira, estilo 5334kB / 12.4MB. */
+export function formatStoryBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0kB';
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${Math.max(1, Math.round(kb))}kB`;
+  const mb = kb / 1024;
+  return `${mb >= 10 ? mb.toFixed(0) : mb.toFixed(1)}MB`;
+}
+
 export function probeVideoDuration(file: File): Promise<number> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
@@ -58,15 +67,32 @@ function pickRecorderMime(): string | undefined {
  * Recorta en el dispositivo (re-encode). En iOS antiguo puede fallar:
  * el llamador muestra entonces que recorten en Fotos.
  */
-export async function trimVideoFile(file: File, startSec: number, endSec: number): Promise<File> {
+export async function trimVideoFile(
+  file: File,
+  startSec: number,
+  endSec: number,
+  opts?: {
+    rotationDeg?: number;
+    x?: number;
+    y?: number;
+    w?: number;
+    h?: number;
+    viewW?: number;
+    viewH?: number;
+  }
+): Promise<File> {
   const from = Math.max(0, startSec);
   const to = Math.max(from + 0.4, endSec);
+  const rotation = ((opts?.rotationDeg ?? 0) % 360 + 360) % 360;
+  const framed = !!(opts?.w && opts.viewW && opts.viewH && opts.h);
+  const bakeRotate = (rotation > 0.8 && rotation < 359.2) || framed;
   const url = URL.createObjectURL(file);
   const video = document.createElement('video') as CapturableVideo;
   video.muted = false;
   video.playsInline = true;
   video.preload = 'auto';
   video.src = url;
+  let stopDraw: (() => void) | null = null;
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -90,7 +116,55 @@ export async function trimVideoFile(file: File, startSec: number, endSec: number
       video.onseeked = () => resolve();
     });
 
-    const stream = capture(30);
+    let stream: MediaStream;
+    if (bakeRotate) {
+      const W = 1080;
+      const H = 1920;
+      const canvas = document.createElement('canvas');
+      canvas.width = W;
+      canvas.height = H;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('No se ha podido girar el vídeo.');
+      const rad = (rotation * Math.PI) / 180;
+      const paint = () => {
+        const vw = video.videoWidth || 1;
+        const vh = video.videoHeight || 1;
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, W, H);
+        ctx.save();
+        if (framed && opts) {
+          const viewW = opts.viewW || W;
+          const viewH = opts.viewH || H;
+          ctx.translate(W / 2 + (opts.x || 0) * (W / viewW), H / 2 + (opts.y || 0) * (H / viewH));
+          ctx.rotate(rad);
+          const dw = (opts.w || vw) * (W / viewW);
+          const dh = (opts.h || vh) * (H / viewH);
+          ctx.drawImage(video, -dw / 2, -dh / 2, dw, dh);
+        } else {
+          ctx.translate(W / 2, H / 2);
+          ctx.rotate(rad);
+          const cover = Math.max(W / vw, H / vh);
+          const coverSwap = Math.max(W / vh, H / vw);
+          const s = Math.abs(Math.cos(rad)) * cover + Math.abs(Math.sin(rad)) * coverSwap;
+          ctx.drawImage(video, -(vw * s) / 2, -(vh * s) / 2, vw * s, vh * s);
+        }
+        ctx.restore();
+      };
+      let raf = 0;
+      const loop = () => {
+        paint();
+        raf = requestAnimationFrame(loop);
+      };
+      paint();
+      raf = requestAnimationFrame(loop);
+      stopDraw = () => cancelAnimationFrame(raf);
+      const visual = canvas.captureStream(30);
+      capture(30).getAudioTracks().forEach(t => visual.addTrack(t));
+      stream = visual;
+    } else {
+      stream = capture(30);
+    }
+
     const mime = pickRecorderMime();
     const rec = mime
       ? new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: STORY_VIDEO_BITRATE })
@@ -123,6 +197,7 @@ export async function trimVideoFile(file: File, startSec: number, endSec: number
 
     video.pause();
     if (rec.state !== 'inactive') rec.stop();
+    stopDraw?.();
     stream.getTracks().forEach(t => t.stop());
     const blob = await finished;
     if (blob.size > STORY_UPLOAD_MAX_BYTES) {
@@ -131,6 +206,7 @@ export async function trimVideoFile(file: File, startSec: number, endSec: number
     const ext = (blob.type || rec.mimeType || '').includes('mp4') ? 'mp4' : 'webm';
     return new File([blob], `historia.${ext}`, { type: blob.type || `video/${ext}` });
   } finally {
+    stopDraw?.();
     URL.revokeObjectURL(url);
     video.src = '';
     video.remove();
@@ -145,6 +221,14 @@ export function needsStoryTrim(duration: number, start: number, length: number):
 
 export function needsStoryPrepare(file: File, duration: number, start: number, length: number): boolean {
   return needsStoryTrim(duration, start, length) || file.size > STORY_UPLOAD_MAX_BYTES;
+}
+
+/** Lo que acabará pesando el clip: recorte + re-encode a 3.5 Mbps si hace falta. */
+export function estimateClipBytes(file: File, duration: number, start: number, clipLen: number): number {
+  const len = Math.max(0.4, Math.min(clipLen, STORY_VIDEO_MAX_SEC));
+  const encoded = (STORY_VIDEO_BITRATE / 8) * len;
+  if (needsStoryPrepare(file, duration, start, len)) return Math.round(encoded);
+  return Math.round(file.size * (len / Math.max(0.4, duration)));
 }
 
 function waitSeek(video: HTMLVideoElement, time: number): Promise<void> {

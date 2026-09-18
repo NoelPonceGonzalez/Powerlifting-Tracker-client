@@ -36,7 +36,9 @@ HTTPS: despliega en Vercel o usa un túnel (ngrok, cloudflared) apuntando al pue
 | --- | --- |
 | `public/manifest.webmanifest` | Nombre, iconos, colores y `display: standalone`. |
 | `public/sw.js` | Caché de la app (nunca de `/api` ni `/health`), push y clic en notificación. |
-| `src/pwa/serviceWorker.ts` | Registra el SW y aplica actualizaciones automáticamente. |
+| `src/pwa/serviceWorker.ts` | Registra el SW y detecta builds nuevos (al volver a la app y cada 30 min). |
+| `src/pwa/swUpdate.ts` | Estado «nueva versión disponible» y activación bajo demanda. |
+| `src/components/UpdatePrompt.tsx` | Banner con botón «Actualizar» (sin cerrar la app). |
 | `src/pwa/installPrompt.ts` | Captura `beforeinstallprompt` y expone `useInstallPrompt()`. |
 | `src/pwa/notifications.ts` | Permiso de notificaciones y suscripción Web Push opcional. |
 | `src/components/InstallPrompt.tsx` | Aviso de instalación al entrar (con pasos manuales en iOS). |

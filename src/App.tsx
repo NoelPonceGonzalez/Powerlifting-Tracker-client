@@ -3954,8 +3954,7 @@ export default function App() {
               socialBackTo={socialBackTo}
               onChatConversationChange={setChatConversationOpen}
               onAddStory={() => {
-                void primeStoryCamera();
-                setStoryComposerOpen(true);
+                void primeStoryCamera().then(() => setStoryComposerOpen(true));
               }}
               storyRefreshTick={storyRefreshTick}
               socialRefreshTick={socialRefreshTick}
@@ -4082,8 +4081,7 @@ export default function App() {
         onPublish={() => {
           setComposeOpen(false);
           goToSocial('chat');
-          void primeStoryCamera();
-          setStoryComposerOpen(true);
+          void primeStoryCamera().then(() => setStoryComposerOpen(true));
         }}
         onGymNow={() => {
           setComposeOpen(false);
