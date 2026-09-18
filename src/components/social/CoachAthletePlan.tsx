@@ -10,7 +10,7 @@ import { buildPlanPatchPayload } from '@/src/lib/planSyncPayload';
 import { weekOfYearFromDate } from '@/src/lib/mesocycleWeek';
 import { normalizeExerciseNameKey } from '@/src/lib/normalizeExerciseName';
 import type { ImportCoachPlanResult } from '@/src/components/ImportCoachPlanModal';
-import type { PlannedExercise, TrainingWeek } from '@/src/types';
+import type { DayType, PlannedExercise, TrainingDay, TrainingWeek } from '@/src/types';
 
 const ImportCoachPlanModal = React.lazy(() =>
   import('@/src/components/ImportCoachPlanModal').then(m => ({ default: m.ImportCoachPlanModal }))
@@ -145,6 +145,19 @@ export const CoachAthletePlan: React.FC<CoachAthletePlanProps> = ({ athleteId, a
                       exercises: day.exercises.map(ex => (ex.id === exerciseId ? { ...ex, ...patch } : ex)),
                     }
               ),
+            }
+      )
+    );
+  };
+
+  const patchDay = (dayId: string, patch: Partial<TrainingDay>) => {
+    setTemplate(prev =>
+      prev.map((week, i) =>
+        i !== weekIdx
+          ? week
+          : {
+              ...week,
+              days: week.days.map(day => (day.id !== dayId ? day : { ...day, ...patch })),
             }
       )
     );
@@ -359,61 +372,120 @@ export const CoachAthletePlan: React.FC<CoachAthletePlanProps> = ({ athleteId, a
 
             {week?.days.map((day, di) => (
               <section key={day.id} className="rounded-2xl border border-slate-200 p-3 dark:border-slate-700">
-                <div className="mb-2 flex items-center justify-between">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                   <p className="text-sm font-black text-slate-800 dark:text-slate-100">
                     {DAY_NAMES[di] || day.name}
                   </p>
-                  <button
-                    type="button"
-                    onClick={() => addExercise(day.id)}
-                    className="inline-flex items-center gap-1 text-[11px] font-black uppercase text-indigo-600"
-                  >
-                    <Plus size={12} />
-                    Ejercicio
-                  </button>
+                  <div className="flex items-center gap-1">
+                    {([
+                      ['workout', 'Entreno'],
+                      ['rest', 'Descanso'],
+                      ['deload', 'Descarga'],
+                    ] as [DayType, string][]).map(([type, label]) => (
+                      <button
+                        key={type}
+                        type="button"
+                        onClick={() => patchDay(day.id, { type, exercises: type === 'rest' ? [] : day.exercises })}
+                        className={`rounded-full px-2 py-1 text-[10px] font-black uppercase ${
+                          (day.type || 'workout') === type
+                            ? 'bg-indigo-600 text-white'
+                            : 'bg-slate-100 text-slate-500 dark:bg-slate-800'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                    {day.type !== 'rest' && (
+                      <button
+                        type="button"
+                        onClick={() => addExercise(day.id)}
+                        className="inline-flex items-center gap-1 pl-1 text-[11px] font-black uppercase text-indigo-600"
+                      >
+                        <Plus size={12} />
+                        Ejercicio
+                      </button>
+                    )}
+                  </div>
                 </div>
-                {day.exercises.length === 0 ? (
-                  <p className="text-xs text-slate-400">Descanso o vacío.</p>
+                {day.type === 'rest' || day.exercises.length === 0 ? (
+                  <p className="text-xs text-slate-400">{day.type === 'rest' ? 'Día de descanso.' : 'Vacío.'}</p>
                 ) : (
                   <div className="space-y-2">
                     {day.exercises.map(ex => (
-                      <div key={ex.id} className="grid grid-cols-[1fr_44px_52px_56px_28px] items-center gap-1.5">
+                      <div key={ex.id} className="space-y-1.5 rounded-xl bg-slate-50 p-2 dark:bg-slate-800/60">
+                        <div className="grid grid-cols-[1fr_44px_52px_56px_28px] items-center gap-1.5">
+                          <input
+                            value={ex.name}
+                            onChange={e => patchExercise(day.id, ex.id, { name: e.target.value })}
+                            placeholder="Ejercicio"
+                            className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-900"
+                          />
+                          <input
+                            value={ex.sets}
+                            onChange={e => patchExercise(day.id, ex.id, { sets: Number(e.target.value) || 0 })}
+                            title="Series"
+                            className="rounded-lg border border-slate-200 bg-white px-1 py-1.5 text-center text-sm dark:border-slate-700 dark:bg-slate-900"
+                          />
+                          <input
+                            value={ex.reps}
+                            onChange={e => patchExercise(day.id, ex.id, { reps: e.target.value })}
+                            title="Reps"
+                            className="rounded-lg border border-slate-200 bg-white px-1 py-1.5 text-center text-sm dark:border-slate-700 dark:bg-slate-900"
+                          />
+                          <input
+                            value={ex.weight ?? ''}
+                            onChange={e => {
+                              const n = Number(String(e.target.value).replace(',', '.'));
+                              patchExercise(day.id, ex.id, { weight: Number.isFinite(n) ? n : undefined });
+                            }}
+                            placeholder="kg"
+                            title="Peso"
+                            className="rounded-lg border border-slate-200 bg-white px-1 py-1.5 text-center text-sm dark:border-slate-700 dark:bg-slate-900"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removeExercise(day.id, ex.id)}
+                            className="text-slate-400 hover:text-rose-500"
+                            aria-label="Quitar"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-[72px_1fr_56px] gap-1.5">
+                          <input
+                            value={ex.pct ?? ''}
+                            onChange={e => {
+                              const n = Number(String(e.target.value).replace(',', '.'));
+                              patchExercise(day.id, ex.id, { pct: Number.isFinite(n) ? n : undefined });
+                            }}
+                            placeholder="% TM"
+                            title="% del maximal"
+                            className="rounded-lg border border-slate-200 bg-white px-1 py-1.5 text-center text-xs dark:border-slate-700 dark:bg-slate-900"
+                          />
+                          <select
+                            value={ex.linkedTo || ''}
+                            onChange={e => patchExercise(day.id, ex.id, { linkedTo: e.target.value || undefined })}
+                            className="rounded-lg border border-slate-200 bg-white px-1.5 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900"
+                          >
+                            <option value="">Sin maximal</option>
+                            {tms.map(tm => (
+                              <option key={tm.id} value={tm.id}>{tm.name}</option>
+                            ))}
+                          </select>
+                          <input
+                            value={ex.targetRpe ?? ''}
+                            onChange={e => patchExercise(day.id, ex.id, { targetRpe: e.target.value || undefined })}
+                            placeholder="RPE"
+                            title="RPE"
+                            className="rounded-lg border border-slate-200 bg-white px-1 py-1.5 text-center text-xs dark:border-slate-700 dark:bg-slate-900"
+                          />
+                        </div>
                         <input
-                          value={ex.name}
-                          onChange={e => patchExercise(day.id, ex.id, { name: e.target.value })}
-                          placeholder="Ejercicio"
-                          className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-sm dark:border-slate-700 dark:bg-slate-800"
+                          value={ex.coachNote ?? ''}
+                          onChange={e => patchExercise(day.id, ex.id, { coachNote: e.target.value || undefined })}
+                          placeholder="Nota para el alumno"
+                          className="w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs dark:border-slate-700 dark:bg-slate-900"
                         />
-                        <input
-                          value={ex.sets}
-                          onChange={e => patchExercise(day.id, ex.id, { sets: Number(e.target.value) || 0 })}
-                          title="Series"
-                          className="rounded-lg border border-slate-200 bg-slate-50 px-1 py-1.5 text-center text-sm dark:border-slate-700 dark:bg-slate-800"
-                        />
-                        <input
-                          value={ex.reps}
-                          onChange={e => patchExercise(day.id, ex.id, { reps: e.target.value })}
-                          title="Reps"
-                          className="rounded-lg border border-slate-200 bg-slate-50 px-1 py-1.5 text-center text-sm dark:border-slate-700 dark:bg-slate-800"
-                        />
-                        <input
-                          value={ex.weight ?? ''}
-                          onChange={e => {
-                            const n = Number(String(e.target.value).replace(',', '.'));
-                            patchExercise(day.id, ex.id, { weight: Number.isFinite(n) ? n : undefined });
-                          }}
-                          placeholder="kg"
-                          title="Peso"
-                          className="rounded-lg border border-slate-200 bg-slate-50 px-1 py-1.5 text-center text-sm dark:border-slate-700 dark:bg-slate-800"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => removeExercise(day.id, ex.id)}
-                          className="text-slate-400 hover:text-rose-500"
-                          aria-label="Quitar"
-                        >
-                          <Trash2 size={14} />
-                        </button>
                       </div>
                     ))}
                   </div>

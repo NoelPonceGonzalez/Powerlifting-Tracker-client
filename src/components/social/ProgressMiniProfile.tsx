@@ -40,7 +40,7 @@ export function InstagramCover({
 }: InstagramCoverProps) {
   const photo = (
     <span className="relative block">
-      <Avatar src={avatar} name={name} className="h-[76px] w-[76px] rounded-full sm:h-[84px] sm:w-[84px]" />
+      <Avatar src={avatar} name={name} className="h-16 w-16 rounded-full max-[360px]:h-14 max-[360px]:w-14 sm:h-[84px] sm:w-[84px]" />
       {avatarHint && (
         <span className="absolute bottom-0 right-0 flex h-6 w-6 items-center justify-center rounded-full bg-indigo-600 text-white shadow ring-2 ring-slate-50 dark:ring-slate-950">
           <Camera size={12} strokeWidth={2.4} />
@@ -51,7 +51,7 @@ export function InstagramCover({
 
   return (
     <div>
-      <div className="flex items-center gap-5">
+      <div className="flex items-center gap-3 max-[360px]:gap-2 sm:gap-5">
         {onAvatarClick ? (
           <button type="button" onClick={onAvatarClick} className="shrink-0 rounded-full" aria-label="Cambiar foto">
             {photo}
@@ -156,7 +156,7 @@ export function ProgressMiniProfile({
           <button
             type="button"
             onClick={onOpenSettings}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-slate-500 hover:bg-white dark:hover:bg-slate-900"
+            className="app-icon-hit rounded-full text-slate-500 hover:bg-white dark:hover:bg-slate-900"
             aria-label="Ajustes"
           >
             <Settings size={20} strokeWidth={2} />
@@ -164,7 +164,7 @@ export function ProgressMiniProfile({
         )}
       </div>
 
-      <div className="flex items-center gap-5">
+      <div className="flex items-center gap-3 max-[360px]:gap-2 sm:gap-5">
         <button
           type="button"
           onClick={() => fileRef.current?.click()}
@@ -174,7 +174,7 @@ export function ProgressMiniProfile({
           <Avatar
             src={user.avatar}
             name={user.name}
-            className="h-[76px] w-[76px] rounded-full ring-2 ring-slate-200/80 dark:ring-slate-700 sm:h-[84px] sm:w-[84px]"
+            className="h-16 w-16 rounded-full ring-2 ring-slate-200/80 dark:ring-slate-700 max-[360px]:h-14 max-[360px]:w-14 sm:h-[84px] sm:w-[84px]"
           />
           <span className="absolute bottom-0 right-0 flex h-6 w-6 items-center justify-center rounded-full bg-indigo-600 text-white shadow ring-2 ring-slate-50 dark:ring-slate-950">
             <Camera size={12} strokeWidth={2.4} />

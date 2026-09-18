@@ -224,7 +224,7 @@ export const MediaPost: React.FC<MediaPostProps> = ({
             onClick={handleLike}
             whileTap={{ scale: 0.85 }}
             className={cn(
-              'flex items-center gap-1.5 text-sm font-bold transition-colors',
+              'inline-flex min-h-11 min-w-11 items-center gap-1.5 text-sm font-bold transition-colors',
               post.likedByMe ? 'text-rose-500' : 'text-slate-500 hover:text-rose-500 dark:text-slate-400'
             )}
           >
@@ -243,7 +243,7 @@ export const MediaPost: React.FC<MediaPostProps> = ({
             type="button"
             onClick={openComments}
             whileTap={{ scale: 0.85 }}
-            className="flex items-center gap-1.5 text-sm font-bold text-slate-500 transition-colors hover:text-indigo-600 dark:text-slate-400"
+            className="inline-flex min-h-11 min-w-11 items-center gap-1.5 text-sm font-bold text-slate-500 transition-colors hover:text-indigo-600 dark:text-slate-400"
           >
             <MessageCircle size={20} />
             {post.commentCount > 0 && post.commentCount}

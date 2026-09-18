@@ -86,7 +86,7 @@ export function GlassModal({
             onClick={e => e.stopPropagation()}
             className={cn(
               'relative z-10 flex w-full flex-col overflow-hidden rounded-t-[28px] border border-white/50 bg-white/70 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl sm:rounded-[28px] dark:border-white/10 dark:bg-slate-900/65',
-              sheet ? 'min-h-[72dvh] max-h-[92dvh] max-w-lg' : 'max-h-[88dvh]',
+              sheet ? 'min-h-[min(72dvh,100%)] max-h-[min(92dvh,calc(100dvh-env(safe-area-inset-top)))] max-w-lg' : 'max-h-[min(88dvh,calc(100dvh-env(safe-area-inset-top)))]',
               !sheet && (wide ? 'max-w-lg sm:max-w-xl' : 'max-w-sm'),
               className
             )}
@@ -114,7 +114,7 @@ export function GlassModal({
               {children}
             </div>
             {footer && (
-              <div className="shrink-0 border-t border-white/40 bg-white/50 px-4 py-3 backdrop-blur-xl dark:border-white/10 dark:bg-slate-900/50">
+              <div className="shrink-0 border-t border-white/40 bg-white/50 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur-xl dark:border-white/10 dark:bg-slate-900/50">
                 {footer}
               </div>
             )}

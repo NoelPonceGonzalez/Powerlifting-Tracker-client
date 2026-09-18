@@ -65,6 +65,7 @@ const ENTER_ITEM: Variants = {
   },
 };
 
+const PEEK_HEAD_H = 40;
 const PEEK_ROW_H = 58;
 const PEEK_MAX = 2;
 
@@ -78,12 +79,54 @@ type PeekRow = {
   onClick: () => void;
 };
 
-function PeekColumn({ rows }: { rows: PeekRow[] }) {
+function PeekColumn({
+  title,
+  kind,
+  onHeaderClick,
+  onEmptyClick,
+  emptyLabel,
+  rows,
+}: {
+  title: string;
+  kind: 'trophy' | 'pin';
+  onHeaderClick: () => void;
+  onEmptyClick?: () => void;
+  emptyLabel: string;
+  rows: PeekRow[];
+}) {
   return (
     <div
       className="overflow-y-auto overflow-x-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/[0.04] [scrollbar-width:none] dark:bg-slate-900 dark:ring-white/[0.06] [&::-webkit-scrollbar]:hidden"
-      style={{ maxHeight: PEEK_MAX * PEEK_ROW_H }}
+      style={{ maxHeight: PEEK_HEAD_H + PEEK_MAX * PEEK_ROW_H }}
     >
+      <button
+        type="button"
+        onClick={onHeaderClick}
+        className="sticky top-0 z-10 flex w-full items-center gap-2 border-b border-slate-100 bg-white px-2.5 text-left dark:border-slate-800 dark:bg-slate-900 sm:gap-2.5 sm:px-3"
+        style={{ height: PEEK_HEAD_H }}
+      >
+        {kind === 'trophy' ? (
+          <Trophy size={14} className="shrink-0 text-amber-500" />
+        ) : (
+          <MapPin size={14} className="shrink-0 text-emerald-500" />
+        )}
+        <span className="truncate text-[12px] font-semibold text-slate-800 dark:text-slate-100">
+          {title}
+        </span>
+      </button>
+      {rows.length === 0 ? (
+        <button
+          type="button"
+          onClick={onEmptyClick ?? onHeaderClick}
+          aria-label={emptyLabel}
+          className="flex w-full items-center justify-center"
+          style={{ height: PEEK_MAX * PEEK_ROW_H }}
+        >
+          <span className="flex h-12 w-12 items-center justify-center rounded-full bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300">
+            <Plus size={22} strokeWidth={2.25} />
+          </span>
+        </button>
+      ) : (
       <AnimatePresence initial={false}>
         {rows.map(row => (
           <motion.button
@@ -127,6 +170,7 @@ function PeekColumn({ rows }: { rows: PeekRow[] }) {
           </motion.button>
         ))}
       </AnimatePresence>
+      )}
     </div>
   );
 }
@@ -458,7 +502,7 @@ export interface DashboardProps {
   onOpenProgram: () => void;
   onCreateRoutine?: () => void;
   onOpenSocial: (
-    tab?: 'feed' | 'friends' | 'challenges' | 'checkins' | 'chat',
+    tab?: 'friends' | 'challenges' | 'checkins' | 'chat',
     options?: { openCheckInModal?: boolean; openCreateChallenge?: boolean; from?: 'dashboard' }
   ) => void;
   onJoinFriendCheckIn: (checkIn: GymCheckIn) => void;
@@ -761,15 +805,6 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
         onClick: () => onOpenSocial('challenges', { from: 'dashboard' }),
       });
     }
-    if (rows.length === 0) {
-      rows.push({
-        key: 'explore',
-        kind: 'trophy',
-        title: 'Explorar torneos',
-        subtitle: 'Crea o únete',
-        onClick: () => onOpenSocial('challenges', { openCreateChallenge: true, from: 'dashboard' }),
-      });
-    }
     return rows;
   }, [friendTournamentsToJoin, topJoinedChallenges, onOpenSocial]);
 
@@ -793,21 +828,11 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
         people,
         onClick: () => {
           if (!hasMe) setSelectedCheckIn(first);
-          else onOpenSocial('checkins', { from: 'dashboard' });
         },
       };
     });
-    if (rows.length === 0) {
-      rows.push({
-        key: 'avisar',
-        kind: 'pin',
-        title: 'Avisar que voy',
-        subtitle: 'Diles el gym y la hora',
-        onClick: () => onOpenSocial('checkins', { openCheckInModal: true, from: 'dashboard' }),
-      });
-    }
     return rows;
-  }, [todayCheckInGroups, user, onOpenSocial]);
+  }, [todayCheckInGroups, user]);
 
   const getTMConfig = useCallback(
     (name: string) => tmConfigFor(name, !!user.mbMode),
@@ -1184,7 +1209,7 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
       initial={false}
       animate={enterControls}
       exit="exit"
-      className="mx-auto w-full max-w-6xl bg-[var(--app-bg)] px-3 pt-3 pb-[calc(8.5rem+env(safe-area-inset-bottom))] max-[360px]:px-2 max-[360px]:pt-2 max-[400px]:pt-3 sm:px-5 sm:pt-5 sm:pb-[calc(9.5rem+env(safe-area-inset-bottom))] md:px-6 md:pt-6"
+      className="app-page mx-auto w-full max-w-6xl bg-[var(--app-bg)]"
     >
       <motion.header variants={ENTER_ITEM} initial={false} className="mb-3 max-[360px]:mb-2 sm:mb-4">
         <ProgressMiniProfile
@@ -1392,8 +1417,22 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
         initial={false}
         className="mb-6 grid grid-cols-2 gap-2 max-[360px]:gap-1.5 max-[400px]:mb-5 sm:mb-8 sm:gap-3 md:mb-10"
       >
-        <PeekColumn rows={tournamentRows} />
-        <PeekColumn rows={gymRows} />
+        <PeekColumn
+          title="Torneos"
+          kind="trophy"
+          onHeaderClick={() => onOpenSocial('challenges', { from: 'dashboard' })}
+          onEmptyClick={() => onOpenSocial('challenges', { openCreateChallenge: true, from: 'dashboard' })}
+          emptyLabel="Crear torneo"
+          rows={tournamentRows}
+        />
+        <PeekColumn
+          title="Avisar que voy"
+          kind="pin"
+          onHeaderClick={() => onOpenSocial('checkins', { from: 'dashboard' })}
+          onEmptyClick={() => onOpenSocial('checkins', { openCheckInModal: true, from: 'dashboard' })}
+          emptyLabel="Avisar que voy"
+          rows={gymRows}
+        />
       </motion.div>
 
       <GlassModal

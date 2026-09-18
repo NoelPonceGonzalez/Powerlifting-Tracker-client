@@ -1,3 +1,5 @@
+import type { Variants } from 'motion/react';
+
 /**
  * Movimiento de la app: muelle pegajoso + squash-and-stretch (slime).
  * No es solo X/Y: se deforma con scaleX / scaleY y a veces el radio.
@@ -6,6 +8,25 @@ export const EASE_OUT = [0.22, 1, 0.36, 1] as const;
 
 /** Cambio de pestaña: fade corto. El slime va en el contenido, no en el swap. */
 export const VIEW_TRANSITION = { duration: 0.18, ease: EASE_OUT };
+
+/** Entrada de pestaña (Inicio, Rutina, Social, Torneos): la raíz solo funde. */
+export const PAGE_ENTER_ROOT: Variants = {
+  hidden: { opacity: 0 },
+  show: {
+    opacity: 1,
+    transition: { ...VIEW_TRANSITION, delayChildren: 0.04, staggerChildren: 0.055 },
+  },
+};
+
+/** Bloques que suben al entrar en la pestaña. */
+export const PAGE_ENTER_ITEM: Variants = {
+  hidden: { opacity: 0, y: 20 },
+  show: {
+    opacity: 1,
+    y: 0,
+    transition: { type: 'spring', stiffness: 300, damping: 28, mass: 0.7 },
+  },
+};
 
 /** Overlay / velo. Las hojas usan STICKY. */
 export const SCREEN_TRANSITION = { duration: 0.16, ease: EASE_OUT };

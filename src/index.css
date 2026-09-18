@@ -34,17 +34,33 @@
   #root {
     background-color: var(--app-bg);
     min-height: 100%;
+    max-width: 100%;
   }
 
   html {
     color-scheme: light dark;
     -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
   }
 
   button,
+  a,
   [role="button"] {
     -webkit-tap-highlight-color: transparent;
     outline: none;
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  /* iPhone: si el input es <16px Safari hace zoom al enfocar */
+  @media (max-width: 639px) {
+    input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']),
+    select,
+    textarea {
+      font-size: 16px !important;
+    }
   }
 
   button:focus,
@@ -181,4 +197,76 @@ html.dark .app-tabbar {
   box-shadow:
     0 12px 40px rgba(0, 0, 0, 0.4),
     inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+/* Márgenes de página: notch iPhone, home indicator y móviles estrechos */
+:root {
+  --app-pad-x: 0.75rem;
+  --app-pad-top: max(0.75rem, env(safe-area-inset-top, 0px));
+  --app-pad-bottom: calc(10rem + env(safe-area-inset-bottom, 0px));
+}
+
+@media (max-width: 360px) {
+  :root {
+    --app-pad-x: 0.5rem;
+    --app-pad-top: max(0.5rem, env(safe-area-inset-top, 0px));
+  }
+}
+
+@media (min-width: 640px) {
+  :root {
+    --app-pad-x: 1.5rem;
+    --app-pad-top: max(1.5rem, env(safe-area-inset-top, 0px));
+    --app-pad-bottom: calc(9.5rem + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+.app-page {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  padding-left: max(var(--app-pad-x), env(safe-area-inset-left, 0px));
+  padding-right: max(var(--app-pad-x), env(safe-area-inset-right, 0px));
+  padding-top: var(--app-pad-top);
+  padding-bottom: var(--app-pad-bottom);
+}
+
+.app-icon-hit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  flex-shrink: 0;
+  touch-action: manipulation;
+}
+
+.app-h-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x;
+  scrollbar-width: none;
+}
+
+.app-h-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.app-row {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.75rem;
+}
+
+@media (min-width: 360px) {
+  .app-row {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
 }

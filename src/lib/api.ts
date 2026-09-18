@@ -1,4 +1,12 @@
 import { isOfflinePlanPath, offlineGetKey, readOfflineGet, saveOfflineGet } from '@/src/lib/offlineCache';
+import {
+  enqueueWrite,
+  flushOfflineWrites,
+  isNetworkError,
+  isQueueableWrite,
+  type QueuedWrite,
+} from '@/src/lib/offlineQueue';
+import { showAppError, showAppOk } from '@/src/lib/appNotice';
 
 function isInvalidApiBase(s: string): boolean {
   const t = String(s).trim();
@@ -166,50 +174,77 @@ export async function apiGet<T>(path: string, params?: Record<string, string>): 
   }
 }
 
-export async function apiPost<T>(path: string, body: object): Promise<T> {
+let lastQueuedNoticeAt = 0;
+
+async function jsonWrite<T>(method: 'POST' | 'PUT' | 'PATCH', path: string, body: object): Promise<T> {
   const origin = requireApiOrigin(resolveOriginForUrl(path));
   const url = `${origin}${path.startsWith('/') ? path : `/${path}`}`;
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: getAuthHeaders(),
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || err.errors?.[0]?.msg || err.message || 'Error en la solicitud');
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: getAuthHeaders(),
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || err.errors?.[0]?.msg || err.message || 'Error en la solicitud');
+    }
+    if (res.status === 204) return {} as T;
+    return res.json();
+  } catch (err) {
+    if (isQueueableWrite(method, path) && isNetworkError(err)) {
+      enqueueWrite({ method, path, body });
+      const now = Date.now();
+      if (now - lastQueuedNoticeAt > 4000) {
+        lastQueuedNoticeAt = now;
+        showAppOk('Sin conexión. Se guardará al volver.');
+      }
+      return { queued: true } as T;
+    }
+    throw err;
   }
-  return res.json();
+}
+
+export async function apiPost<T>(path: string, body: object): Promise<T> {
+  return jsonWrite<T>('POST', path, body);
 }
 
 export async function apiPut<T>(path: string, body: object): Promise<T> {
-  const origin = requireApiOrigin(resolveOriginForUrl(path));
-  const url = `${origin}${path.startsWith('/') ? path : `/${path}`}`;
-  const res = await fetch(url, {
-    method: 'PUT',
-    headers: getAuthHeaders(),
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || err.errors?.[0]?.msg || err.message || 'Error en la solicitud');
-  }
-  return res.json();
+  return jsonWrite<T>('PUT', path, body);
 }
 
 export async function apiPatch<T>(path: string, body: object): Promise<T> {
-  const origin = requireApiOrigin(resolveOriginForUrl(path));
-  const url = `${origin}${path.startsWith('/') ? path : `/${path}`}`;
+  return jsonWrite<T>('PATCH', path, body);
+}
+
+async function replayQueued(item: QueuedWrite): Promise<void> {
+  const origin = requireApiOrigin(resolveOriginForUrl(item.path));
+  const url = `${origin}${item.path.startsWith('/') ? item.path : `/${item.path}`}`;
   const res = await fetch(url, {
-    method: 'PATCH',
+    method: item.method,
     headers: getAuthHeaders(),
-    body: JSON.stringify(body),
+    body: JSON.stringify(item.body ?? {}),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || err.errors?.[0]?.msg || err.message || 'Error en la solicitud');
+    throw new Error(err.error || err.message || 'Error en la solicitud');
   }
-  return res.json();
 }
+
+let flushBound = false;
+function bindOfflineFlush() {
+  if (flushBound || typeof window === 'undefined') return;
+  flushBound = true;
+  const run = () => {
+    void flushOfflineWrites(replayQueued);
+  };
+  window.addEventListener('online', run);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') run();
+  });
+  run();
+}
+bindOfflineFlush();
 
 /** Subida de archivos: el navegador pone el `Content-Type` con el separador del multipart. */
 export async function apiUpload<T>(path: string, form: FormData): Promise<T> {

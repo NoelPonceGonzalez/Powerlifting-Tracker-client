@@ -8,6 +8,7 @@ export interface User {
   email: string;
   avatar: string;
   bodyWeight: number;
+  gender?: 'hombre' | 'mujer';
   theme: 'light' | 'dark';
   /** Acento rosa; independiente de claro/oscuro. */
   mbMode?: boolean;
@@ -26,6 +27,8 @@ export interface Challenge {
   description?: string;
   type: ChallengeType;
   exercise: string;
+  exercises?: string[];
+  isPrivate?: boolean;
   /** true: IPF GL (kg) y puntos por peso/género (reps/seg). false: gana quien tenga mejor marca bruta. */
   usePointsSystem?: boolean;
   /** Solo afecta al cálculo de puntos en reps y segundos. */
@@ -35,14 +38,16 @@ export interface Challenge {
     name: string;
     avatar: string;
     score: number;
-    value: number; // raw value (reps, kg, or seconds)
+    value: number; // raw value (reps, kg, or seconds) o suma
+    lifts?: { exercise: string; value: number }[];
     initialValue?: number;
     initialScore?: number;
+    initialRank?: number;
     joinedAt?: string;
   }[];
   endDate: string;
   status?: 'active' | 'finished';
-  createdBy?: { id: string; name: string };
+  createdBy?: { id: string; name: string; avatar?: string };
   /** ISO; para ordenar torneos destacados (más reciente). */
   createdAt?: string;
 }

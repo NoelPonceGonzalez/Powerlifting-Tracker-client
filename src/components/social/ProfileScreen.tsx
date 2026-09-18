@@ -1,35 +1,24 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { AnimatePresence, motion } from 'motion/react';
-import { SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
+import { motion } from 'motion/react';
 import {
   ArrowLeft,
-  ArrowRight,
-  Camera,
   Check,
   Dumbbell,
   FileUp,
   GraduationCap,
-  Heart,
   Loader2,
   MessageCircle,
   Pencil,
-  Play,
-  Plus,
   UserPlus,
-  X,
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
-import { apiGet, apiPatch, apiPost, mediaUrl } from '@/src/lib/api';
-import { Avatar, MediaPost } from '@/src/components/social/MediaPost';
-import { PublishModal } from '@/src/components/social/PublishModal';
+import { apiGet, apiPatch, apiPost } from '@/src/lib/api';
+import { Avatar } from '@/src/components/social/MediaPost';
 import {
   fetchProfile,
-  fetchUserPosts,
   removeCoach,
   requestCoach,
   saveBio,
-  type FeedPost,
   type PublicProfile,
 } from '@/src/lib/feedApi';
 import { TmHistoryModal } from '@/src/components/social/TmHistoryModal';
@@ -51,8 +40,6 @@ interface ProfileScreenProps {
   onOpenRoutine?: () => void;
   onSendFriendRequest?: () => Promise<void> | void;
   onOpenProfile?: (userId: string) => void;
-  /** Llevar a Inicio desde el perfil vacío para publicar la primera foto. */
-  onGoToFeed?: () => void;
   onOpenChat?: (userId: string) => void;
   /** Foto actual de la sesión: así Perfil y Progreso enseñan la misma. */
   liveAvatar?: string | null;
@@ -73,15 +60,11 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   onOpenRoutine,
   onSendFriendRequest,
   onOpenProfile,
-  onGoToFeed,
   onOpenChat,
   liveAvatar,
 }) => {
   const [profile, setProfile] = useState<PublicProfile | null>(null);
-  const [posts, setPosts] = useState<FeedPost[]>([]);
   const [loading, setLoading] = useState(true);
-  const [openPost, setOpenPost] = useState<FeedPost | null>(null);
-  const [composing, setComposing] = useState(false);
   const [editingBio, setEditingBio] = useState(false);
   const [bioDraft, setBioDraft] = useState('');
   const [savingCoach, setSavingCoach] = useState(false);
@@ -94,16 +77,11 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     let cancelled = false;
     (async () => {
       setLoading(true);
-      setPosts([]);
       try {
         const data = await fetchProfile(userId);
         if (cancelled) return;
         setProfile(data);
         setBioDraft(data.bio);
-        if (data.isFriend) {
-          const mine = await fetchUserPosts(userId).catch(() => ({ posts: [] as FeedPost[] }));
-          if (!cancelled) setPosts(mine.posts);
-        }
       } catch {
         if (!cancelled) setProfile(null);
       } finally {
@@ -213,13 +191,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       }
     }
   }, [profile?.name, userId]);
-
-  /** Lo subido desde el perfil entra directo en la rejilla, sin recargar nada. */
-  const handlePublished = useCallback((post: FeedPost) => {
-    if (post.kind === 'story') return;
-    setPosts(prev => [post, ...prev]);
-    setProfile(prev => (prev ? { ...prev, postCount: prev.postCount + 1 } : prev));
-  }, []);
 
   const dropCoach = useCallback(async () => {
     setSavingCoach(true);
@@ -500,197 +471,27 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         )}
       </motion.div>
 
-      {/* Subir sin salir del perfil: la acción principal, bien visible pero sin ruido */}
-      {profile.isSelf && (
-        <motion.button
-          type="button"
-          onClick={() => setComposing(true)}
-          whileTap={{ scale: 0.98 }}
-          whileHover={{ y: -1 }}
-          className="flex w-full items-center gap-3 rounded-2xl bg-indigo-600 px-4 py-3 text-left text-white shadow-lg shadow-indigo-200 transition-colors hover:bg-indigo-700 dark:shadow-indigo-950/50"
-        >
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white/15">
-            <Camera size={18} />
-          </span>
-          <span className="min-w-0">
-            <span className="block text-sm font-black tracking-tight">Subir foto o vídeo</span>
-            <span className="block text-[11px] text-white/70">Aparece aquí y en Inicio</span>
-          </span>
-        </motion.button>
-      )}
-
       {!profile.isFriend ? (
         <p className="py-10 text-center text-sm text-slate-400">
-          Hazte amigo de {profile.name.split(' ')[0]} para ver sus publicaciones y sus marcas.
+          Hazte amigo de {profile.name.split(' ')[0]} para ver sus marcas.
         </p>
-      ) : posts.length === 0 ? (
-        /* Perfil recién estrenado: en vez de una rejilla vacía, qué hacer ahora */
-        <div className="space-y-3">
-          <p className="text-[11px] font-black uppercase tracking-widest text-slate-400">
-            {profile.isSelf ? 'Empieza por aquí' : `${profile.name.split(' ')[0]} aún no ha publicado nada`}
-          </p>
-
-          <button
-            type="button"
-            onClick={profile.isSelf ? () => setComposing(true) : undefined}
-            disabled={!profile.isSelf}
-            className="flex w-full items-center gap-4 rounded-2xl border border-slate-200/80 bg-white p-4 text-left transition-colors enabled:hover:border-indigo-300 disabled:cursor-default dark:border-slate-700 dark:bg-slate-900"
-          >
-            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300">
-              <Camera size={20} />
+      ) : profile.trainingMaxes.length === 0 ? (
+        <div className="flex w-full items-center gap-4 rounded-2xl border border-slate-200/80 bg-white p-4 dark:border-slate-700 dark:bg-slate-900">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300">
+            <Dumbbell size={20} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-black text-slate-900 dark:text-slate-100">
+              {profile.isSelf ? 'Enseña tus marcas' : 'Sin marcas compartidas'}
             </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-black text-slate-900 dark:text-slate-100">
-                {profile.isSelf ? 'Sube tu primera foto o vídeo' : 'Sin publicaciones'}
-              </span>
-              <span className="block text-xs text-slate-500 dark:text-slate-400">
-                {profile.isSelf
-                  ? 'Una serie buena, un PR. Se ve en Progreso y se borra a las 24 h.'
-                  : 'Cuando suba una historia la verás en Progreso.'}
-              </span>
+            <span className="block text-xs text-slate-500 dark:text-slate-400">
+              {profile.isSelf
+                ? 'En Rutina, comparte los RM que quieras que vean tus amigos.'
+                : 'Todavía no comparte ningún RM.'}
             </span>
-            {profile.isSelf && <ArrowRight size={18} className="shrink-0 text-slate-300" />}
-          </button>
-
-          {profile.isSelf && onGoToFeed && (
-            <button
-              type="button"
-              onClick={onGoToFeed}
-              className="w-full py-1 text-center text-[11px] font-black uppercase tracking-wider text-slate-400 transition-colors hover:text-indigo-600"
-            >
-              Ir a Progreso
-            </button>
-          )}
-
-          {profile.trainingMaxes.length === 0 && (
-            <div className="flex w-full items-center gap-4 rounded-2xl border border-slate-200/80 bg-white p-4 dark:border-slate-700 dark:bg-slate-900">
-              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300">
-                <Dumbbell size={20} />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-black text-slate-900 dark:text-slate-100">
-                  {profile.isSelf ? 'Enseña tus marcas' : 'Sin marcas compartidas'}
-                </span>
-                <span className="block text-xs text-slate-500 dark:text-slate-400">
-                  {profile.isSelf
-                    ? 'En Rutina, comparte los RM que quieras que vean tus amigos. Si subes uno, podrán felicitarte.'
-                    : 'Todavía no comparte ningún RM.'}
-                </span>
-              </span>
-            </div>
-          )}
-
+          </span>
         </div>
-      ) : (
-        <div className="space-y-2">
-          <p className="text-[11px] font-black uppercase tracking-widest text-slate-400">Publicaciones</p>
-          <div className="grid grid-cols-3 gap-1">
-            {profile.isSelf && (
-              <motion.button
-                type="button"
-                onClick={() => setComposing(true)}
-                whileHover={{ scale: 1.03 }}
-                whileTap={{ scale: 0.97 }}
-                className="flex aspect-square flex-col items-center justify-center gap-1.5 rounded-md border-2 border-dashed border-slate-200 text-slate-400 transition-colors hover:border-indigo-400 hover:text-indigo-500 dark:border-slate-700"
-                aria-label="Subir foto o vídeo"
-              >
-                <Plus size={22} strokeWidth={2.5} />
-                <span className="text-[10px] font-black uppercase tracking-wider">Subir</span>
-              </motion.button>
-            )}
-            {posts.map((p, i) => (
-              <motion.button
-                key={p.id}
-                type="button"
-                initial={{ opacity: 0, scale: 0.92 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ delay: Math.min(i, 8) * 0.04, type: 'spring', stiffness: 260, damping: 24 }}
-                whileHover={{ scale: 1.03 }}
-                whileTap={{ scale: 0.97 }}
-                onClick={() => setOpenPost(p)}
-                className="group relative aspect-square overflow-hidden rounded-md bg-slate-950"
-              >
-                {p.mediaType === 'video' ? (
-                  <>
-                    <video src={mediaUrl(p.mediaKey)} muted playsInline preload="metadata" className="h-full w-full object-cover" />
-                    <Play size={16} className="absolute right-1.5 top-1.5 fill-white text-white drop-shadow" />
-                  </>
-                ) : (
-                  <img src={mediaUrl(p.mediaKey)} alt={p.caption || ''} loading="lazy" className="h-full w-full object-cover" />
-                )}
-                <span className="absolute inset-0 hidden items-center justify-center gap-4 bg-black/45 text-xs font-black text-white group-hover:flex">
-                  <span className="flex items-center gap-1">
-                    <Heart size={14} fill="currentColor" />
-                    {p.likeCount}
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <MessageCircle size={14} fill="currentColor" />
-                    {p.commentCount}
-                  </span>
-                </span>
-              </motion.button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {typeof document !== 'undefined' &&
-        createPortal(
-          <AnimatePresence>
-            {openPost && (
-              <motion.div
-                key="post-detail"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={SCREEN_TRANSITION}
-                onClick={() => setOpenPost(null)}
-                className="fixed inset-0 flex items-center justify-center bg-slate-900/70 p-0 backdrop-blur-sm sm:p-6"
-                style={{ zIndex: 100050 }}
-              >
-                <motion.div
-                  initial={SLIME_SHEET_IN}
-                  animate={SLIME_SHEET_SHOW}
-                  exit={SLIME_SHEET_OUT}
-                  transition={STICKY}
-                  onClick={e => e.stopPropagation()}
-                  className="max-h-[92vh] w-full max-w-lg overflow-y-auto"
-                >
-                  <div className="flex justify-end p-2">
-                    <button
-                      type="button"
-                      onClick={() => setOpenPost(null)}
-                      className="rounded-full bg-white/10 p-2 text-white transition-colors hover:bg-white/20"
-                      aria-label="Cerrar"
-                    >
-                      <X size={18} />
-                    </button>
-                  </div>
-                  <MediaPost
-                    post={openPost}
-                    autoOpenComments
-                    onChanged={updated => {
-                      setOpenPost(updated);
-                      setPosts(prev => prev.map(p => (p.id === updated.id ? updated : p)));
-                    }}
-                    onDeleted={id => {
-                      setPosts(prev => prev.filter(p => p.id !== id));
-                      setProfile(prev => (prev ? { ...prev, postCount: Math.max(0, prev.postCount - 1) } : prev));
-                      setOpenPost(null);
-                    }}
-                  />
-                </motion.div>
-              </motion.div>
-            )}
-          </AnimatePresence>,
-          document.body
-        )}
-
-      <PublishModal
-        open={composing}
-        onClose={() => setComposing(false)}
-        onPublished={handlePublished}
-      />
+      ) : null}
 
       {showAthleteImport && (
         <React.Suspense fallback={null}>

@@ -43,6 +43,23 @@ async function resolveVapidKey(): Promise<string> {
   }
 }
 
+function vapidToBase64Url(key: ArrayBuffer | Uint8Array): string {
+  const bytes = key instanceof Uint8Array ? key : new Uint8Array(key);
+  let bin = '';
+  bytes.forEach((b) => {
+    bin += String.fromCharCode(b);
+  });
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function subscriptionMatchesVapid(sub: PushSubscription, publicKey: string): boolean {
+  const current = sub.options?.applicationServerKey;
+  if (!current) return false;
+  const have = vapidToBase64Url(current);
+  const want = publicKey.replace(/=+$/g, '');
+  return have === want;
+}
+
 export async function getWebPushEndpoint(): Promise<string | null> {
   if (!isPushSupported()) return null;
   const registration = await getServiceWorkerRegistration();
@@ -62,8 +79,16 @@ export async function subscribeToPush(): Promise<void> {
   if (!registration) return;
 
   const existing = await registration.pushManager.getSubscription();
+  if (existing && !subscriptionMatchesVapid(existing, key)) {
+    try {
+      await existing.unsubscribe();
+    } catch {
+      /* ignore */
+    }
+  }
+  const fresh = await registration.pushManager.getSubscription();
   const subscription =
-    existing ||
+    fresh ||
     (await registration.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: urlBase64ToUint8Array(key) as BufferSource,
@@ -138,8 +163,14 @@ export function useWebNotifications(): UseWebNotificationsResult {
   const [requesting, setRequesting] = useState(false);
 
   // El permiso puede cambiarse desde los ajustes del navegador sin recargar la página.
+  // Si ya había permiso, re-suscribe: hace falta cuando se rotan las claves VAPID.
   useEffect(() => {
-    const sync = () => setPermission(currentPermission());
+    const sync = () => {
+      const next = currentPermission();
+      setPermission(next);
+      if (next === 'granted') void subscribeToPush();
+    };
+    sync();
     document.addEventListener('visibilitychange', sync);
     window.addEventListener('focus', sync);
     return () => {
@@ -166,11 +197,17 @@ export function useWebNotifications(): UseWebNotificationsResult {
   }, []);
 
   const sendTestNotification = useCallback(async (): Promise<boolean> => {
-    return showLocalNotification(
+    const local = await showLocalNotification(
       'Powerlifting Tracker',
       'Las notificaciones están activadas. Te avisaremos de tus entrenos y de la actividad de tus amigos.',
       { tag: 'test-notification' }
     );
+    try {
+      await apiPost('/api/notifications/test-push', {});
+    } catch {
+      /* sin VAPID o sin red: el aviso local ya basta para probar el permiso */
+    }
+    return local;
   }, []);
 
   return {

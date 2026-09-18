@@ -1,4 +1,4 @@
-import { mediaUrl } from '@/src/lib/api';
+import { apiUpload, mediaUrl } from '@/src/lib/api';
 
 const FAKE_AVATAR = /picsum\.photos|ui-avatars\.com|pravatar\.cc|randomuser\.me/i;
 
@@ -24,4 +24,14 @@ export function resolveAvatarUrl(avatar?: string | null): string | null {
 
 export function hasRealAvatar(avatar?: string | null): boolean {
   return !!resolveAvatarUrl(avatar);
+}
+
+/** Recorte en data URL → clave en el almacén de medios. */
+export async function uploadAvatarDataUrl(dataUrl: string): Promise<string> {
+  const blob = await (await fetch(dataUrl)).blob();
+  const form = new FormData();
+  form.append('file', blob, 'avatar.jpg');
+  const data = await apiUpload<{ avatar: string }>('/api/auth/me/avatar', form);
+  if (!data?.avatar) throw new Error('No se ha podido guardar la foto');
+  return data.avatar;
 }

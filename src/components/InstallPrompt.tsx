@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { BellRing, Download, Dumbbell, Plus, Share, X } from 'lucide-react';
+import { BellRing, Download, Dumbbell, Share } from 'lucide-react';
 import { isAndroid, isIOS, useInstallPrompt } from '@/src/pwa/installPrompt';
 import { useWebNotifications } from '@/src/pwa/notifications';
 
 const DISMISS_KEY = {
   install: 'pwa-install-dismissed-at',
-  notifications: 'pwa-notifications-dismissed-at',
+  notifications: 'pwa-notifications-dismissed-at-v2',
 } as const;
 
 /** Si el usuario dice que no, no volver a molestar en una semana. */
@@ -52,13 +52,15 @@ export const InstallPrompt: React.FC = () => {
   }));
   const [visible, setVisible] = useState(false);
 
-  // Las notificaciones solo se ofrecen con la app ya instalada: en iOS es un requisito
-  // del sistema y en el resto evita pedir permisos a quien solo pasaba por la web.
-  const notificationsPending = isSupported && permission === 'default' && (isInstalled || justInstalled);
+  // iPhone solo permite Web Push con la app en la pantalla de inicio.
+  // En Android/escritorio se puede activar desde el navegador.
+  const iosNeedsInstall = isIOS() && !isInstalled && !justInstalled;
+  const canAskNotifications = isSupported && permission === 'default' && !iosNeedsInstall;
 
   let mode: PromptMode | null = null;
-  if (isInstallable && !dismissed.install) mode = 'install';
-  else if (notificationsPending && !dismissed.notifications) mode = 'notifications';
+  if (canAskNotifications && !dismissed.notifications) mode = 'notifications';
+  else if (iosNeedsInstall && isInstallable && !dismissed.install) mode = 'install';
+  else if (!isIOS() && isInstallable && !dismissed.install && permission !== 'default') mode = 'install';
 
   useEffect(() => {
     if (!mode) {
@@ -104,104 +106,58 @@ export const InstallPrompt: React.FC = () => {
           transition={{ type: 'spring', stiffness: 320, damping: 30 }}
           role="dialog"
           aria-label={isNotificationsMode ? 'Activar notificaciones' : 'Instalar la aplicación'}
-          className="fixed inset-x-3 bottom-24 z-[60] mx-auto max-w-md sm:bottom-28"
+          className="fixed inset-x-2 bottom-[calc(4.75rem+env(safe-area-inset-bottom,0px))] z-[60] mx-auto max-w-md sm:inset-x-3 sm:bottom-28"
         >
-          <div className="relative overflow-hidden rounded-3xl border border-white/20 bg-white/90 p-5 shadow-2xl shadow-black/10 backdrop-blur-2xl dark:border-slate-700/60 dark:bg-slate-950/90 dark:shadow-black/60">
-            <button
-              type="button"
-              onClick={close}
-              aria-label="Ahora no"
-              className="absolute right-3 top-3 rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-200"
-            >
-              <X size={18} />
-            </button>
-
-            <div className="flex items-start gap-4 pr-6">
-              <div className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-indigo-600 text-white shadow-lg shadow-indigo-300/50 dark:shadow-indigo-900/50">
-                {isNotificationsMode ? <BellRing size={24} strokeWidth={2.5} /> : <Dumbbell size={24} strokeWidth={2.5} />}
+          <div className="relative overflow-hidden rounded-2xl border border-white/20 bg-white/92 px-3 py-2.5 shadow-2xl shadow-black/10 backdrop-blur-2xl dark:border-slate-700/60 dark:bg-slate-950/90 dark:shadow-black/60 sm:rounded-3xl sm:p-5">
+            <div className="flex flex-wrap items-center gap-2 sm:flex-nowrap sm:gap-2.5">
+              <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-white sm:size-12 sm:rounded-2xl">
+                {isNotificationsMode ? <BellRing size={18} strokeWidth={2.5} /> : <Dumbbell size={18} strokeWidth={2.5} />}
               </div>
-              <div className="min-w-0 flex-1">
-                <h2 className="text-base font-black uppercase tracking-tight text-slate-900 dark:text-slate-100">
+              <div className="min-w-0 flex-1 basis-[8rem]">
+                <h2 className="truncate text-[13px] font-black uppercase tracking-tight text-slate-900 dark:text-slate-100 sm:text-base">
                   {isNotificationsMode ? 'Activar notificaciones' : 'Instalar en el móvil'}
                 </h2>
-                <p className="mt-1 text-xs leading-snug text-slate-500 dark:text-slate-400">
+                <p className="mt-0.5 text-[11px] leading-snug text-slate-500 dark:text-slate-400 sm:text-xs">
                   {isNotificationsMode
-                    ? 'Recibe avisos de tus entrenos y de la actividad de tus amigos aunque la app esté cerrada.'
-                    : 'Añádela a la pantalla de inicio: se abre como una app, sin barra del navegador.'}
+                    ? 'Torneos, gym, RMs, solicitudes y mensajes. Aunque la app esté cerrada.'
+                    : isIOS()
+                      ? 'En iPhone Apple exige añadirla a la pantalla de inicio. Sin eso no se pueden activar los avisos.'
+                      : 'Añádela a la pantalla de inicio: se abre como una app.'}
                 </p>
               </div>
-            </div>
-
-            {!isNotificationsMode && needsManualInstructions ? (
-              <div className="mt-4 space-y-3">
-                <ol className="space-y-2 rounded-2xl bg-slate-50 p-4 text-xs font-medium text-slate-600 dark:bg-slate-900/70 dark:text-slate-300">
-                  {isIOS() ? (
-                    <>
-                      <li className="flex items-center gap-2">
-                        <Share size={16} className="shrink-0 text-indigo-600 dark:text-indigo-400" />
-                        <span>
-                          1. Pulsa <strong className="font-black">Compartir</strong> en Safari.
-                        </span>
-                      </li>
-                      <li className="flex items-center gap-2">
-                        <Plus size={16} className="shrink-0 text-indigo-600 dark:text-indigo-400" />
-                        <span>
-                          2. Elige <strong className="font-black">Añadir a pantalla de inicio</strong>.
-                        </span>
-                      </li>
-                    </>
-                  ) : (
-                    <>
-                      <li className="flex items-center gap-2">
-                        <Download size={16} className="shrink-0 text-indigo-600 dark:text-indigo-400" />
-                        <span>
-                          1. Abre el menú {isAndroid() ? '⋮ de Chrome' : 'del navegador'}.
-                        </span>
-                      </li>
-                      <li className="flex items-center gap-2">
-                        <Plus size={16} className="shrink-0 text-indigo-600 dark:text-indigo-400" />
-                        <span>
-                          2. Pulsa <strong className="font-black">Instalar app</strong> o <strong className="font-black">Añadir a pantalla de inicio</strong>.
-                        </span>
-                      </li>
-                    </>
-                  )}
-                </ol>
+              <div className="flex shrink-0 items-center gap-1.5">
                 <button
                   type="button"
                   onClick={close}
-                  className="w-full rounded-2xl border-2 border-slate-200 px-4 py-3 text-xs font-black uppercase tracking-widest text-slate-500 dark:border-slate-700 dark:text-slate-300"
-                >
-                  Ahora no
-                </button>
-              </div>
-            ) : (
-              <div className="mt-4 flex gap-2">
-                <button
-                  type="button"
-                  onClick={close}
-                  className="flex-1 rounded-2xl border-2 border-slate-200 px-4 py-3 text-xs font-black uppercase tracking-widest text-slate-500 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                  className="rounded-xl px-2.5 py-2 text-[10px] font-black uppercase tracking-wider text-slate-500 sm:px-3"
                 >
                   Ahora no
                 </button>
                 <button
                   type="button"
                   onClick={() => void (isNotificationsMode ? handleEnableNotifications() : handleInstall())}
-                  className="flex flex-[1.4] items-center justify-center gap-2 rounded-2xl bg-indigo-600 px-4 py-3 text-xs font-black uppercase tracking-widest text-white shadow-lg shadow-indigo-300/50 transition-all active:scale-[0.98] dark:bg-indigo-500 dark:shadow-indigo-900/50"
+                  className="inline-flex items-center gap-1 rounded-xl bg-indigo-600 px-2.5 py-2 text-[10px] font-black uppercase tracking-wider text-white sm:rounded-2xl sm:px-4 sm:py-3 sm:text-xs"
                 >
-                  {isNotificationsMode ? (
-                    <>
-                      <BellRing size={16} />
-                      Activar
-                    </>
-                  ) : (
-                    <>
-                      <Download size={16} />
-                      Instalar
-                    </>
-                  )}
+                  {isNotificationsMode ? <BellRing size={14} /> : <Download size={14} />}
+                  {isNotificationsMode ? 'Activar' : 'Instalar'}
                 </button>
               </div>
+            </div>
+
+            {!isNotificationsMode && needsManualInstructions && (
+              <p className="mt-2 hidden text-[11px] font-medium leading-snug text-slate-500 min-[400px]:block dark:text-slate-400">
+                {isIOS() ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Share size={13} className="shrink-0 text-indigo-600" />
+                    Safari → Compartir → Añadir a pantalla de inicio.
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Download size={13} className="shrink-0 text-indigo-600" />
+                    Menú {isAndroid() ? '⋮ de Chrome' : 'del navegador'} → Instalar app.
+                  </span>
+                )}
+              </p>
             )}
           </div>
         </motion.div>

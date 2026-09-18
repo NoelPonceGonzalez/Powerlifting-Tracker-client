@@ -4,13 +4,15 @@ import { MotionConfig, motion } from 'motion/react';
 import { User as UserIcon, Users, Dumbbell, Plus, Trophy } from 'lucide-react';
 import { ComposeSheet } from '@/src/components/ComposeSheet';
 import { StoryCamera } from '@/src/components/social/StoryCamera';
+import { AppNoticeHost } from '@/src/components/AppNoticeHost';
+import { showAppError, showAppOk } from '@/src/lib/appNotice';
 
 // Views
 import { LoginView } from '@/src/views/Login';
 import { DashboardView } from '@/src/views/Dashboard';
 import { TrainingPlanView } from '@/src/views/TrainingPlan';
 import { RoutineManagerView } from '@/src/views/RoutineManager';
-import { SocialView, type SocialTab } from '@/src/views/Social';
+import { SocialView, normalizeSocialTab, type SocialTab } from '@/src/views/Social';
 import { ProfileView } from '@/src/views/Profile';
 
 // Components
@@ -124,36 +126,12 @@ function mapCheckInFromApi(c: Record<string, unknown>): GymCheckIn {
   };
 }
 
-// --- Constants & Mock Data ---
-const INITIAL_USER: User = {
-  id: 'u-1',
-  name: 'Noel Ponce',
-  email: 'noel.ponce.gonzalez@gmail.com',
-  avatar: '',
-  bodyWeight: 80,
-  theme: 'light'
-};
-
-const INITIAL_CHALLENGES: Challenge[] = [];
-
-const INITIAL_CHECKINS: GymCheckIn[] = [];
-
-// --- Constants & Mock Data ---
-const INITIAL_RMS: RMData = {
+const EMPTY_RMS: RMData = {
   bench: 0,
   squat: 0,
   deadlift: 0
 };
 
-const INITIAL_TMS: TrainingMax[] = [
-  { id: 'tm-1', name: 'Press Banca', value: 110, mode: 'weight', linkedExercise: 'bench' },
-  { id: 'tm-2', name: 'Sentadilla', value: 140, mode: 'weight', linkedExercise: 'squat' },
-  { id: 'tm-3', name: 'Peso Muerto', value: 190, mode: 'weight', linkedExercise: 'deadlift' },
-  { id: 'tm-4', name: 'Dominadas', value: 15, mode: 'reps' },
-  { id: 'tm-5', name: 'Plancha', value: 60, mode: 'seconds' },
-];
-
-/** Si el GET de TMs llega tarde, no pisa un TM ya subido al registrar series en el plan. */
 function mergeTrainingMaxesFromServer(prev: TrainingMax[], server: TrainingMax[]): TrainingMax[] {
   if (!server.length) return prev;
   if (!prev.length) return server;
@@ -164,33 +142,6 @@ function mergeTrainingMaxesFromServer(prev: TrainingMax[], server: TrainingMax[]
   });
 }
 
-const generateWeeks = (): TrainingWeek[] => {
-  const weeks: TrainingWeek[] = [];
-  const dayNames = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
-  
-  for (let i = 1; i <= 52; i++) {
-    weeks.push({
-      id: `w${i}`,
-      number: i,
-      days: dayNames.map((name, dIdx) => ({
-        id: `w${i}-d${dIdx}`,
-        name,
-        type: (dIdx === 0 || dIdx === 2 || dIdx === 4) ? 'workout' : 'rest',
-        exercises: dIdx === 0 ? [
-          { id: `w${i}-d${dIdx}-e1`, name: 'Press Banca', sets: 3, reps: 5, pct: 65 + (i % 4) * 5, mode: 'weight', linkedTo: 'tm-1' },
-          { id: `w${i}-d${dIdx}-e2`, name: 'Press Militar', sets: 3, reps: 10, mode: 'weight' },
-        ] : dIdx === 2 ? [
-          { id: `w${i}-d${dIdx}-e3`, name: 'Sentadilla', sets: 3, reps: 5, pct: 65 + (i % 4) * 5, mode: 'weight', linkedTo: 'tm-2' },
-        ] : dIdx === 4 ? [
-          { id: `w${i}-d${dIdx}-e4`, name: 'Peso Muerto', sets: 3, reps: 5, pct: 65 + (i % 4) * 5, mode: 'weight', linkedTo: 'tm-3' },
-        ] : []
-      }))
-    });
-  }
-  return weeks;
-};
-
-/** Misma estructura semanal (52 semanas), sin ejercicios — rutinas nuevas creadas por el usuario. */
 const generateEmptyWeeks = (): TrainingWeek[] => {
   const weeks: TrainingWeek[] = [];
   const dayNames = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
@@ -209,7 +160,6 @@ const generateEmptyWeeks = (): TrainingWeek[] => {
   return weeks;
 };
 
-const INITIAL_WEEKS: TrainingWeek[] = generateWeeks();
 const AUTH_USER_STORAGE_KEY = 'auth_user';
 
 const getCurrentWeekOfYear = (date = new Date()): number => {
@@ -575,10 +525,9 @@ type CreateRoutinePlanOptions = { empty?: boolean; sameTemplateAllWeeks?: boolea
 const createRoutinePlan = (id: string, name: string, options?: boolean | CreateRoutinePlanOptions) => {
   const opts: CreateRoutinePlanOptions =
     typeof options === 'boolean' ? { empty: options } : options ?? {};
-  const empty = opts.empty ?? false;
   const sameTemplateAllWeeks = opts.sameTemplateAllWeeks !== false;
   const cycleLength = opts.cycleLength ?? 4;
-  const weeks = empty ? generateEmptyWeeks() : generateWeeks();
+  const weeks = generateEmptyWeeks();
   const tpl = deriveBaseTemplateFromWeeks(weeks, cycleLength);
   return {
     id,
@@ -595,8 +544,6 @@ const createRoutinePlan = (id: string, name: string, options?: boolean | CreateR
     logs: {},
   };
 };
-
-const INITIAL_FRIENDS: FriendRequest[] = [];
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -616,7 +563,7 @@ export default function App() {
   const [tmsLoading, setTmsLoading] = useState(false);
 
   // State
-  const [rms, setRms] = useState<RMData>(INITIAL_RMS);
+  const [rms, setRms] = useState<RMData>(EMPTY_RMS);
   const [tms, setTms] = useState<TrainingMax[]>([]);
   /** TM inferidos por nombre de ejercicio (sin vínculo a TM de rutina). */
   const [internalExerciseMaxes, setInternalExerciseMaxes] = useState<InternalExerciseMax[]>([]);
@@ -643,11 +590,11 @@ export default function App() {
   const [openImportAfterCreate, setOpenImportAfterCreate] = useState(0);
   const [openCreateRoutineSignal, setOpenCreateRoutineSignal] = useState(0);
   const [viewAsOfWeek, setViewAsOfWeek] = useState<number | null>(null); // null = presente, número = viaje en el tiempo
-  const [friends, setFriends] = useState<FriendRequest[]>(INITIAL_FRIENDS);
+  const [friends, setFriends] = useState<FriendRequest[]>([]);
   const [friendsList, setFriendsList] = useState<Friend[]>([]);
-  const [challenges, setChallenges] = useState<Challenge[]>(INITIAL_CHALLENGES);
-  const [checkIns, setCheckIns] = useState<GymCheckIn[]>(INITIAL_CHECKINS);
-  const [socialTab, setSocialTab] = useState<SocialTab>('feed');
+  const [challenges, setChallenges] = useState<Challenge[]>([]);
+  const [checkIns, setCheckIns] = useState<GymCheckIn[]>([]);
+  const [socialTab, setSocialTab] = useState<SocialTab>('chat');
   const [savedAccountsState, setSavedAccountsState] = useState<SavedAccount[]>(() => loadSavedAccounts());
   const [addAccountMode, setAddAccountMode] = useState(false);
   const [isSwitchingAccount, setIsSwitchingAccount] = useState(false);
@@ -661,6 +608,7 @@ export default function App() {
       email: u.email,
       avatar: u.avatar || '',
       bodyWeight: u.bodyWeight ?? 80,
+      gender: u.gender === 'mujer' || u.gender === 'hombre' ? u.gender : undefined,
       theme: (u.theme ||
         (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
           ? 'dark'
@@ -707,11 +655,10 @@ export default function App() {
     onRoutineUpdate: bumpRoutineDataRefresh,
   });
 
-  const [openPublishSignal, setOpenPublishSignal] = useState(0);
   const [storyComposerOpen, setStoryComposerOpen] = useState(false);
   const [composeOpen, setComposeOpen] = useState(false);
   const [checkInIntent, setCheckInIntent] = useState<'now' | 'later' | null>(null);
-  const [socialBackTo, setSocialBackTo] = useState<'feed' | 'profile' | 'dashboard'>('feed');
+  const [socialBackTo, setSocialBackTo] = useState<'profile' | 'dashboard' | 'chat'>('dashboard');
   const [socialNavTick, setSocialNavTick] = useState(0);
   const [chatConversationOpen, setChatConversationOpen] = useState(false);
 
@@ -725,12 +672,11 @@ export default function App() {
       opts?: {
         openCheckInModal?: boolean;
         openCreateChallenge?: boolean;
-        openPublish?: boolean;
         gymNow?: boolean;
-        from?: 'profile' | 'dashboard' | 'feed';
+        from?: 'profile' | 'dashboard' | 'chat';
       }
     ) => {
-      const next = tab ?? 'feed';
+      const next = normalizeSocialTab(tab);
       setSocialTab(next);
       setSocialNavTick(t => t + 1);
       setView('social');
@@ -742,9 +688,6 @@ export default function App() {
         setSocialBackTo(view === 'settings' ? 'profile' : 'dashboard');
       } else {
         setSocialBackTo('dashboard');
-      }
-      if (opts?.openPublish) {
-        setOpenPublishSignal((s) => s + 1);
       }
       if (opts?.openCheckInModal || opts?.gymNow) {
         setCheckInIntent(opts?.gymNow ? 'now' : 'later');
@@ -1044,13 +987,6 @@ export default function App() {
     return getWeeksAt(activeRoutine, refWeek);
   }, [activeRoutine, viewAsOfWeek, currentWeekOfYear]);
   const logs = activeRoutine?.logs || {};
-  /**
-   * `viewAsOfWeek` solo indica qué semana del año materializar en el plan (mes / flechas).
-   * No debe activar “solo lectura”: si `isHistoryMode` dependía de `viewAsOfWeek !== null`, al navegar
-   * a otra semana desaparecían editar/borrar ejercicios y los handlers quedaban en no-op.
-   */
-  const isHistoryMode = false;
-
   const sortedHistory = useMemo(() => {
     return [...history].sort((a, b) => {
       const c = entryDateISO(a).localeCompare(entryDateISO(b));
@@ -1188,7 +1124,6 @@ export default function App() {
   // Al pulsar una notificación push: pantalla según `data.screen` / `data.tab` (servidor → push.ts)
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const validTabs = ['feed', 'friends', 'challenges', 'checkins', 'chat'] as const;
     const handle = (d: { screen?: string; tab?: string }) => {
       const screen = d?.screen ?? 'dashboard';
       if (screen === 'program') {
@@ -1197,11 +1132,7 @@ export default function App() {
         return;
       }
       if (screen === 'social') {
-        const raw = String(d.tab ?? 'feed');
-        const tab = (validTabs as readonly string[]).includes(raw)
-          ? (raw as SocialTab)
-          : 'feed';
-        setSocialTab(tab);
+        setSocialTab(normalizeSocialTab(d.tab));
         setView('social');
         return;
       }
@@ -1220,7 +1151,7 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const pwa = params.get('pwa');
     if (pwa === 'plan') handle({ screen: 'program' });
-    else if (pwa === 'social') handle({ screen: 'social', tab: params.get('tab') || 'feed' });
+    else if (pwa === 'social') handle({ screen: 'social', tab: params.get('tab') || 'chat' });
     else if (pwa === 'dashboard') handle({ screen: 'dashboard' });
     const t = setTimeout(checkPending, 800);
     return () => {
@@ -1271,6 +1202,7 @@ export default function App() {
         // Check-ins y torneos: efecto de socialRefreshTick.
       } catch (e) {
         console.error('[App] Error cargando datos:', e);
+        showAppError('No se han podido cargar tus datos. Revisa la conexión.', e);
       } finally {
         setIsLoadingData(false);
       }
@@ -1365,6 +1297,7 @@ export default function App() {
         }
       } catch (e) {
         console.error('[App] Error cargando TMs de la rutina:', e);
+        showAppError('No se han podido cargar los máximos.', e);
         if (!cancelled && activeRoutineIdRef.current === rid) {
           setTms([]);
           setRms({ bench: 0, squat: 0, deadlift: 0 });
@@ -1431,16 +1364,7 @@ export default function App() {
     const scopeChanged = prevRoutineDataKeyRef.current !== key;
     const isLocalOnlyRoutine = activeRoutineId.startsWith('routine-') && activeRoutineId.length < 20;
     if (isLocalOnlyRoutine) {
-      if (scopeChanged) {
-        const base = INITIAL_TMS;
-        const feb = base.map(tm => ({ ...tm, value: tm.value + (tm.linkedExercise === 'bench' ? 2.5 : tm.linkedExercise === 'squat' || tm.linkedExercise === 'deadlift' ? 5 : 0) }));
-        const mar = base.map(tm => ({ ...tm, value: tm.value + (tm.linkedExercise === 'bench' ? 5 : tm.linkedExercise === 'squat' || tm.linkedExercise === 'deadlift' ? 10 : 0) }));
-        setHistory([
-          createHistoryEntry('Ene', base, { bench: 100, squat: 130, deadlift: 180 }, { week: 1, year: new Date().getFullYear() }),
-          createHistoryEntry('Feb', feb, { bench: 105, squat: 135, deadlift: 185 }, { week: 5, year: new Date().getFullYear() }),
-          createHistoryEntry('Mar', mar, { bench: 110, squat: 140, deadlift: 190 }, { week: 10, year: new Date().getFullYear() }),
-        ]);
-      }
+      if (scopeChanged) setHistory([]);
       return;
     }
     if (scopeChanged) setHistory([]);
@@ -1681,14 +1605,23 @@ export default function App() {
 
   // Handlers
   const handleUpdateUser = useCallback(async (updates: Partial<User>) => {
-    setUser(prev => (prev ? { ...prev, ...updates } : prev));
-    // Persistir en el servidor: theme, name, bodyWeight, avatar, progressMode
-    const toSync = ['theme', 'name', 'bodyWeight', 'avatar', 'progressMode', 'mbMode'] as const;
-    const hasSync = toSync.some(k => k in updates);
+    const next = { ...updates };
+    if (typeof next.avatar === 'string' && next.avatar.startsWith('data:')) {
+      try {
+        const { uploadAvatarDataUrl } = await import('@/src/lib/avatar');
+        next.avatar = await uploadAvatarDataUrl(next.avatar);
+      } catch (e) {
+        showAppError('No se ha podido guardar la foto de perfil.', e);
+        return;
+      }
+    }
+    setUser(prev => (prev ? { ...prev, ...next } : prev));
+    const toSync = ['theme', 'name', 'bodyWeight', 'gender', 'avatar', 'progressMode', 'mbMode'] as const;
+    const hasSync = toSync.some(k => k in next);
     if (hasSync) {
       try {
         const payload: Record<string, unknown> = {};
-        toSync.forEach(k => { if (k in updates) payload[k] = updates[k]; });
+        toSync.forEach(k => { if (k in next) payload[k] = next[k]; });
         const data = await apiPut<{ user: User }>('/api/auth/me', payload);
         if (data?.user) {
           setUser(prev => (prev ? { ...prev, ...data.user } : prev));
@@ -1697,6 +1630,7 @@ export default function App() {
         bumpSocialRefresh();
       } catch (e) {
         console.error('[App] Error al guardar preferencias:', e);
+        showAppError('No se han podido guardar los ajustes.', e);
       }
     }
   }, [bumpRoutineDataRefresh, bumpSocialRefresh]);
@@ -1706,25 +1640,31 @@ export default function App() {
     description?: string;
     type: 'max_reps' | 'weight' | 'seconds';
     exercise: string;
+    exercises?: string[];
     endDate: string;
     usePointsSystem?: boolean;
     bodyWeightScoring?: BodyWeightScoringMode;
+    isPrivate?: boolean;
+    password?: string;
   }) => {
-    try {
-      const created = await apiPost<Challenge>('/api/challenges', data);
-      setChallenges(prev => [...prev, created]);
-      bumpSocialRefresh();
-    } catch (e: any) {
-    }
+    const created = await apiPost<Challenge>('/api/challenges', data);
+    setChallenges(prev => [...prev, created]);
+    bumpSocialRefresh();
   };
 
-  const handleJoinChallenge = async (id: string, value: number) => {
-    try {
-      const updated = await apiPut<Challenge>(`/api/challenges/${id}/join`, { value });
-      setChallenges(prev => prev.map(c => c.id === id ? updated : c));
-      bumpSocialRefresh();
-    } catch (e: any) {
-    }
+  const handleJoinChallenge = async (
+    id: string,
+    payload: { value?: number; lifts?: { exercise: string; value: number }[]; password?: string }
+  ) => {
+    const updated = await apiPut<Challenge>(`/api/challenges/${id}/join`, payload);
+    setChallenges(prev => prev.map(c => c.id === id ? updated : c));
+    bumpSocialRefresh();
+  };
+
+  const handleDeleteChallenge = async (id: string) => {
+    await apiDelete(`/api/challenges/${id}`);
+    setChallenges((prev) => prev.filter((c) => c.id !== id));
+    bumpSocialRefresh();
   };
 
   const handleAcceptFriend = async (id: string) => {
@@ -1740,6 +1680,7 @@ export default function App() {
       bumpSocialRefresh();
     } catch (e: any) {
       console.error('[Social] Error aceptando solicitud:', e);
+      showAppError('No se ha podido aceptar la solicitud.', e);
       bumpSocialRefresh();
       throw e;
     }
@@ -1752,6 +1693,7 @@ export default function App() {
       bumpSocialRefresh();
     } catch (e: any) {
       console.error('[Social] Error rechazando solicitud:', e);
+      showAppError('No se ha podido rechazar la solicitud.', e);
       bumpSocialRefresh();
       throw e;
     }
@@ -1764,6 +1706,7 @@ export default function App() {
       bumpSocialRefresh();
     } catch (e: any) {
       console.error('[Social] Error eliminando amigo:', e);
+      showAppError('No se ha podido eliminar al amigo.', e);
       bumpSocialRefresh();
       throw e;
     }
@@ -1973,6 +1916,7 @@ export default function App() {
       bumpRoutineDataRefresh();
     } catch (e) {
       console.error('[TM] Error creando:', e);
+      showAppError('No se ha podido crear el máximo.', e);
     }
   };
 
@@ -2016,6 +1960,7 @@ export default function App() {
       bumpRoutineDataRefresh();
     } catch (e) {
       console.error('[TM] Error eliminando:', e);
+      showAppError('No se ha podido borrar el máximo.', e);
     }
   };
 
@@ -2073,6 +2018,7 @@ export default function App() {
           bumpRoutineDataRefresh();
         } catch (e) {
           console.error('[TM] Error actualizando:', e);
+          showAppError('No se ha podido actualizar el máximo.', e);
           setTms(prevTms);
           setRms(prevRms);
         }
@@ -2091,6 +2037,7 @@ export default function App() {
         bumpRoutineDataRefresh();
       } catch (e) {
         console.error('[TM] Error actualizando:', e);
+        showAppError('No se ha podido actualizar el máximo.', e);
         setTms(prevTms);
         setRms(prevRms);
       }
@@ -2154,6 +2101,7 @@ export default function App() {
       bumpRoutineDataRefresh();
     } catch (e) {
       console.error('[Routine] Error creando:', e);
+      showAppError('No se ha podido crear la rutina.', e);
       throw e;
     } finally {
       setRoutineCreateLoading(false);
@@ -2181,6 +2129,7 @@ export default function App() {
       bumpRoutineDataRefresh();
     } catch (e) {
       console.error('[Routine] Error activando:', e);
+      showAppError('No se ha podido activar la rutina.', e);
     } finally {
       setRoutineSwitchingId(null);
     }
@@ -2264,6 +2213,7 @@ export default function App() {
       bumpRoutineDataRefresh();
     } catch (e) {
       console.error('[Routine] Error copiando:', e);
+      showAppError('No se ha podido copiar la rutina.', e);
     }
   };
 
@@ -2274,6 +2224,7 @@ export default function App() {
       bumpRoutineDataRefresh();
     } catch (e) {
       console.error('[Routine] Error renombrando:', e);
+      showAppError('No se ha podido cambiar el nombre.', e);
     }
   };
 
@@ -2309,7 +2260,7 @@ export default function App() {
       bumpRoutineDataRefresh();
     } catch (e: any) {
       console.error('[Routine] Error eliminando:', e);
-      window.alert(e?.message || 'No se ha podido borrar la rutina. Prueba otra vez.');
+      showAppError(e?.message || 'No se ha podido borrar la rutina. Prueba otra vez.', e);
     } finally {
       setRoutineDeleteLoadingId(null);
     }
@@ -2454,6 +2405,7 @@ export default function App() {
         await apiPut(`/api/routines/${routine.id}`, { skippedWeeks: [], shiftedAtCalendarWeeks: [] });
       } catch (e) {
         console.error('[Import] No se pudieron limpiar las semanas saltadas', e);
+        showAppError('No se han podido limpiar las semanas saltadas.', e);
       }
     }
 
@@ -2467,6 +2419,7 @@ export default function App() {
           await handleCreateTM({ name: max.name, value: max.value, mode: 'weight', sharedToSocial: true });
         } catch (e) {
           console.error('[Import] No se pudo crear el TM', max.name, e);
+          showAppError(`No se ha podido crear el máximo ${max.name}.`, e);
         }
       }
     }
@@ -2582,7 +2535,10 @@ export default function App() {
             }));
           });
         })
-        .catch((e: any) => console.error('[Routine] Error updating exercise:', e));
+        .catch((e: any) => {
+          console.error('[Routine] Error updating exercise:', e);
+          showAppError('No se ha podido guardar el ejercicio.', e);
+        });
       }
     }
     /**
@@ -3097,7 +3053,10 @@ export default function App() {
             value: tm.value,
             routineId: activeRoutineId,
             updatedAt: dateISOToUtcNoonISO(bumpIsoLog),
-          }).catch((e) => console.error('[TM] Error guardando subida automática:', e));
+          }).catch((e) => {
+            console.error('[TM] Error guardando subida automática:', e);
+            showAppError('No se ha podido guardar la subida del máximo.', e);
+          });
         });
         tmRevert?.ids.forEach((id) => {
           const nextVal = tmRevert.next.find((t) => t.id === id)?.value;
@@ -3313,6 +3272,7 @@ export default function App() {
         setUser(u);
       } catch (e) {
         console.error('[Account] Error al cambiar de cuenta:', e);
+        showAppError('No se ha podido cambiar de cuenta.', e);
       } finally {
         setIsSwitchingAccount(false);
       }
@@ -3401,7 +3361,7 @@ export default function App() {
         }
         
         const ac = new AbortController();
-        const t = setTimeout(() => ac.abort(), 15000);
+        const t = setTimeout(() => ac.abort(), 45000);
         const res = await fetch('/api/auth/me', {
           headers: {
             Authorization: `Bearer ${token}`,
@@ -3555,9 +3515,10 @@ export default function App() {
         trainingMaxes: entry.trainingMaxes,
         progressKind: entry.progressKind,
       });
-      if (!silent) alert(`✅ Período guardado: ${currentDate}`);
+      if (!silent) showAppOk('Período guardado.');
     } catch (e) {
       console.error('[History] Error guardando período:', e);
+      if (!silent) showAppError('No se ha podido guardar el período.', e);
     }
   };
 
@@ -3592,20 +3553,29 @@ export default function App() {
   }
 
   if (!user) {
-    return <LoginView onLogin={handleLoginComplete} />;
+    return (
+      <>
+        <LoginView onLogin={handleLoginComplete} />
+        <AppNoticeHost />
+      </>
+    );
   }
 
   if (isLoadingData && routines.length === 0) {
     return (
-      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col items-center justify-center gap-4">
-        <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
-        <p className="text-sm font-bold text-slate-500 dark:text-slate-400 animate-pulse">Cargando tus datos…</p>
-      </div>
+      <>
+        <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col items-center justify-center gap-4">
+          <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+          <p className="text-sm font-bold text-slate-500 dark:text-slate-400 animate-pulse">Cargando tus datos…</p>
+        </div>
+        <AppNoticeHost />
+      </>
     );
   }
 
   if (user && addAccountMode) {
     return (
+      <>
       <LoginView
         variant="addAccount"
         onCancel={() => setAddAccountMode(false)}
@@ -3615,6 +3585,8 @@ export default function App() {
           setView('settings');
         }}
       />
+      <AppNoticeHost />
+      </>
     );
   }
 
@@ -3631,6 +3603,7 @@ export default function App() {
         })
         .catch((e) => {
           console.error('[Routine] Error guardando Mes/Sem:', e);
+          showAppError('No se ha podido guardar el cambio de la rutina.', e);
         });
     }
   };
@@ -3670,6 +3643,7 @@ export default function App() {
         bumpRoutineDataRefresh();
       } catch (e) {
         console.error('[Routine] Error guardando shift de semana:', e);
+        showAppError('No se ha podido mover la semana.', e);
       }
       return;
     }
@@ -3685,6 +3659,7 @@ export default function App() {
       bumpRoutineDataRefresh();
     } catch (e) {
       console.error('[Routine] Error guardando semanas saltadas:', e);
+      showAppError('No se han podido guardar las semanas saltadas.', e);
     }
   };
 
@@ -3704,6 +3679,7 @@ export default function App() {
       await apiPut(`/api/routines/${routine.id}`, { calendarDayShifts: next });
     } catch (e) {
       console.error('[Routine] Error guardando salto de día:', e);
+      showAppError('No se ha podido saltar el día.', e);
     }
   };
 
@@ -3717,6 +3693,7 @@ export default function App() {
       await apiPut(`/api/routines/${routine.id}`, { calendarDayShifts: next });
     } catch (e) {
       console.error('[Routine] Error restaurando días del plan:', e);
+      showAppError('No se han podido restaurar los días.', e);
     }
   };
 
@@ -3754,7 +3731,10 @@ export default function App() {
 
     if (dbDayId && routine?.id && !routine.id.startsWith('routine-')) {
       apiPatch(`/api/routines/${routine.id}/days/${dbDayId}`, { dayType: type })
-        .catch((e: any) => console.error('[Routine] Error updating day type:', e));
+        .catch((e: any) => {
+          console.error('[Routine] Error updating day type:', e);
+          showAppError('No se ha podido cambiar el tipo de día.', e);
+        });
     }
     // Igual que al editar un ejercicio: el PATCH suelto no guarda la versión nueva.
     if (routine?.id && !routine.id.startsWith('routine-')) {
@@ -3852,32 +3832,27 @@ export default function App() {
                 viewAsOfWeek={viewAsOfWeek}
                 currentWeekOfYear={currentWeekOfYear}
                 onViewAsOfWeekChange={setViewAsOfWeek}
-                isHistoryMode={isHistoryMode}
                 versionWeeks={activeRoutine?.versions?.map(v => v.effectiveFromWeek) ?? []}
                 onUpdateTM={handleUpdateTM}
                 onCreateTM={handleCreateTM}
                 planViewAnchorRef={planViewAnchorRef}
                 onRemoveTM={handleRemoveTM}
-                onAddExercise={isHistoryMode ? () => {} : handleAddExercise}
-                onRemoveExercise={isHistoryMode ? () => {} : handleRemoveExercise}
-                onMoveExercise={isHistoryMode ? () => {} : handleMoveExercise}
-                onUpdateExercise={isHistoryMode ? () => {} : handleUpdateExercise}
-                onRoutinePlanFlush={
-                  isHistoryMode
-                    ? undefined
-                    : async () => {
-                        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-                        const r = routineForSyncRef.current;
-                        if (!r || r.id !== activeRoutineId) return;
-                        rescanTmBumpsFromLogs(r);
-                        await syncDirtyLogsForRoutine(r);
-                      }
-                }
-                onUpdateDayType={isHistoryMode ? () => {} : handleUpdateDayType}
-                onLogChange={isHistoryMode ? () => {} : handleLogChange}
-                onSetLogChange={isHistoryMode ? () => {} : handleSetLogChange}
-                onUploadSetMedia={isHistoryMode ? undefined : handleUploadSetMedia}
-                onMarkCompleted={isHistoryMode ? () => {} : handleMarkCompleted}
+                onAddExercise={handleAddExercise}
+                onRemoveExercise={handleRemoveExercise}
+                onMoveExercise={handleMoveExercise}
+                onUpdateExercise={handleUpdateExercise}
+                onRoutinePlanFlush={async () => {
+                  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+                  const r = routineForSyncRef.current;
+                  if (!r || r.id !== activeRoutineId) return;
+                  rescanTmBumpsFromLogs(r);
+                  await syncDirtyLogsForRoutine(r);
+                }}
+                onUpdateDayType={handleUpdateDayType}
+                onLogChange={handleLogChange}
+                onSetLogChange={handleSetLogChange}
+                onUploadSetMedia={handleUploadSetMedia}
+                onMarkCompleted={handleMarkCompleted}
                 onOpenRoutineManager={() => setProgramScreen('routines')}
                 onExport={exportToExcel}
                 onImportCoachPlan={handleImportCoachPlan}
@@ -3906,13 +3881,13 @@ export default function App() {
               socialNavTick={socialNavTick}
               openCheckInModalSignal={openCheckInModalSignal}
               openCreateChallengeSignal={openCreateChallengeSignal}
-              openPublishSignal={openPublishSignal}
               checkInIntent={checkInIntent}
               onAccept={handleAcceptFriend}
               onReject={handleRejectFriend}
               onSendFriendRequest={handleSendFriendRequest}
               onCreateChallenge={handleCreateChallenge}
               onJoinChallenge={handleJoinChallenge}
+              onDeleteChallenge={handleDeleteChallenge}
               onCheckIn={handleCheckIn}
               onCheckInUpdate={handleCheckInUpdate}
               onCheckInDelete={handleCheckInDelete}
@@ -3955,7 +3930,7 @@ export default function App() {
       </div>
       
       {!chatConversationOpen && <nav
-        className="app-tabbar fixed bottom-[max(1rem,env(safe-area-inset-bottom))] left-3 right-3 z-50 mx-auto flex max-w-lg items-center gap-0.5 px-1.5 py-1 sm:bottom-6"
+        className="app-tabbar fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] left-2 right-2 z-50 mx-auto flex max-w-lg items-center gap-0.5 px-1 py-1 max-[360px]:left-1.5 max-[360px]:right-1.5 sm:bottom-6 sm:left-3 sm:right-3 sm:px-1.5"
         style={{ WebkitTapHighlightColor: 'transparent' }}
       >
         <div className="grid min-w-0 flex-1 grid-cols-2">
@@ -3965,7 +3940,7 @@ export default function App() {
             transition={STICKY}
             onClick={() => setView('dashboard')}
             className={cn(
-              "flex min-h-[46px] origin-center flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
+              "flex min-h-12 origin-center flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none max-[340px]:min-h-11 max-[340px]:text-[9px]",
               view === 'dashboard'
                 ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
                 : "text-slate-400 dark:text-slate-500"
@@ -3983,7 +3958,7 @@ export default function App() {
               setView('program');
             }}
             className={cn(
-              "flex min-h-[46px] origin-center flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
+              "flex min-h-12 origin-center flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none max-[340px]:min-h-11 max-[340px]:text-[9px]",
               view === 'program'
                 ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
                 : "text-slate-400 dark:text-slate-500"
@@ -3999,7 +3974,7 @@ export default function App() {
           whileTap={{ scaleX: 1.12, scaleY: 0.84 }}
           transition={STICKY}
           onClick={() => setComposeOpen(true)}
-          className="mx-0.5 mb-px flex size-12 shrink-0 origin-center items-center justify-center rounded-full border border-white/55 bg-indigo-500/90 text-white shadow-[0_10px_28px_rgba(79,70,229,0.28)] outline-none backdrop-blur-xl focus:outline-none focus-visible:outline-none dark:border-white/15 dark:bg-indigo-500/80"
+          className="mx-0.5 mb-px flex size-11 shrink-0 origin-center items-center justify-center rounded-full border border-white/55 bg-indigo-500/90 text-white shadow-[0_10px_28px_rgba(79,70,229,0.28)] outline-none backdrop-blur-xl focus:outline-none focus-visible:outline-none max-[360px]:size-10 sm:size-12 dark:border-white/15 dark:bg-indigo-500/80"
           aria-label="Publicar o avisar"
         >
           <Plus className="size-5" strokeWidth={2.4} />
@@ -4012,7 +3987,7 @@ export default function App() {
             transition={STICKY}
             onClick={() => goToSocial('chat')}
             className={cn(
-              "flex min-h-[46px] origin-center flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
+              "flex min-h-12 origin-center flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none max-[340px]:min-h-11 max-[340px]:text-[9px]",
               view === 'social' && socialTab === 'chat'
                 ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
                 : "text-slate-400 dark:text-slate-500"
@@ -4027,7 +4002,7 @@ export default function App() {
             transition={STICKY}
             onClick={() => goToSocial('challenges')}
             className={cn(
-              "flex min-h-[46px] origin-center flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none",
+              "flex min-h-12 origin-center flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none max-[340px]:min-h-11 max-[340px]:text-[9px]",
               view === 'social' && socialTab === 'challenges'
                 ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
                 : "text-slate-400 dark:text-slate-500"
@@ -4062,6 +4037,7 @@ export default function App() {
           setStoryRefreshTick(n => n + 1);
         }}
       />
+      <AppNoticeHost />
     </div>
     </MotionConfig>
   );

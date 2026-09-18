@@ -28,12 +28,12 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   onBackToProfile,
 }) => {
   return (
-    <div>
-      <div className="mx-auto max-w-2xl px-4 pt-6 sm:px-6 sm:pt-8">
+    <div className="app-page mx-auto max-w-2xl">
+      <div>
         <button
           type="button"
           onClick={onBackToProfile}
-          className="flex items-center gap-2 text-xs font-black uppercase tracking-wider text-slate-500 transition-colors hover:text-indigo-600 dark:text-slate-400"
+          className="inline-flex min-h-11 items-center gap-2 text-xs font-black uppercase tracking-wider text-slate-500 transition-colors hover:text-indigo-600 dark:text-slate-400"
         >
           <ArrowLeft size={16} />
           Perfil

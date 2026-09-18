@@ -45,6 +45,22 @@ function friendlyAuthError(status: number, serverMessage?: string): string {
   return 'No se ha podido iniciar sesión. Inténtalo de nuevo.';
 }
 
+/** Misma origen que la página (proxy Vite / rewrites). Evita pegar a localhost:3000 desde el móvil. */
+function authApiUrl(path: string): string {
+  if (typeof window !== 'undefined') {
+    try {
+      const o = window.location.origin;
+      if (o && o !== 'null' && /^https?:/i.test(o)) {
+        return `${o.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  const base = getApiBaseUrl();
+  return `${base.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
 /** Fallos de red o de conexión, antes de que el servidor llegue a responder. */
 function friendlyNetworkError(err: { name?: string; message?: string }): string {
   if (err?.name === 'AbortError') {
@@ -139,18 +155,18 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
         return;
       }
 
-      const baseUrl = getApiBaseUrl();
-      const url = `${baseUrl}/api/auth/login`;
+      const url = authApiUrl('/api/auth/login');
       const bodyData = { username: username.trim(), password };
 
       const loginController = new AbortController();
-      const loginTimeout = setTimeout(() => loginController.abort(), 15000); // Aumentado a 15 segundos
+      const loginTimeout = setTimeout(() => loginController.abort(), 45000);
       
       let res;
       try {
         res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          cache: 'no-store',
           body: JSON.stringify(bodyData),
           signal: loginController.signal
         });
@@ -186,6 +202,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
         email: data.user.email,
         avatar: data.user.avatar || '',
         bodyWeight: data.user.bodyWeight ?? 80,
+        gender: data.user.gender === 'mujer' || data.user.gender === 'hombre' ? data.user.gender : undefined,
         theme: (data.user.theme ?? (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) as 'light' | 'dark',
         progressMode:
           data.user.progressMode === 'year'
@@ -219,12 +236,11 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
       
       setEmail(normalizedEmail);
       
-      const baseUrl = getApiBaseUrl();
-      const registerUrl = `${baseUrl}/api/auth/register`;
+      const registerUrl = authApiUrl('/api/auth/register');
       console.log('[CLIENT-REGISTER] Enviando registro a:', registerUrl);
       
       const registerController = new AbortController();
-      const registerTimeout = setTimeout(() => registerController.abort(), 15000); // Aumentado a 15 segundos
+      const registerTimeout = setTimeout(() => registerController.abort(), 45000);
       
       let res;
       try {
@@ -381,8 +397,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
       if (!password || password.length < 6) throw new Error('La contraseña debe tener al menos 6 caracteres.');
       if (password !== confirmPassword) throw new Error('Las contraseñas no coinciden.');
 
-      const baseUrl = getApiBaseUrl();
-      const res = await fetch(`${baseUrl}/api/auth/complete-registration`, {
+      const res = await fetch(authApiUrl('/api/auth/complete-registration'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -391,7 +406,6 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
           bodyWeight: bw,
           password,
           gender,
-          ...(avatar ? { avatar } : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -401,22 +415,22 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
       }
 
       localStorage.setItem('auth_token', data.token);
+      let savedAvatar = data.user.avatar || '';
       if (avatar) {
-        await fetch(`${baseUrl}/api/auth/me`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${data.token}`,
-          },
-          body: JSON.stringify({ avatar }),
-        }).catch(() => {});
+        try {
+          const { uploadAvatarDataUrl } = await import('@/src/lib/avatar');
+          savedAvatar = await uploadAvatarDataUrl(avatar);
+        } catch {
+          savedAvatar = data.user.avatar || '';
+        }
       }
       onLogin({
         id: String(data.user.id),
         name: data.user.name || 'Atleta',
         email: data.user.email,
-        avatar: data.user.avatar || avatar || '',
+        avatar: savedAvatar,
         bodyWeight: data.user.bodyWeight ?? bw,
+        gender: data.user.gender === 'mujer' || data.user.gender === 'hombre' ? data.user.gender : undefined,
         theme: (data.user.theme ?? (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) as 'light' | 'dark',
         progressMode:
           data.user.progressMode === 'year'
@@ -437,12 +451,12 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
   const isAddAccount = variant === 'addAccount';
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center p-4">
+    <div className="flex min-h-dvh items-center justify-center overflow-y-auto bg-slate-50 px-3 py-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] dark:bg-slate-950">
       <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.4, ease: 'easeOut' }}
-        className="w-full max-w-md bg-white dark:bg-slate-900 rounded-3xl p-8 border border-slate-200/80 dark:border-slate-800 shadow-lg dark:shadow-black/40"
+        className="my-4 w-full max-w-md rounded-3xl border border-slate-200/80 bg-white p-5 shadow-lg dark:border-slate-800 dark:bg-slate-900 dark:shadow-black/40 sm:p-8"
       >
         {isAddAccount && onCancel && (
           <div className="mb-4">
@@ -456,7 +470,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
             </button>
           </div>
         )}
-        <div className="text-center mb-10">
+        <div className="mb-6 text-center sm:mb-10">
           <motion.div
             initial={{ y: -20, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
@@ -469,7 +483,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
             initial={{ y: -10, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             transition={{ delay: 0.3 }}
-            className="text-4xl font-black tracking-tight text-slate-900 dark:text-white mb-2"
+            className="mb-2 text-3xl font-black tracking-tight text-slate-900 dark:text-white sm:text-4xl"
           >
             {isAddAccount ? 'Otra cuenta' : 'Power'}
           </motion.h1>

@@ -855,11 +855,11 @@ export const ChatTab: React.FC<ChatTabProps> = ({
 
     const conversation = (
       <div className="flex min-h-0 flex-1 flex-col bg-slate-50 dark:bg-slate-950">
-        <div className="flex items-center gap-3 border-b border-white/40 bg-white/70 px-4 py-3 backdrop-blur-xl dark:border-white/10 dark:bg-slate-900/70">
+        <div className="flex items-center gap-2 border-b border-white/40 bg-white/70 px-3 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] backdrop-blur-xl dark:border-white/10 dark:bg-slate-900/70 sm:gap-3 sm:px-4">
           <button
             type="button"
             onClick={() => setOpen(null)}
-            className="rounded-xl p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+            className="app-icon-hit rounded-xl text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
             aria-label="Volver"
           >
             <ArrowLeft size={18} />
@@ -1213,7 +1213,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
               if (peoplePage === 'requests' || peoplePage === 'friends') setPeoplePage('activity');
               else setPeopleOpen(false);
             }}
-            className="flex min-w-0 items-center gap-2 rounded-full py-1 text-slate-500"
+            className="flex min-h-11 min-w-0 items-center gap-2 rounded-full py-2 pr-2 text-slate-500"
             aria-label={
               peoplePage === 'requests' || peoplePage === 'friends' ? 'Volver a actividad' : 'Volver a chats'
             }
@@ -1227,7 +1227,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
             <button
               type="button"
               onClick={() => setPeoplePage('friends')}
-              className="ml-auto text-sm font-semibold text-indigo-600 dark:text-indigo-400"
+              className="ml-auto inline-flex min-h-11 items-center text-sm font-semibold text-indigo-600 dark:text-indigo-400"
             >
               Amigos
               {friends.length > 0 && (
@@ -1249,12 +1249,12 @@ export const ChatTab: React.FC<ChatTabProps> = ({
                 setPeoplePage('activity');
                 setPeopleOpen(true);
               }}
-              className="relative mt-2 shrink-0 overflow-visible p-1.5 pr-2 pt-2 text-slate-900 dark:text-slate-100"
+              className="app-icon-hit relative rounded-full text-slate-900 dark:text-slate-100"
               aria-label={heartBadge > 0 ? `Actividad, ${heartBadge} por aceptar` : 'Actividad'}
             >
-              <Heart size={18} strokeWidth={2} />
+              <Heart size={22} strokeWidth={2} />
               {heartBadge > 0 && (
-                <span className="absolute right-0 top-0 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold leading-none text-white">
+                <span className="absolute right-1 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold leading-none text-white">
                   {heartBadge > 9 ? '9+' : heartBadge}
                 </span>
               )}

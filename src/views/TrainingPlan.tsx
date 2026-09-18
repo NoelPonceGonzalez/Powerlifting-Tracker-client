@@ -29,13 +29,14 @@ import { Input } from '@/src/components/ui/Input';
 import { LogEntry, TrainingMax, TrainingWeek, TrainingDay, PlannedExercise, ExerciseMode, DayType, SetLog, InternalExerciseMax, getInternalValueForMode, HistoryEntry } from '@/src/types';
 import { cn } from '@/src/lib/utils';
 import { mediaUrl } from '@/src/lib/api';
-import { EASE_OUT, SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY, VIEW_TRANSITION } from '@/src/lib/motionPresets';
+import { EASE_OUT, PAGE_ENTER_ITEM, PAGE_ENTER_ROOT, SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
+import { usePageEnter } from '@/src/lib/usePageEnter';
 import { GlassModal } from '@/src/components/ui/GlassModal';
 import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 import { applyDaySkips, shiftsForCalendarWeek, type CalendarDayShift } from '@/src/lib/calendarDayShift';
 import { firstWeekOfYearStartingInMonth } from '@/src/lib/mesocycleWeek';
-import { normalizeExerciseNameKey } from '@/src/lib/normalizeExerciseName';
+import { guessLinkedTmId, normalizeExerciseNameKey } from '@/src/lib/normalizeExerciseName';
 import { getTMsForView } from '@/src/lib/historyTm';
 import { dateISOFromYearWeekDay, weekOfYearFromDate } from '@/src/lib/calendarWeekDate';
 import { getLogEntryForExercise, routineLogKeyFromExerciseId, routineLogKeyFromIds } from '@/src/lib/routineLogKey';
@@ -493,6 +494,41 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     reps: '5',
     mode: 'weight' as ExerciseMode
   });
+  const [newExTmManual, setNewExTmManual] = useState(false);
+  const [newExMoreOpen, setNewExMoreOpen] = useState(false);
+  const [newExTmOpen, setNewExTmOpen] = useState(false);
+  const newExNameRef = useRef<HTMLInputElement>(null);
+
+  const resetNewExForm = () => {
+    setNewExForm({ name: '', linkedTo: '', pct: 75, sets: 3, reps: '5', mode: 'weight' });
+    setNewExModalError('');
+    setNewExTmManual(false);
+    setNewExMoreOpen(false);
+    setNewExTmOpen(false);
+  };
+
+  const exerciseNameSuggestions = useMemo(() => {
+    const seen = new Set<string>();
+    const names: string[] = [];
+    for (const week of weeks) {
+      for (const day of week.days ?? []) {
+        for (const ex of day.exercises ?? []) {
+          const n = String(ex.name || '').trim();
+          const key = normalizeExerciseNameKey(n);
+          if (!key || seen.has(key)) continue;
+          seen.add(key);
+          names.push(n);
+        }
+      }
+    }
+    return names;
+  }, [weeks]);
+
+  useEffect(() => {
+    if (!showAddModal) return;
+    const t = window.setTimeout(() => newExNameRef.current?.focus(), 80);
+    return () => window.clearTimeout(t);
+  }, [showAddModal]);
 
   /** Borrador local para poder vaciar el campo al editar (evita 3→32 al no poder borrar). Se confirma en onBlur. */
   const [showImportModal, setShowImportModal] = useState(false);
@@ -513,6 +549,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     setHeldExerciseId(null);
     setShowImportModal(false);
   }, [pageActive]);
+  const pageEnter = usePageEnter(pageActive);
   const [setsInputDraft, setSetsInputDraft] = useState<Record<string, string>>({});
   const [repsInputDraft, setRepsInputDraft] = useState<Record<string, string>>({});
   const [pctInputDraft, setPctInputDraft] = useState<Record<string, string>>({});
@@ -950,18 +987,17 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
 
   return (
     <motion.div 
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={VIEW_TRANSITION}
-      className="mx-auto flex max-w-5xl flex-col px-3 pt-4 pb-[calc(8.5rem+env(safe-area-inset-bottom))] max-[360px]:px-2 sm:px-6 sm:pt-6 sm:pb-[calc(9.5rem+env(safe-area-inset-bottom))]"
+      variants={PAGE_ENTER_ROOT}
+      initial={false}
+      animate={pageEnter}
+      className="app-page mx-auto flex max-w-5xl flex-col"
     >
       {!online && (
         <p className="mb-3 rounded-2xl bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
           Sin conexión. Se muestra el último plan guardado en este dispositivo.
         </p>
       )}
-      <header className="mb-4 sm:mb-6">
+      <motion.header variants={PAGE_ENTER_ITEM} initial={false} className="mb-4 sm:mb-6">
         <div className="flex items-center justify-between gap-3">
           <button
             onClick={onOpenRoutineManager}
@@ -1055,9 +1091,9 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
           </div>
           <ChevronRight size={13} className="shrink-0 text-slate-300 dark:text-slate-600" />
         </button>
-      </header>
+      </motion.header>
 
-      <section className="relative">
+      <motion.section variants={PAGE_ENTER_ITEM} initial={false} className="relative">
         <div className="mb-3 flex flex-wrap items-end justify-between gap-x-2 gap-y-1.5">
           <div className="min-w-0">
             <p className="text-[11px] font-medium text-slate-400">
@@ -1118,7 +1154,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   }
                 }}
                 className={cn(
-                  'flex h-9 w-9 items-center justify-center rounded-full bg-white text-slate-600 shadow-sm dark:bg-slate-900 dark:text-slate-200',
+                  'app-icon-hit rounded-full bg-white text-slate-600 shadow-sm dark:bg-slate-900 dark:text-slate-200',
                   displayWeekNum <= 1 && 'opacity-40'
                 )}
                 aria-label="Semana anterior"
@@ -1134,7 +1170,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                   }
                 }}
                 className={cn(
-                  'flex h-9 w-9 items-center justify-center rounded-full bg-white text-slate-600 shadow-sm dark:bg-slate-900 dark:text-slate-200',
+                  'app-icon-hit rounded-full bg-white text-slate-600 shadow-sm dark:bg-slate-900 dark:text-slate-200',
                   displayWeekNum >= 52 && 'opacity-40'
                 )}
                 aria-label="Semana siguiente"
@@ -1224,7 +1260,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 onTouchStart={e => e.stopPropagation()}
                 onTouchMove={e => e.stopPropagation()}
               >
-              <div className="overflow-x-auto px-1 pb-1 [scrollbar-width:none] sm:px-0 [&::-webkit-scrollbar]:hidden">
+              <div className="app-h-scroll px-1 pb-1 sm:px-0">
               <div className="flex w-max gap-1.5">
                 {(displayDays.length ? displayDays : currentWeek.days).map((day, idx) => {
                   const isActive = activeDayIdx === idx;
@@ -1243,7 +1279,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     key={day.id}
                     onClick={() => goToDay(idx)}
                     className={cn(
-                        "flex min-w-[3.4rem] flex-shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-xl px-3 py-1.5 text-[12px] font-medium transition-all",
+                        "flex min-h-11 min-w-[2.85rem] flex-shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-xl px-2.5 text-[11px] font-medium transition-all sm:min-w-[3.4rem] sm:gap-1.5 sm:px-3 sm:text-[12px]",
                         isActive
                           ? "bg-indigo-600 text-white shadow-sm"
                           : "bg-white text-slate-500 shadow-sm dark:bg-slate-800 dark:text-slate-400"
@@ -1699,8 +1735,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                       {!isHistoryMode && (
                       <button 
                         onClick={() => {
-                          setNewExForm({ ...newExForm, name: '', linkedTo: '', pct: 75 });
-                          setNewExModalError('');
+                          resetNewExForm();
                           setShowAddModal(true);
                         }}
                           className="group inline-flex items-center gap-1.5 rounded-lg border border-indigo-200/90 bg-white px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-indigo-700 shadow-sm transition-all hover:border-indigo-300 hover:bg-indigo-50 active:scale-[0.98] dark:border-indigo-500/35 dark:bg-indigo-950/35 dark:text-indigo-200 dark:hover:border-indigo-400/50 dark:hover:bg-indigo-900/40"
@@ -1715,8 +1750,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                       <div className="mt-3 flex justify-center">
                         <button 
                           onClick={() => {
-                            setNewExForm({ ...newExForm, name: '', linkedTo: '', pct: 75 });
-                            setNewExModalError('');
+                            resetNewExForm();
                             setShowAddModal(true);
                           }}
                           className="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-[13px] font-semibold text-indigo-600 dark:text-indigo-400"
@@ -1797,9 +1831,9 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
             </motion.div>
           )}
         </AnimatePresence>
-      </section>
+      </motion.section>
 
-      <div className="order-3 mt-6 flex items-center justify-center gap-3 sm:mt-8">
+      <motion.div variants={PAGE_ENTER_ITEM} initial={false} className="order-3 mt-6 flex items-center justify-center gap-3 sm:mt-8">
         <button
           type="button"
           onClick={onExport}
@@ -1808,7 +1842,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
           <Download size={14} />
           Exportar
         </button>
-      </div>
+      </motion.div>
 
       {showImportModal && onImportCoachPlan && (
         <React.Suspense fallback={null}>
@@ -2211,13 +2245,13 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                               <>
                                 {effectiveTM ? (
                                   <>
-                                    <div className="mb-2 flex min-w-0 items-center gap-2 pr-[7.5rem]">
+                                    <div className="mb-2 flex min-w-0 flex-wrap items-center gap-2 pr-12 sm:pr-[7.5rem]">
                                       <span className="shrink-0 text-[11px] font-black uppercase tracking-wide text-slate-700 dark:text-slate-200 sm:text-xs">
                                         Serie {idx + 1}{setRpe ? ` · RPE ${setRpe}` : ''}
                                       </span>
-                                      <div className="flex min-w-0 flex-1 justify-center">
+                                      <div className="flex min-w-0 flex-1 justify-start sm:justify-center">
                                         <div
-                                          className="inline-flex h-8 w-[7.25rem] shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-slate-100 p-[3px] shadow-inner dark:border-slate-600 dark:bg-slate-800"
+                                          className="inline-flex h-8 w-[6.5rem] shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-slate-100 p-[3px] shadow-inner dark:border-slate-600 dark:bg-slate-800 sm:w-[7.25rem]"
                                           role="group"
                                           aria-label="Unidad de peso (kg o %)"
                                         >
@@ -2357,7 +2391,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                   </>
                                 ) : (
                                   <>
-                                    <div className="pr-[7.5rem] mb-2">
+                                    <div className="mb-2 pr-12 sm:pr-[7.5rem]">
                                       <span className="text-xs font-black uppercase tracking-wide text-slate-700 dark:text-slate-200">
                                         Serie {idx + 1}{setRpe ? ` · RPE ${setRpe}` : ''}
                                       </span>
@@ -2428,13 +2462,13 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                               </>
                             ) : effectiveTM ? (
                               <>
-                                <div className="mb-2 flex min-w-0 items-center gap-2 pr-[7.5rem]">
+                                <div className="mb-2 flex min-w-0 flex-wrap items-center gap-2 pr-12 sm:pr-[7.5rem]">
                                   <span className="shrink-0 text-[11px] font-black uppercase tracking-wide text-slate-700 dark:text-slate-200 sm:text-xs">
                                     Serie {idx + 1}{setRpe ? ` · RPE ${setRpe}` : ''}
                                   </span>
-                                  <div className="flex min-w-0 flex-1 justify-center">
+                                  <div className="flex min-w-0 flex-1 justify-start sm:justify-center">
                                     <div
-                                      className="inline-flex h-8 w-[7.25rem] shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-slate-100 p-[3px] shadow-inner dark:border-slate-600 dark:bg-slate-800"
+                                      className="inline-flex h-8 w-[6.5rem] shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-slate-100 p-[3px] shadow-inner dark:border-slate-600 dark:bg-slate-800 sm:w-[7.25rem]"
                                       role="group"
                                       aria-label="Unidad (reps, segundos o %)"
                                     >
@@ -2548,7 +2582,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                               </>
                             ) : (
                               <>
-                                <div className="pr-[7.5rem] mb-2">
+                                <div className="mb-2 pr-12 sm:pr-[7.5rem]">
                                   <span className="text-xs font-black uppercase text-slate-700 dark:text-slate-200">
                                     Serie {idx + 1}{setRpe ? ` · RPE ${setRpe}` : ''}
                                   </span>
@@ -2922,132 +2956,169 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 onClick={(e) => e.stopPropagation()}
                 className="relative z-10 w-full max-w-md max-h-[min(88dvh,90vh)] overflow-y-auto bg-white dark:bg-slate-900 rounded-2xl sm:rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-700"
               >
-              <div className="p-4 sm:p-6 dark:bg-slate-900">
-                <div className="flex items-center justify-between mb-5">
-                  <h3 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white uppercase tracking-tight">Añadir ejercicio</h3>
-                  <button 
+              <form
+                className="p-4 sm:p-6 dark:bg-slate-900"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const name = newExForm.name.trim();
+                  if (!name) {
+                    setNewExModalError('Escribe un nombre para el ejercicio.');
+                    return;
+                  }
+                  const sets = newExForm.sets || 3;
+                  const pct = newExForm.linkedTo ? (newExForm.pct || 75) : 75;
+                  onAddExercise(currentWeek.id, currentDay.id, {
+                    name,
+                    linkedTo: newExForm.linkedTo || undefined,
+                    pct,
+                    pctPerSet: Array(sets).fill(pct),
+                    sets,
+                    reps: newExForm.reps,
+                    mode: newExForm.mode
+                  });
+                  setNewExModalError('');
+                  setShowAddModal(false);
+                }}
+              >
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg sm:text-xl font-black text-slate-900 dark:text-white tracking-tight">Añadir ejercicio</h3>
+                  <button
+                    type="button"
                     onClick={() => {
                       setNewExModalError('');
                       setShowAddModal(false);
-                    }} 
+                    }}
                     className="p-2 bg-slate-50 dark:bg-slate-800 text-slate-400 hover:text-rose-500 rounded-full transition-colors"
+                    aria-label="Cerrar"
                   >
-                    <X size={22} />
+                    <X size={20} />
                   </button>
                 </div>
-                
-                <div className="space-y-5">
-                  <div>
-                    <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-[0.15em]">Nombre del ejercicio *</label>
-                    <Input 
-                      value={newExForm.name}
-                      onChange={(e) => {
-                        setNewExModalError('');
-                        setNewExForm({ ...newExForm, name: e.target.value });
-                      }}
-                      placeholder="Ej: Press banca"
-                      className="h-12 text-base font-black rounded-xl border-2 border-slate-100 focus:border-indigo-500 px-4 shadow-sm transition-all"
-                    />
-                  </div>
 
-                  <div>
-                    <label className="text-[11px] font-black uppercase text-slate-400 mb-3 block tracking-[0.2em]">
-                      Tipo de Objetivo {newExForm.linkedTo && <span className="text-indigo-500 normal-case">(Vinculado a TM)</span>}
-                    </label>
-                    <div className="grid grid-cols-3 gap-3">
-                      {[
-                        { id: 'weight', label: 'Peso', icon: Gauge },
-                        { id: 'reps', label: 'Reps', icon: CheckCircle2 },
-                        { id: 'seconds', label: 'Tiempo', icon: Clock }
-                      ].map(m => (
-                        <button
-                          key={m.id}
-                          disabled={!!newExForm.linkedTo}
-                          onClick={() => setNewExForm({ ...newExForm, mode: m.id as ExerciseMode })}
-                          className={cn(
-                            "flex flex-col items-center gap-2 p-3 rounded-2xl border-2 transition-all",
-                            newExForm.mode === m.id ? "bg-indigo-600 border-indigo-600 text-white shadow-lg shadow-indigo-100 dark:shadow-indigo-950/50" : "bg-slate-50 border-transparent text-slate-400 hover:bg-slate-100",
-                            newExForm.linkedTo && "opacity-50 cursor-not-allowed"
-                          )}
-                        >
-                          <m.icon size={18} />
-                          <span className="text-[10px] font-black uppercase tracking-widest">{m.label}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="text-[11px] font-black uppercase text-slate-400 mb-3 block tracking-[0.2em]">Vincular a TM</label>
-                    <div className="grid grid-cols-2 gap-3">
-                      <button 
-                        className={cn(
-                          "p-4 rounded-2xl text-center font-black text-xs uppercase tracking-widest transition-all border-2",
-                          newExForm.linkedTo === '' ? "bg-indigo-600 border-indigo-600 text-white shadow-lg shadow-indigo-100 dark:shadow-indigo-900/50" : "bg-slate-50 dark:bg-slate-800 border-transparent text-slate-400 dark:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700"
-                        )}
-                        onClick={() => setNewExForm({ ...newExForm, linkedTo: '' })}
-                      >
-                        Libre
-                      </button>
-                      {effectiveTms.map(tm => (
-                        <button
-                          key={tm.id}
-                          onClick={() => {
-                            setNewExForm({ 
-                              ...newExForm, 
-                              linkedTo: tm.id,
-                              name: tm.name,
-                              mode: tm.mode
-                            });
+                {(() => {
+                  const q = normalizeExerciseNameKey(newExForm.name);
+                  const nameHits = q.length < 2
+                    ? []
+                    : exerciseNameSuggestions
+                        .filter((n) => {
+                          const nk = normalizeExerciseNameKey(n);
+                          return nk.includes(q) && nk !== q;
+                        })
+                        .slice(0, 5);
+                  const linkedTm = effectiveTms.find((t) => t.id === newExForm.linkedTo);
+                  const pctValue = newExForm.pct || 75;
+                  const preview = linkedTm
+                    ? (linkedTm.mode === 'weight'
+                        ? `${roundTo25(linkedTm.value * (pctValue / 100))} kg`
+                        : `${Math.max(1, Math.round(linkedTm.value * (pctValue / 100)))} ${linkedTm.mode === 'seconds' ? 's' : 'reps'}`)
+                    : null;
+                  return (
+                    <div className="space-y-4">
+                      <div className="relative">
+                        <Input
+                          ref={newExNameRef}
+                          value={newExForm.name}
+                          onChange={(e) => {
+                            const name = e.target.value;
+                            setNewExModalError('');
+                            const guessed = newExTmManual ? newExForm.linkedTo : guessLinkedTmId(name, effectiveTms);
+                            const tm = effectiveTms.find((t) => t.id === guessed);
+                            setNewExForm((prev) => ({
+                              ...prev,
+                              name,
+                              linkedTo: newExTmManual ? prev.linkedTo : guessed,
+                              mode: newExTmManual ? prev.mode : (tm?.mode ?? prev.mode),
+                            }));
                           }}
-                          className={cn(
-                            "p-4 rounded-2xl text-center font-black text-xs uppercase tracking-widest transition-all border-2",
-                            newExForm.linkedTo === tm.id ? "bg-indigo-600 border-indigo-600 text-white shadow-lg shadow-indigo-100 dark:shadow-indigo-900/50" : "bg-slate-50 dark:bg-slate-800 border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"
-                          )}
-                        >
-                          {tm.name}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                          placeholder="Press banca, sentadilla…"
+                          autoComplete="off"
+                          className="h-12 text-base font-bold rounded-xl border-2 border-slate-100 focus:border-indigo-500 px-4 shadow-sm"
+                        />
+                        {nameHits.length > 0 && (
+                          <div className="absolute left-0 right-0 top-full z-20 mt-1 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg dark:border-slate-700 dark:bg-slate-800">
+                            {nameHits.map((n) => (
+                              <button
+                                key={n}
+                                type="button"
+                                className="block w-full px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-indigo-50 dark:text-slate-200 dark:hover:bg-slate-700"
+                                onClick={() => {
+                                  const guessed = guessLinkedTmId(n, effectiveTms);
+                                  const tm = effectiveTms.find((t) => t.id === guessed);
+                                  setNewExTmManual(false);
+                                  setNewExForm((prev) => ({
+                                    ...prev,
+                                    name: n,
+                                    linkedTo: guessed,
+                                    mode: tm?.mode ?? prev.mode,
+                                  }));
+                                }}
+                              >
+                                {n}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
 
-                  {newExForm.linkedTo && (() => {
-                    const linkedTm = effectiveTms.find(t => t.id === newExForm.linkedTo);
-                    const pctValue = newExForm.pct || 75;
-                    const preview = linkedTm
-                      ? (linkedTm.mode === 'weight'
-                          ? `${roundTo25(linkedTm.value * (pctValue / 100))} kg`
-                          : `${Math.max(1, Math.round(linkedTm.value * (pctValue / 100)))} ${linkedTm.mode === 'seconds' ? 's' : 'reps'}`)
-                      : null;
-                    return (
-                      <div>
-                        <label className="text-[11px] font-black uppercase text-slate-400 mb-3 block tracking-[0.2em]">
-                          % del TM
-                          {preview && <span className="text-indigo-500 normal-case tracking-normal ml-2">≈ {preview}</span>}
-                        </label>
-                        <div className="flex items-center gap-3">
+                      <div className="flex items-end gap-2">
+                        <div className="flex-1">
+                          <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">Series</label>
                           <Input
                             type="text"
                             inputMode="numeric"
-                            value={newExForm.pct === 0 ? '' : newExForm.pct}
-                            placeholder="75"
+                            value={newExForm.sets === 0 ? '' : newExForm.sets}
+                            placeholder="3"
                             onChange={(e) => {
                               const raw = e.target.value.replace(/\D/g, '');
-                              const n = raw === '' ? 0 : Math.min(150, parseInt(raw, 10));
-                              setNewExForm({ ...newExForm, pct: n });
+                              setNewExForm({ ...newExForm, sets: raw === '' ? 0 : parseInt(raw, 10) });
                             }}
-                            className="h-12 w-24 text-lg font-black text-center rounded-xl border-2 border-slate-100 focus:border-indigo-500 shadow-sm"
+                            className="h-12 text-center text-lg font-black rounded-xl border-2 border-slate-100 focus:border-indigo-500"
                           />
-                          <div className="flex flex-wrap gap-2 flex-1">
-                            {[65, 70, 75, 80, 85, 90].map(p => (
+                        </div>
+                        <span className="mb-3 text-lg font-black text-slate-300">×</span>
+                        <div className="flex-1">
+                          <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                            {newExForm.mode === 'seconds' ? 'Segundos' : 'Reps'}
+                          </label>
+                          <Input
+                            type="text"
+                            inputMode="numeric"
+                            value={newExForm.reps}
+                            onChange={(e) => setNewExForm({ ...newExForm, reps: e.target.value })}
+                            className="h-12 text-center text-lg font-black rounded-xl border-2 border-slate-100 focus:border-indigo-500"
+                          />
+                        </div>
+                      </div>
+
+                      {linkedTm ? (
+                        <div className="rounded-2xl border border-indigo-100 bg-indigo-50/70 p-3 dark:border-indigo-900/60 dark:bg-indigo-950/30">
+                          <div className="mb-2 flex items-center justify-between gap-2">
+                            <p className="text-sm font-bold text-indigo-800 dark:text-indigo-200">
+                              {pctValue}% de {linkedTm.name}
+                              {preview ? <span className="ml-1 font-semibold text-indigo-500">≈ {preview}</span> : null}
+                            </p>
+                            <button
+                              type="button"
+                              className="text-xs font-bold text-indigo-500 hover:text-rose-500"
+                              onClick={() => {
+                                setNewExTmManual(true);
+                                setNewExForm((prev) => ({ ...prev, linkedTo: '' }));
+                              }}
+                            >
+                              Quitar
+                            </button>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {[65, 70, 75, 80, 85, 90].map((p) => (
                               <button
                                 key={p}
+                                type="button"
                                 onClick={() => setNewExForm({ ...newExForm, pct: p })}
                                 className={cn(
-                                  "px-3 h-9 rounded-xl text-xs font-black transition-all border-2",
+                                  'h-8 rounded-lg px-2.5 text-xs font-black',
                                   newExForm.pct === p
-                                    ? "bg-indigo-600 border-indigo-600 text-white"
-                                    : "bg-slate-50 dark:bg-slate-800 border-transparent text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"
+                                    ? 'bg-indigo-600 text-white'
+                                    : 'bg-white text-slate-500 hover:bg-indigo-100 dark:bg-slate-800 dark:text-slate-300',
                                 )}
                               >
                                 {p}%
@@ -3055,99 +3126,93 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                             ))}
                           </div>
                         </div>
-                      </div>
-                    );
-                  })()}
+                      ) : effectiveTms.length > 0 ? (
+                        <div>
+                          <button
+                            type="button"
+                            onClick={() => setNewExTmOpen((v) => !v)}
+                            className="flex w-full items-center justify-between rounded-xl px-1 py-1 text-left text-sm font-semibold text-slate-500 hover:text-indigo-600"
+                          >
+                            <span>Usar % de un TM</span>
+                            <ChevronDown size={16} className={cn('transition-transform', newExTmOpen && 'rotate-180')} />
+                          </button>
+                          {newExTmOpen && (
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {effectiveTms.map((tm) => (
+                                <button
+                                  key={tm.id}
+                                  type="button"
+                                  onClick={() => {
+                                    setNewExTmManual(true);
+                                    setNewExForm((prev) => ({
+                                      ...prev,
+                                      linkedTo: tm.id,
+                                      name: prev.name.trim() ? prev.name : tm.name,
+                                      mode: tm.mode,
+                                    }));
+                                  }}
+                                  className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-bold uppercase tracking-wide text-slate-600 hover:bg-indigo-100 hover:text-indigo-700 dark:bg-slate-800 dark:text-slate-300"
+                                >
+                                  {tm.name}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ) : null}
 
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-[0.15em]">Sets *</label>
-                      <Input 
-                        type="text"
-                        inputMode="numeric"
-                        value={newExForm.sets === 0 ? '' : newExForm.sets}
-                        placeholder="3"
-                        onChange={(e) => {
-                          const raw = e.target.value.replace(/\D/g, '');
-                          setNewExForm({ ...newExForm, sets: raw === '' ? 0 : parseInt(raw, 10) });
-                        }}
-                        className="h-12 text-lg font-black text-center rounded-xl border-2 border-slate-100 focus:border-indigo-500 shadow-sm"
-                      />
+                      <button
+                        type="button"
+                        onClick={() => setNewExMoreOpen((v) => !v)}
+                        className="flex items-center gap-1 text-xs font-semibold text-slate-400 hover:text-slate-600"
+                      >
+                        <ChevronDown size={14} className={cn('transition-transform', newExMoreOpen && 'rotate-180')} />
+                        {newExForm.mode === 'weight' ? 'Más opciones' : `Objetivo: ${newExForm.mode === 'seconds' ? 'tiempo' : 'reps'}`}
+                      </button>
+                      {newExMoreOpen && (
+                        <div className="grid grid-cols-3 gap-2">
+                          {[
+                            { id: 'weight', label: 'Peso', icon: Gauge },
+                            { id: 'reps', label: 'Reps', icon: CheckCircle2 },
+                            { id: 'seconds', label: 'Tiempo', icon: Clock },
+                          ].map((m) => (
+                            <button
+                              key={m.id}
+                              type="button"
+                              disabled={!!newExForm.linkedTo}
+                              onClick={() => setNewExForm({ ...newExForm, mode: m.id as ExerciseMode })}
+                              className={cn(
+                                'flex flex-col items-center gap-1 rounded-xl border-2 p-2 text-[10px] font-black uppercase',
+                                newExForm.mode === m.id
+                                  ? 'border-indigo-600 bg-indigo-600 text-white'
+                                  : 'border-transparent bg-slate-50 text-slate-400 dark:bg-slate-800',
+                                newExForm.linkedTo && 'cursor-not-allowed opacity-50',
+                              )}
+                            >
+                              <m.icon size={16} />
+                              {m.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                    {newExForm.mode === 'seconds' ? (
-                      <div>
-                        <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-[0.15em]">Segundos *</label>
-                        <Input 
-                          type="number"
-                          value={newExForm.reps}
-                          onChange={(e) => setNewExForm({ ...newExForm, reps: e.target.value })}
-                          className="h-12 text-lg font-black text-center rounded-xl border-2 border-slate-100 focus:border-indigo-500 shadow-sm"
-                        />
-                      </div>
-                    ) : (
-                      <div>
-                        <label className="text-[10px] font-black uppercase text-slate-400 mb-2 block tracking-[0.15em]">Reps *</label>
-                        <Input 
-                          value={newExForm.reps}
-                          onChange={(e) => setNewExForm({ ...newExForm, reps: e.target.value })}
-                          className="h-12 text-lg font-black text-center rounded-xl border-2 border-slate-100 focus:border-indigo-500 shadow-sm"
-                        />
-                      </div>
-                    )}
-                  </div>
-                  {!newExForm.linkedTo && (
-                    <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-snug -mt-2">
-                      Si no lo tienes arriba, al guardar las series se crea el RM y podrás usar % la próxima vez.
-                    </p>
-                  )}
-
-                </div>
+                  );
+                })()}
 
                 {newExModalError ? (
-                  <p className="mt-3 text-sm font-bold text-rose-600 dark:text-rose-400 text-center" role="alert">
+                  <p className="mt-3 text-center text-sm font-bold text-rose-600 dark:text-rose-400" role="alert">
                     {newExModalError}
                   </p>
                 ) : null}
 
-                <div className="flex gap-3 mt-6">
-                  <Button 
-                    variant="outline" 
-                    className="flex-1 h-12 rounded-xl font-black uppercase tracking-wider text-xs text-slate-400 border-2 border-slate-100 hover:bg-slate-50"
-                    onClick={() => {
-                      setNewExModalError('');
-                      setShowAddModal(false);
-                    }}
-                  >
-                    Cancelar
-                  </Button>
-                  <Button 
-                    variant="primary" 
-                    className="flex-1 h-12 rounded-xl font-black uppercase tracking-wider text-xs bg-indigo-600 hover:bg-indigo-700 shadow-lg shadow-indigo-100 dark:shadow-indigo-950/50 transition-all active:scale-95"
-                    onClick={() => {
-                      const name = newExForm.name.trim();
-                      if (!name) {
-                        setNewExModalError('Escribe un nombre para el ejercicio.');
-                        return;
-                      }
-                      const sets = newExForm.sets || 3;
-                      const pct = newExForm.linkedTo ? (newExForm.pct || 75) : 75;
-                      onAddExercise(currentWeek.id, currentDay.id, {
-                        name,
-                        linkedTo: newExForm.linkedTo || undefined,
-                        pct,
-                        pctPerSet: Array(sets).fill(pct),
-                        sets,
-                        reps: newExForm.reps,
-                        mode: newExForm.mode
-                      });
-                      setNewExModalError('');
-                      setShowAddModal(false);
-                    }}
-                  >
-                    Añadir
-                  </Button>
-                </div>
-              </div>
+                <Button
+                  type="submit"
+                  variant="primary"
+                  className="mt-5 h-12 w-full rounded-xl bg-indigo-600 text-sm font-black tracking-wide hover:bg-indigo-700"
+                >
+                  Añadir
+                </Button>
+              </form>
             </motion.div>
           </div>
         )}

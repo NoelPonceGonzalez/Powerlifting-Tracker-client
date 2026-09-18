@@ -97,8 +97,8 @@ export function useRealtimeUpdates(
             if (document.hidden) {
               void showLocalNotification('Nueva actividad', 'Tienes avisos en Social', {
                 screen: 'social',
-                tab: 'feed',
-                url: '/?pwa=social&tab=feed',
+                tab: 'chat',
+                url: '/?pwa=social&tab=chat',
                 tag: 'social_update',
               });
             }

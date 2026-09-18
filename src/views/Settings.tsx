@@ -81,7 +81,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: -20 }}
       transition={VIEW_TRANSITION}
-      className="max-w-2xl mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-28 sm:pb-32 text-slate-900 dark:text-slate-100"
+      className="mx-auto max-w-2xl pt-4 text-slate-900 dark:text-slate-100"
     >
       <header className="mb-10">
         <h1 className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">Ajustes</h1>
@@ -126,7 +126,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       <div
                         key={acc.id}
                         className={cn(
-                          'flex items-center gap-3 p-3 rounded-xl border transition-colors',
+                          'flex flex-wrap items-center gap-3 rounded-xl border p-3 transition-colors',
                           isActive
                             ? 'border-indigo-400 bg-indigo-50/80 dark:bg-indigo-950/40 dark:border-indigo-600'
                             : 'border-slate-100 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800/60'
@@ -321,7 +321,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
 
           <Card padding="lg" rounded="2xl">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="space-y-1">
                 <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Peso Corporal</label>
                 <div className="flex items-baseline gap-2">
@@ -334,9 +334,29 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   <span className="text-slate-400 font-bold uppercase text-sm">kg</span>
                 </div>
               </div>
-              <p className="text-xs text-slate-400 max-w-[200px] text-right">
-                Tu peso se utiliza para calcular tu fuerza relativa en los desafíos.
+              <p className="max-w-[200px] text-xs text-slate-400 sm:text-right">
+                Tu peso y tu género se usan para los puntos justos de los torneos.
               </p>
+            </div>
+            <div className="mt-5 border-t border-slate-100 pt-4 dark:border-slate-700">
+              <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Género</label>
+              <div className="mt-2 flex gap-2">
+                {(['hombre', 'mujer'] as const).map((g) => (
+                  <button
+                    key={g}
+                    type="button"
+                    onClick={() => onUpdateUser({ gender: g })}
+                    className={cn(
+                      'flex-1 rounded-xl border px-3 py-2 text-sm font-bold capitalize',
+                      user.gender === g
+                        ? 'border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300'
+                        : 'border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300'
+                    )}
+                  >
+                    {g === 'hombre' ? 'Hombre' : 'Mujer'}
+                  </button>
+                ))}
+              </div>
             </div>
           </Card>
         </section>
@@ -351,8 +371,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
 
           <Card padding="md" rounded="2xl">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-3 sm:gap-4">
                 <div className={cn(
                   "p-3 rounded-2xl transition-colors",
                   user.theme === 'dark' ? "bg-slate-800 text-white" : "bg-amber-100 text-amber-600"

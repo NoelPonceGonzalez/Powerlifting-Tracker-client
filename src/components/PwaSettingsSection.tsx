@@ -6,6 +6,7 @@ import { isAndroid, isIOS, useInstallPrompt } from '@/src/pwa/installPrompt';
 import { useWebNotifications } from '@/src/pwa/notifications';
 import { useMediaAccess } from '@/src/pwa/mediaAccess';
 import { cn } from '@/src/lib/utils';
+import { showAppError, showAppOk } from '@/src/lib/appNotice';
 
 const StatusChip: React.FC<{ tone: 'ok' | 'warn'; children: React.ReactNode }> = ({ tone, children }) => (
   <span
@@ -23,10 +24,12 @@ const StatusChip: React.FC<{ tone: 'ok' | 'warn'; children: React.ReactNode }> =
 /** Instalación de la app (PWA) y permiso de notificaciones del navegador. */
 export const PwaSettingsSection: React.FC = () => {
   const { isInstalled, needsManualInstructions, install } = useInstallPrompt();
-  const { permission, isSupported, isBlocked, requesting, request } = useWebNotifications();
+  const { permission, isSupported, isBlocked, requesting, request, sendTestNotification } = useWebNotifications();
   const { camera, galleryReady, requestingCamera, requestCamera, openGallery } = useMediaAccess();
   const [showIosSteps, setShowIosSteps] = useState(false);
   const [galleryOk, setGalleryOk] = useState(false);
+  const [testingPush, setTestingPush] = useState(false);
+  const [testPushMsg, setTestPushMsg] = useState('');
 
   const handleInstall = useCallback(async () => {
     if (needsManualInstructions) {
@@ -52,8 +55,8 @@ export const PwaSettingsSection: React.FC = () => {
 
       <Card padding="md" rounded="2xl" className="space-y-5">
         {/* Instalación */}
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex min-w-0 flex-1 items-center gap-4">
+        <div className="app-row">
+          <div className="flex min-w-0 flex-1 items-center gap-3 sm:gap-4">
             <div
               className={cn(
                 'flex size-11 shrink-0 items-center justify-center rounded-2xl transition-colors',
@@ -69,7 +72,9 @@ export const PwaSettingsSection: React.FC = () => {
               <p className="text-xs leading-snug text-slate-500 dark:text-slate-400">
                 {isInstalled
                   ? 'Ya la estás usando como app instalada.'
-                  : 'Ábrela a pantalla completa desde tu pantalla de inicio.'}
+                  : isIOS()
+                    ? 'En iPhone Apple exige añadirla a la pantalla de inicio. Sin eso no se pueden activar los avisos.'
+                    : 'Ábrela a pantalla completa desde tu pantalla de inicio.'}
               </p>
             </div>
           </div>
@@ -83,7 +88,7 @@ export const PwaSettingsSection: React.FC = () => {
               size="sm"
               variant="primary"
               onClick={() => void handleInstall()}
-              className="shrink-0 uppercase tracking-widest"
+              className="w-full shrink-0 uppercase tracking-widest min-[360px]:w-auto"
             >
               {needsManualInstructions ? (showIosSteps ? 'Ocultar' : 'Instalar') : 'Instalar'}
             </Button>
@@ -104,6 +109,12 @@ export const PwaSettingsSection: React.FC = () => {
                   <Plus size={16} className="shrink-0 text-indigo-600 dark:text-indigo-400" />
                   <span>
                     2. Elige <strong className="font-black">Añadir a pantalla de inicio</strong>.
+                  </span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <Bell size={16} className="mt-0.5 shrink-0 text-indigo-600 dark:text-indigo-400" />
+                  <span>
+                    3. Ábrela desde el icono y activa los avisos. Lo pide Apple, no la app.
                   </span>
                 </li>
               </>
@@ -127,8 +138,8 @@ export const PwaSettingsSection: React.FC = () => {
         )}
 
         {/* Notificaciones */}
-        <div className="flex items-center justify-between gap-4 border-t border-slate-100 pt-5 dark:border-slate-700">
-          <div className="flex min-w-0 flex-1 items-center gap-4">
+        <div className="app-row border-t border-slate-100 pt-5 dark:border-slate-700">
+          <div className="flex min-w-0 flex-1 items-center gap-3 sm:gap-4">
             <div
               className={cn(
                 'flex size-11 shrink-0 items-center justify-center rounded-2xl transition-colors',
@@ -151,15 +162,41 @@ export const PwaSettingsSection: React.FC = () => {
                     : permission === 'granted'
                       ? 'Recibirás avisos de entrenos y actividad de amigos.'
                       : isIOS() && !isInstalled
-                        ? 'En iPhone hay que instalar la app antes de poder activarlas.'
+                        ? 'En iPhone hay que añadirla a la pantalla de inicio y dar permiso. Lo exige Apple, no la app.'
                         : 'Da permiso para recibir avisos aunque la app esté cerrada.'}
               </p>
             </div>
           </div>
           {permission === 'granted' ? (
-            <StatusChip tone="ok">
-              <Check size={14} /> Activas
-            </StatusChip>
+            <div className="flex w-full shrink-0 flex-col items-stretch gap-2 min-[360px]:w-auto">
+              <StatusChip tone="ok">
+                <Check size={14} /> Activas
+              </StatusChip>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={testingPush}
+                onClick={() => {
+                  setTestingPush(true);
+                  setTestPushMsg('');
+                  void sendTestNotification()
+                    .then((ok) => {
+                      if (ok) {
+                        setTestPushMsg('Aviso enviado. Míralo en las notificaciones.');
+                        showAppOk('Aviso enviado.');
+                      } else {
+                        setTestPushMsg('No se ha podido mostrar el aviso.');
+                        showAppError('No se ha podido mostrar el aviso.');
+                      }
+                    })
+                    .finally(() => setTestingPush(false));
+                }}
+                className="uppercase tracking-widest"
+              >
+                {testingPush ? 'Enviando…' : 'Probar aviso'}
+              </Button>
+            </div>
           ) : (
             <Button
               type="button"
@@ -167,16 +204,19 @@ export const PwaSettingsSection: React.FC = () => {
               variant="primary"
               disabled={!isSupported || isBlocked || requesting || (isIOS() && !isInstalled)}
               onClick={() => void request()}
-              className="shrink-0 uppercase tracking-widest"
+              className="w-full shrink-0 uppercase tracking-widest min-[360px]:w-auto"
             >
               {requesting ? 'Pidiendo…' : 'Activar'}
             </Button>
           )}
         </div>
+        {testPushMsg && (
+          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">{testPushMsg}</p>
+        )}
 
         {/* Cámara */}
-        <div className="flex items-center justify-between gap-4 border-t border-slate-100 pt-5 dark:border-slate-700">
-          <div className="flex min-w-0 flex-1 items-center gap-4">
+        <div className="app-row border-t border-slate-100 pt-5 dark:border-slate-700">
+          <div className="flex min-w-0 flex-1 items-center gap-3 sm:gap-4">
             <div
               className={cn(
                 'flex size-11 shrink-0 items-center justify-center rounded-2xl transition-colors',
@@ -213,7 +253,7 @@ export const PwaSettingsSection: React.FC = () => {
               variant="primary"
               disabled={camera === 'unsupported' || camera === 'denied' || requestingCamera}
               onClick={() => void requestCamera()}
-              className="shrink-0 uppercase tracking-widest"
+              className="w-full shrink-0 uppercase tracking-widest min-[360px]:w-auto"
             >
               {requestingCamera ? 'Pidiendo…' : 'Activar'}
             </Button>
@@ -221,8 +261,8 @@ export const PwaSettingsSection: React.FC = () => {
         </div>
 
         {/* Galería */}
-        <div className="flex items-center justify-between gap-4 border-t border-slate-100 pt-5 dark:border-slate-700">
-          <div className="flex min-w-0 flex-1 items-center gap-4">
+        <div className="app-row border-t border-slate-100 pt-5 dark:border-slate-700">
+          <div className="flex min-w-0 flex-1 items-center gap-3 sm:gap-4">
             <div
               className={cn(
                 'flex size-11 shrink-0 items-center justify-center rounded-2xl transition-colors',
@@ -257,7 +297,7 @@ export const PwaSettingsSection: React.FC = () => {
                   if (file) setGalleryOk(true);
                 });
               }}
-              className="shrink-0 uppercase tracking-widest"
+              className="w-full shrink-0 uppercase tracking-widest min-[360px]:w-auto"
             >
               Activar
             </Button>

@@ -74,9 +74,9 @@ function Bubble({
               role={onAdd ? 'button' : undefined}
               aria-label="Añadir otra historia"
               onClick={onAdd ? e => { e.stopPropagation(); onAdd(); } : undefined}
-              className="absolute -bottom-0.5 -right-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-indigo-600 text-white ring-2 ring-[var(--app-bg)]"
+              className="absolute -bottom-1 -right-1 flex h-7 w-7 items-center justify-center rounded-full bg-indigo-600 text-white ring-2 ring-[var(--app-bg)]"
             >
-              <Plus size={12} strokeWidth={2.6} />
+              <Plus size={14} strokeWidth={2.6} />
             </span>
           )}
         </span>
@@ -138,9 +138,9 @@ export function StoriesRail({ myId, myAvatar, refreshTick = 0, onAddStory, trail
 
   return (
     <div className="-mx-1">
-      <div className="flex items-start gap-1 overflow-visible">
-        <div className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden px-1 py-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          <div className="flex w-max gap-3">
+      <div className="flex items-center gap-0">
+        <div className="app-h-scroll min-w-0 flex-1 px-1 py-1.5">
+          <div className="flex w-max gap-3 pr-3">
             {mine && mine.items.length > 0 ? (
               <Bubble
                 name="Tu historia"
@@ -177,7 +177,12 @@ export function StoriesRail({ myId, myAvatar, refreshTick = 0, onAddStory, trail
             ))}
           </div>
         </div>
-        {trailing}
+        {trailing && (
+          <div className="relative z-20 shrink-0 self-center bg-[var(--app-bg)] pl-1">
+            <div className="pointer-events-none absolute -left-7 top-0 bottom-0 w-7 bg-gradient-to-r from-transparent to-[var(--app-bg)]" />
+            {trailing}
+          </div>
+        )}
       </div>
 
       {openAt != null && ordered[openAt] && (

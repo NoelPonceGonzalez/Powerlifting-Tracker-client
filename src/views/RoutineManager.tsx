@@ -17,7 +17,8 @@ import { Card } from '@/src/components/ui/Card';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { cn } from '@/src/lib/utils';
-import { SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY, VIEW_TRANSITION } from '@/src/lib/motionPresets';
+import { PAGE_ENTER_ITEM, PAGE_ENTER_ROOT, SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
+import { usePageEnter } from '@/src/lib/usePageEnter';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
 
@@ -85,6 +86,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
     setShowCreateModal(false);
     setEditingId(null);
   }, [pageActive]);
+  const pageEnter = usePageEnter(pageActive);
 
   const handleCreate = async () => {
     if (createRoutineLoading) return;
@@ -135,13 +137,12 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
 
   return (
     <motion.div
-      initial={{ opacity: 0, x: 20 }}
-      animate={{ opacity: 1, x: 0 }}
-      exit={{ opacity: 0, x: -20 }}
-      transition={VIEW_TRANSITION}
-      className="mx-auto max-w-5xl px-4 pb-28 pt-6 sm:px-6 sm:pb-32 sm:pt-8"
+      variants={PAGE_ENTER_ROOT}
+      initial={false}
+      animate={pageEnter}
+      className="app-page mx-auto max-w-5xl"
     >
-      <header className="mb-6 flex items-center gap-3 sm:mb-8">
+      <motion.header variants={PAGE_ENTER_ITEM} initial={false} className="mb-6 flex items-center gap-3 sm:mb-8">
         <div className="min-w-0 flex-1">
           <h1 className="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">Rutinas</h1>
         </div>
@@ -156,10 +157,10 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
             Nueva
           </button>
         )}
-      </header>
+      </motion.header>
 
       {routines.length === 0 && (
-        <div className="flex min-h-[calc(100dvh-16rem)] items-center justify-center">
+        <motion.div variants={PAGE_ENTER_ITEM} initial={false} className="flex min-h-[calc(100dvh-16rem)] items-center justify-center">
             <div className="relative w-full overflow-hidden rounded-[28px] border border-white/50 bg-white/70 px-6 py-12 text-center shadow-xl shadow-slate-900/10 backdrop-blur-2xl dark:border-white/10 dark:bg-slate-900/65">
             <div className="pointer-events-none absolute -left-16 -top-16 h-44 w-44 rounded-full bg-indigo-400/25 blur-3xl" />
             <div className="pointer-events-none absolute -bottom-20 -right-12 h-48 w-48 rounded-full bg-violet-400/20 blur-3xl" />
@@ -192,7 +193,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
               </span>
             </div>
           </div>
-        </div>
+        </motion.div>
       )}
 
       {/* Modal crear rutina */}
@@ -388,7 +389,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
       )}
 
       {routines.length > 0 && (
-      <section className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <motion.section variants={PAGE_ENTER_ITEM} initial={false} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {routines.map((routine) => (
           <Card
             key={routine.id}
@@ -535,7 +536,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
             </div>
           </Card>
         ))}
-      </section>
+      </motion.section>
       )}
     </motion.div>
   );

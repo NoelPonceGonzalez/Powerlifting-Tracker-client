@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { motion } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
 import { 
   Search, 
   UserCheck, 
@@ -10,6 +10,7 @@ import {
   MapPin,
   Clock, 
   Plus,
+  ArrowLeft,
   ArrowRight,
   Calendar,
   Copy,
@@ -21,7 +22,16 @@ import {
   AlertCircle,
   GraduationCap,
   Users,
-  Bell,
+  Lock,
+  Repeat,
+  Timer,
+  Check,
+  SlidersHorizontal,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  ChevronDown,
+  Scale,
 } from 'lucide-react';
 import { Card } from '@/src/components/ui/Card';
 import { Avatar } from '@/src/components/ui/Avatar';
@@ -30,8 +40,9 @@ import { Input } from '@/src/components/ui/Input';
 import { FriendRequest, Friend, Challenge, GymCheckIn, User, UserSearchResult, ChallengeType, TrainingWeek, BodyWeightScoringMode } from '@/src/types';
 import { cn } from '@/src/lib/utils';
 import { apiGet, apiPut } from '@/src/lib/api';
-import { EASE_OUT } from '@/src/lib/motionPresets';
-import { EQUITY_OPTIONS, equitySummary, suggestBodyWeightScoring } from '@/src/lib/challengeEquity';
+import { PAGE_ENTER_ITEM, PAGE_ENTER_ROOT, VIEW_TRANSITION } from '@/src/lib/motionPresets';
+import { usePageEnter } from '@/src/lib/usePageEnter';
+import { equitySummary, suggestBodyWeightScoring } from '@/src/lib/challengeEquity';
 import { GlassModal } from '@/src/components/ui/GlassModal';
 import { SlimeScroll } from '@/src/components/ui/SlimeScroll';
 import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
@@ -53,17 +64,20 @@ import {
 } from '@/src/lib/feedApi';
 import { TmHistoryModal } from '@/src/components/social/TmHistoryModal';
 import { InstagramCover } from '@/src/components/social/ProgressMiniProfile';
-import { FeedTab } from '@/src/components/social/FeedTab';
 import { ChatTab } from '@/src/components/social/ChatTab';
 import { HomeActivitySheet } from '@/src/components/social/HomeActivitySheet';
 import { ProfileScreen } from '@/src/components/social/ProfileScreen';
 import { Avatar as FeedAvatar } from '@/src/components/social/MediaPost';
 import { usePullToRefresh } from '@/src/lib/usePullToRefresh';
 
-export type SocialTab = 'feed' | 'friends' | 'challenges' | 'checkins' | 'chat';
+export type SocialTab = 'friends' | 'challenges' | 'checkins' | 'chat';
+
+export function normalizeSocialTab(tab?: string | null): SocialTab {
+  if (tab === 'friends' || tab === 'challenges' || tab === 'checkins' || tab === 'chat') return tab;
+  return 'chat';
+}
 
 const TAB_LABELS: Record<SocialTab, string> = {
-  feed: 'Inicio',
   friends: 'Amigos',
   challenges: 'Torneos',
   checkins: 'Gym',
@@ -80,7 +94,6 @@ interface SocialViewProps {
   /** Se incrementa desde el dashboard para abrir el modal de check-in en Actividad. */
   openCheckInModalSignal?: number;
   openCreateChallengeSignal?: number;
-  openPublishSignal?: number;
   onAddStory?: () => void;
   storyRefreshTick?: number;
   checkInIntent?: 'now' | 'later' | null;
@@ -92,11 +105,18 @@ interface SocialViewProps {
     description?: string;
     type: ChallengeType;
     exercise: string;
+    exercises?: string[];
     endDate: string;
     usePointsSystem?: boolean;
     bodyWeightScoring?: BodyWeightScoringMode;
-  }) => void;
-  onJoinChallenge: (id: string, value: number) => void;
+    isPrivate?: boolean;
+    password?: string;
+  }) => Promise<void> | void;
+  onJoinChallenge: (
+    id: string,
+    payload: { value?: number; lifts?: { exercise: string; value: number }[]; password?: string }
+  ) => Promise<void> | void;
+  onDeleteChallenge?: (id: string) => Promise<void> | void;
   onCheckIn: (gymName: string, time: string) => void;
   onCheckInUpdate?: (checkInId: string, gymName: string, time: string) => void;
   onCheckInDelete?: (checkInId: string) => void;
@@ -115,8 +135,8 @@ interface SocialViewProps {
   /** La pestaña Perfil vive fuera de Social: el avatar de la cabecera lleva allí. */
   onGoToProfile?: () => void;
   onGoToDashboard?: () => void;
-  socialBackTo?: 'feed' | 'profile' | 'dashboard';
-  /** Cada toque de la nav fuerza la pestaña (Inicio siempre vuelve al feed). */
+  socialBackTo?: 'profile' | 'dashboard' | 'chat';
+  /** Cada toque de la nav fuerza la pestaña (Social/Torneos). */
   socialNavTick?: number;
   /** Rutinas del usuario local (para detectar si ya copió la del amigo por nombre). */
   myRoutines?: { id: string; name: string }[];
@@ -149,6 +169,488 @@ const CHALLENGE_TYPE_OPTIONS: { value: ChallengeType; label: string }[] = [
   { value: 'weight', label: 'Fuerza (kg)' },
   { value: 'seconds', label: 'Segundos' },
 ];
+
+const CREATE_WIZARD_STEPS = [
+  { label: 'Datos', blurb: 'Nombre y cómo se gana.', icon: Trophy },
+  { label: 'Ejercicios', blurb: 'Qué movimiento se mide.', icon: Dumbbell },
+  { label: 'Reglas', blurb: 'Fecha, puntos y si es privado.', icon: SlidersHorizontal },
+  { label: 'Listo', blurb: 'Revisa y lánzalo.', icon: Check },
+] as const;
+
+const CREATE_TYPE_UI: Record<ChallengeType, { short: string; hint: string; icon: typeof Repeat }> = {
+  max_reps: { short: 'Reps', hint: 'Más repeticiones', icon: Repeat },
+  weight: { short: 'Fuerza', hint: 'Más kilos', icon: Dumbbell },
+  seconds: { short: 'Tiempo', hint: 'Más segundos', icon: Timer },
+};
+
+const ES_MONTHS = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+const ES_WEEK = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
+
+function toIsoDate(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function parseIsoDate(iso: string) {
+  if (!iso) return null;
+  const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
+}
+
+function todayIsoDate() {
+  const d = new Date();
+  d.setHours(12, 0, 0, 0);
+  return toIsoDate(d);
+}
+
+function shiftIsoDate(days: number) {
+  const d = new Date();
+  d.setHours(12, 0, 0, 0);
+  d.setDate(d.getDate() + days);
+  return toIsoDate(d);
+}
+
+function monthIsoDate() {
+  const d = new Date();
+  d.setHours(12, 0, 0, 0);
+  d.setMonth(d.getMonth() + 1);
+  return toIsoDate(d);
+}
+
+function formatCountdown(endIso: string, nowMs: number) {
+  const left = new Date(endIso).getTime() - nowMs;
+  if (!Number.isFinite(left) || left <= 0) return 'Terminado';
+  const s = Math.floor(left / 1000);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
+function peopleCountLabel(n: number) {
+  if (n <= 0) return 'Nadie aún';
+  if (n === 1) return '1 persona';
+  return `${n} personas`;
+}
+
+function ChallengeTrophyIcon({ size = 'md' }: { size?: 'sm' | 'md' }) {
+  return (
+    <span className={cn(
+      'flex shrink-0 items-center justify-center rounded-2xl bg-amber-50 text-amber-500 dark:bg-amber-950/50 dark:text-amber-400',
+      size === 'sm' ? 'h-9 w-9' : 'h-11 w-11'
+    )}>
+      <Trophy size={size === 'sm' ? 16 : 20} strokeWidth={2.1} />
+    </span>
+  );
+}
+
+/** +2 = has subido 2 puestos desde que te metiste. Al entrar no cuenta. */
+function rankMovement(initialRank: number | undefined, currentRank: number): number | null {
+  if (initialRank == null || initialRank <= 0 || currentRank <= 0) return null;
+  return initialRank - currentRank;
+}
+
+function RankMoveBadge({ delta }: { delta: number | null }) {
+  if (delta == null || delta === 0) return null;
+  const up = delta > 0;
+  return (
+    <span className={cn(
+      'inline-flex items-center rounded-full px-1.5 py-0.5 text-[11px] font-bold tabular-nums',
+      up
+        ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/45 dark:text-emerald-400'
+        : 'bg-rose-50 text-rose-600 dark:bg-rose-950/45 dark:text-rose-400'
+    )}>
+      {up ? <ChevronUp size={12} strokeWidth={2.6} /> : <ChevronDown size={12} strokeWidth={2.6} />}
+      {up ? `+${delta}` : delta}
+    </span>
+  );
+}
+
+function standingMarkLabel(challenge: Challenge, p: Challenge['participants'][number]): string {
+  const unit = CHALLENGE_TYPE_UNIT[challenge.type as ChallengeType] || '';
+  if (!(p.value > 0)) return 'Sin marca';
+  if (challenge.usePointsSystem !== false) return `${p.value} ${unit} · ${Math.round(p.score)} pts`;
+  return `${p.value} ${unit}`;
+}
+
+function useHoldAction(enabled: boolean, onHold: () => void) {
+  const timerRef = useRef<number | null>(null);
+  const heldRef = useRef(false);
+
+  const stop = useCallback(() => {
+    if (timerRef.current != null) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => stop, [stop]);
+
+  const onPointerDown = useCallback((e: React.PointerEvent) => {
+    if (!enabled || e.button === 2) return;
+    heldRef.current = false;
+    stop();
+    timerRef.current = window.setTimeout(() => {
+      heldRef.current = true;
+      try { navigator.vibrate?.(10); } catch { /* ignore */ }
+      onHold();
+    }, 460);
+  }, [enabled, onHold, stop]);
+
+  const onClickCapture = useCallback((e: React.MouseEvent) => {
+    if (!heldRef.current) return;
+    e.preventDefault();
+    e.stopPropagation();
+    heldRef.current = false;
+  }, []);
+
+  const onContextMenu = useCallback((e: React.MouseEvent) => {
+    if (!enabled) return;
+    e.preventDefault();
+    onHold();
+  }, [enabled, onHold]);
+
+  return {
+    onPointerDown,
+    onPointerUp: stop,
+    onPointerCancel: stop,
+    onPointerLeave: stop,
+    onClickCapture,
+    onContextMenu,
+  };
+}
+
+function ChallengeListCard({
+  challenge,
+  userId,
+  onOpen,
+  onAskDelete,
+  children,
+}: {
+  challenge: Challenge;
+  userId: string;
+  onOpen: () => void;
+  onAskDelete?: () => void;
+  children: React.ReactNode;
+}) {
+  const canDelete = Boolean(onAskDelete && sameUserId(challenge.createdBy?.id, userId));
+  const hold = useHoldAction(canDelete, () => onAskDelete?.());
+  return (
+    <Card
+      padding="sm"
+      rounded="md"
+      variant="white"
+      className="cursor-pointer select-none"
+      onClick={onOpen}
+      {...hold}
+    >
+      {children}
+    </Card>
+  );
+}
+
+function ChallengeDetailBody({
+  challenge,
+  userId,
+  countdownNow,
+  rulesOpen,
+  onToggleRules,
+  onAskDelete,
+}: {
+  challenge: Challenge;
+  userId: string;
+  countdownNow: number;
+  rulesOpen: boolean;
+  onToggleRules: () => void;
+  onAskDelete: () => void;
+}) {
+  const isCreator = sameUserId(challenge.createdBy?.id, userId);
+  const hold = useHoldAction(isCreator, onAskDelete);
+  const ranking = sortChallengeRanking(challenge.participants, challenge.usePointsSystem);
+
+  return (
+    <div className="space-y-3">
+      <div
+        className="flex items-center gap-3 rounded-2xl bg-white/55 px-3 py-2.5 dark:bg-slate-800/45"
+        {...hold}
+      >
+        <ChallengeTrophyIcon size="sm" />
+        <div className="min-w-0 flex-1">
+          <p className="flex items-center gap-1.5 text-[13px] font-semibold text-slate-800 dark:text-slate-100">
+            <Users size={13} className="shrink-0 text-slate-400" />
+            {peopleCountLabel(challenge.participants.length)}
+          </p>
+          <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-500">
+            <Calendar size={12} className="shrink-0" />
+            {formatCountdown(challenge.endDate, countdownNow)}
+          </p>
+        </div>
+        <button
+          type="button"
+          aria-label="Cómo se puntúa"
+          aria-expanded={rulesOpen}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={onToggleRules}
+          className={cn(
+            'flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[15px] font-black leading-none',
+            rulesOpen
+              ? 'bg-indigo-600 text-white'
+              : 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-300'
+          )}
+        >
+          !
+        </button>
+      </div>
+
+      {rulesOpen && (
+        <p className="rounded-2xl bg-indigo-50/80 px-3 py-2.5 text-[12px] leading-snug text-indigo-800 dark:bg-indigo-950/45 dark:text-indigo-200">
+          {bodyWeightScoringSummary(
+            challenge.type as ChallengeType,
+            challenge.usePointsSystem !== false,
+            challenge.bodyWeightScoring
+          )}
+        </p>
+      )}
+
+      <div>
+        <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+          Clasificación
+        </p>
+        <div className="space-y-2">
+          {ranking.map((p, idx) => {
+            const rank = idx + 1;
+            const isMe = sameUserId(p.userId, userId);
+            const extraLifts = p.lifts && p.lifts.length > 1
+              ? p.lifts.map((l) => `${l.exercise} ${l.value}`).join(' · ')
+              : '';
+            return (
+              <div
+                key={p.userId}
+                className={cn(
+                  'flex items-center gap-3 rounded-2xl px-3 py-2.5',
+                  rank === 1
+                    ? 'bg-amber-50 dark:bg-amber-950/35'
+                    : isMe
+                      ? 'bg-indigo-50/80 dark:bg-indigo-950/35'
+                      : 'bg-white/55 dark:bg-slate-800/40'
+                )}
+              >
+                <span className={cn(
+                  'w-6 shrink-0 text-center text-base font-black tabular-nums',
+                  rank === 1 ? 'text-amber-500' :
+                  rank === 2 ? 'text-slate-400' :
+                  rank === 3 ? 'text-amber-700 dark:text-amber-500' :
+                  'text-slate-400'
+                )}>
+                  {rank}
+                </span>
+                <Avatar src={p.avatar} name={p.name} className="h-9 w-9 shrink-0 rounded-full border border-white/80 dark:border-slate-700" />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    {p.name}{isMe ? ' (tú)' : ''}
+                  </p>
+                  <p className="truncate text-[11px] text-slate-500">
+                    {standingMarkLabel(challenge, p)}
+                    {extraLifts ? ` · ${extraLifts}` : ''}
+                  </p>
+                </div>
+                <RankMoveBadge delta={rankMovement(p.initialRank, rank)} />
+              </div>
+            );
+          })}
+          {ranking.length === 0 && (
+            <p className="rounded-2xl border border-dashed border-slate-200 px-3 py-5 text-center text-xs text-slate-400 dark:border-slate-700">
+              Nadie se ha unido todavía.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function useNowTick(ms = 1000) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), ms);
+    return () => window.clearInterval(id);
+  }, [ms]);
+  return now;
+}
+
+function scoringChoices(type: ChallengeType) {
+  if (type === 'weight') {
+    return [
+      { id: 'points', points: true, mode: 'heavier_more' as const, title: 'Puntos justos', hint: 'Se ajusta por tu peso y género. No gana siempre el más grande.' },
+      { id: 'raw', points: false, mode: 'neutral' as const, title: 'Solo kilos', hint: 'Gana quien ponga más kg, sin ajustar.' },
+    ];
+  }
+  return [
+    { id: 'heavy', points: true, mode: 'heavier_more' as const, title: 'Compensa si pesas más', hint: 'Tu marca vale un poco más. Así no gana siempre el más ligero.' },
+    { id: 'light', points: true, mode: 'lighter_more' as const, title: 'Compensa si pesas menos', hint: 'Si eres ligero, tu marca vale un poco más.' },
+    { id: 'raw', points: false, mode: 'neutral' as const, title: 'Solo la marca', hint: 'Gana el número más alto. El peso no cuenta.' },
+  ];
+}
+
+function endDatePresets() {
+  return [
+    { id: '7d' as const, label: '7 días', iso: shiftIsoDate(7) },
+    { id: '14d' as const, label: '14 días', iso: shiftIsoDate(14) },
+    { id: '1m' as const, label: '1 mes', iso: monthIsoDate() },
+  ];
+}
+
+function EndDatePresets({
+  value,
+  onPick,
+  onCustom,
+}: {
+  value: string;
+  onPick: (iso: string) => void;
+  onCustom: () => void;
+}) {
+  const presets = endDatePresets();
+  const presetMatch = presets.some((p) => p.iso === value);
+  const customOn = Boolean(value) && !presetMatch;
+  const selected = parseIsoDate(value);
+
+  return (
+    <div>
+      <div className="grid grid-cols-2 gap-1.5">
+        {presets.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            onClick={() => onPick(p.iso)}
+            className={cn(
+              'min-h-11 rounded-xl px-2 py-2.5 text-[12px] font-bold',
+              value === p.iso
+                ? 'bg-indigo-600 text-white'
+                : 'bg-white/80 text-slate-600 dark:bg-slate-800/70 dark:text-slate-300'
+            )}
+          >
+            {p.label}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={onCustom}
+          className={cn(
+            'min-h-11 rounded-xl px-2 py-2.5 text-[12px] font-bold',
+            customOn
+              ? 'bg-indigo-600 text-white'
+              : 'bg-white/80 text-slate-600 dark:bg-slate-800/70 dark:text-slate-300'
+          )}
+        >
+          Personalizado
+        </button>
+      </div>
+      {selected && (
+        <p className="mt-2 text-center text-[12px] font-semibold text-indigo-600 dark:text-indigo-300">
+          Cierra el {selected.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'long' })}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function EndDateCalendar({ value, onChange }: { value: string; onChange: (iso: string) => void }) {
+  const today = todayIsoDate();
+  const selected = parseIsoDate(value);
+  const now = new Date();
+  const [cursor, setCursor] = useState(() => {
+    const base = selected ?? now;
+    return { y: base.getFullYear(), m: base.getMonth() };
+  });
+
+  useEffect(() => {
+    if (!selected) return;
+    setCursor({ y: selected.getFullYear(), m: selected.getMonth() });
+  }, [value]);
+
+  const first = new Date(cursor.y, cursor.m, 1);
+  const pad = (first.getDay() + 6) % 7;
+  const daysInMonth = new Date(cursor.y, cursor.m + 1, 0).getDate();
+  const cells: Array<number | null> = [
+    ...Array<number | null>(pad).fill(null),
+    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
+  ];
+  while (cells.length % 7) cells.push(null);
+
+  const prevDisabled = cursor.y < now.getFullYear() || (cursor.y === now.getFullYear() && cursor.m <= now.getMonth());
+
+  return (
+    <div>
+      <div className="flex items-center justify-between px-0.5 pb-1">
+        <button
+          type="button"
+          disabled={prevDisabled}
+          onClick={() => setCursor((c) => (c.m === 0 ? { y: c.y - 1, m: 11 } : { y: c.y, m: c.m - 1 }))}
+          className="app-icon-hit rounded-full text-slate-500 disabled:opacity-30 dark:text-slate-300"
+          aria-label="Mes anterior"
+        >
+          <ChevronLeft size={18} />
+        </button>
+        <p className="text-[13px] font-bold capitalize text-slate-800 dark:text-slate-100">
+          {ES_MONTHS[cursor.m]} {cursor.y}
+        </p>
+        <button
+          type="button"
+          onClick={() => setCursor((c) => (c.m === 11 ? { y: c.y + 1, m: 0 } : { y: c.y, m: c.m + 1 }))}
+          className="app-icon-hit rounded-full text-slate-500 dark:text-slate-300"
+          aria-label="Mes siguiente"
+        >
+          <ChevronRight size={18} />
+        </button>
+      </div>
+
+      <div className="grid grid-cols-7 text-center">
+        {ES_WEEK.map((d) => (
+          <span key={d} className="py-1 text-[10px] font-black tracking-wide text-slate-400">{d}</span>
+        ))}
+        {cells.map((day, i) => {
+          if (!day) return <span key={`e-${i}`} className="h-10" />;
+          const iso = toIsoDate(new Date(cursor.y, cursor.m, day));
+          const disabled = iso < today;
+          const isSel = iso === value;
+          const isToday = iso === today;
+          return (
+            <button
+              key={iso}
+              type="button"
+              disabled={disabled}
+              onClick={() => onChange(iso)}
+              className={cn(
+                'mx-auto flex h-10 w-10 items-center justify-center rounded-full text-[13px] font-semibold',
+                disabled && 'text-slate-300 dark:text-slate-600',
+                isSel && 'bg-indigo-600 text-white shadow-md shadow-indigo-200/70 dark:shadow-indigo-950/40',
+                !isSel && !disabled && 'text-slate-700 hover:bg-indigo-50 dark:text-slate-200 dark:hover:bg-white/5',
+                isToday && !isSel && 'ring-1 ring-indigo-300 dark:ring-indigo-500/50'
+              )}
+            >
+              {day}
+            </button>
+          );
+        })}
+      </div>
+
+      {selected && (
+        <p className="mt-2 text-center text-[12px] font-semibold text-indigo-600 dark:text-indigo-300">
+          Cierra el {selected.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'long' })}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function challengeExercises(c: Pick<Challenge, 'exercise' | 'exercises'>): string[] {
+  if (c.exercises && c.exercises.length > 0) return c.exercises;
+  return (c.exercise || '').split(/\s*[·|,]\s*/).map((s) => s.trim()).filter(Boolean);
+}
 
 function bodyWeightScoringSummary(
   type: ChallengeType,
@@ -189,55 +691,36 @@ function sortChallengeRanking<T extends { score: number; value: number }>(
   });
 }
 
-function formatChallengeMark(
-  challenge: Challenge,
-  p: Challenge['participants'][number]
-): string {
-  const unit = CHALLENGE_TYPE_UNIT[challenge.type as ChallengeType] || '';
-  if (challenge.usePointsSystem !== false) return `${Math.round(p.score)} pts`;
-  return `${p.value} ${unit}`;
-}
-
-function formatJoinDelta(
-  challenge: Challenge,
-  p: Challenge['participants'][number]
-): string | null {
-  if (p.initialValue == null) return null;
-  const unit = CHALLENGE_TYPE_UNIT[challenge.type as ChallengeType] || '';
-  const delta = p.value - p.initialValue;
-  if (delta === 0) return 'Igual que al unirte';
-  return `${delta > 0 ? '+' : ''}${delta} ${unit} desde que te uniste`;
-}
-
 export const SocialView: React.FC<SocialViewProps> = ({ 
   user,
   friendsList,
   requests, 
   challenges, 
   checkIns,
-  initialTab = 'feed',
+  initialTab = 'chat',
   onAccept, 
   onReject,
   onSendFriendRequest,
   onCreateChallenge,
   onJoinChallenge,
+  onDeleteChallenge,
   onCheckIn,
   onCheckInUpdate,
   onCheckInDelete,
   onRefreshChallenges,
   onCopyFriendRoutine,
   myRoutines,
+  myExercises,
   activeRoutineId,
   onGoToCopiedRoutine,
   onUnfriend,
   onGoToProfile,
   onGoToDashboard,
-  socialBackTo = 'feed',
+  socialBackTo = 'dashboard',
   socialNavTick = 0,
   onChatConversationChange,
   openCheckInModalSignal = 0,
   openCreateChallengeSignal = 0,
-  openPublishSignal = 0,
   onAddStory,
   storyRefreshTick = 0,
   checkInIntent = null,
@@ -246,15 +729,20 @@ export const SocialView: React.FC<SocialViewProps> = ({
 }) => {
   const [search, setSearch] = useState('');
   const [challengeSearch, setChallengeSearch] = useState('');
-  const [activeTab, setActiveTab] = useState<SocialTab>(initialTab);
+  const [activeTab, setActiveTab] = useState<SocialTab>(() => normalizeSocialTab(initialTab));
+  const pageEnter = usePageEnter(pageActive, activeTab);
   const prevInitialTabPropRef = useRef(initialTab);
   const [challengeSubTab, setChallengeSubTab] = useState<'active' | 'finished' | 'progress'>('active');
   const [checkInSaving, setCheckInSaving] = useState(false);
   const [acceptRejectLoadingId, setAcceptRejectLoadingId] = useState<string | null>(null);
   const [showCheckInModal, setShowCheckInModal] = useState(false);
   const [showCreateChallengeModal, setShowCreateChallengeModal] = useState(false);
+  const [deleteChallenge, setDeleteChallenge] = useState<Challenge | null>(null);
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false);
+  const countdownNow = useNowTick(1000);
   const [showJoinChallengeModal, setShowJoinChallengeModal] = useState<Challenge | null>(null);
   const [selectedChallengeDetail, setSelectedChallengeDetail] = useState<Challenge | null>(null);
+  const [challengeRulesOpen, setChallengeRulesOpen] = useState(false);
   const [showFriendModal, setShowFriendModal] = useState<Friend | null>(null);
   const [unfriendConfirmFriend, setUnfriendConfirmFriend] = useState<Friend | null>(null);
   const [friendRoutine, setFriendRoutine] = useState<{
@@ -315,17 +803,27 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [createTitle, setCreateTitle] = useState('');
   const [createDesc, setCreateDesc] = useState('');
   const [createType, setCreateType] = useState<ChallengeType>('max_reps');
-  const [createExercise, setCreateExercise] = useState('');
+  const [createExerciseDraft, setCreateExerciseDraft] = useState('');
+  const [createExercises, setCreateExercises] = useState<string[]>([]);
+  const [createPrivate, setCreatePrivate] = useState(false);
+  const [createPassword, setCreatePassword] = useState('');
+  const [createError, setCreateError] = useState('');
   const [createEndDate, setCreateEndDate] = useState('');
+  const [createCalOpen, setCreateCalOpen] = useState(false);
+  const [createCalDraft, setCreateCalDraft] = useState('');
   /** true = IPF GL / puntos por peso y género; false = solo la mejor marca (kg, reps o s). */
   const [createUsePointsSystem, setCreateUsePointsSystem] = useState(true);
   const [createBodyWeightScoring, setCreateBodyWeightScoring] = useState<BodyWeightScoringMode>('heavier_more');
   const [createEquityOpen, setCreateEquityOpen] = useState(false);
   const [createEquityTouched, setCreateEquityTouched] = useState(false);
+  const [createStep, setCreateStep] = useState(0);
   const [createSubmitting, setCreateSubmitting] = useState(false);
 
   // Form unirse a torneo
   const [joinValue, setJoinValue] = useState('');
+  const [joinLifts, setJoinLifts] = useState<Record<string, string>>({});
+  const [joinPassword, setJoinPassword] = useState('');
+  const [joinError, setJoinError] = useState('');
   const [joinSubmitting, setJoinSubmitting] = useState(false);
 
   const pendingRequests = requests.filter(r => r.status === 'pending');
@@ -340,10 +838,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [chatPeerId, setChatPeerId] = useState<string | null>(null);
   const [showHomeActivity, setShowHomeActivity] = useState(false);
   const [friendsFromChat, setFriendsFromChat] = useState(false);
-  const [unreadNotifCount, setUnreadNotifCount] = useState(0);
   const activityBadge = pendingRequests.length + coachRequests.length + groupInvites.length + chatAsks.length;
-  const homeActivityCount = activityBadge + unreadNotifCount;
-  const markHomeNotifsRead = useCallback(() => setUnreadNotifCount(0), []);
+  const markHomeNotifsRead = useCallback(() => {}, []);
 
   const loadCoachRequests = useCallback(() => {
     fetchCoachRequests()
@@ -368,14 +864,6 @@ export const SocialView: React.FC<SocialViewProps> = ({
     loadCoachRequests();
     loadGroupInvites();
     loadChatAsks();
-    const loadUnread = () => {
-      apiGet<{ count: number }>('/api/notifications/unread-count')
-        .then(r => setUnreadNotifCount(typeof r.count === 'number' ? r.count : 0))
-        .catch(() => setUnreadNotifCount(0));
-    };
-    loadUnread();
-    const id = window.setInterval(loadUnread, 90000);
-    return () => window.clearInterval(id);
   }, [loadCoachRequests, loadGroupInvites, loadChatAsks, user.id, pageActive]);
 
   const answerCoach = useCallback(async (id: string, decision: 'accept' | 'reject') => {
@@ -419,9 +907,9 @@ export const SocialView: React.FC<SocialViewProps> = ({
     }
   }, []);
 
-  /** Nav de abajo: Inicio/Chat/Torneos siempre gana, aunque hayas abierto Amigos o Gym por dentro. */
+  /** Nav de abajo: Social/Torneos siempre gana, aunque hayas abierto Amigos o Gym por dentro. */
   useEffect(() => {
-    setActiveTab(initialTab);
+    setActiveTab(normalizeSocialTab(initialTab));
     prevInitialTabPropRef.current = initialTab;
   }, [initialTab, socialNavTick]);
 
@@ -450,14 +938,25 @@ export const SocialView: React.FC<SocialViewProps> = ({
     setFriendRoutine(null);
     setFriendProfile(null);
   });
-  useEscapeClose(!!selectedChallengeDetail && !showJoinChallengeModal, () => setSelectedChallengeDetail(null));
+  useEscapeClose(!!selectedChallengeDetail && !showJoinChallengeModal && !deleteChallenge, () => setSelectedChallengeDetail(null));
   useEscapeClose(!!viewingProfileId && !showFriendModal, () => setViewingProfileId(null));
   useEscapeClose(showHomeActivity, () => setShowHomeActivity(false));
 
   useEffect(() => {
+    setSelectedChallengeDetail((cur) => {
+      if (!cur) return cur;
+      return challenges.find((c) => c.id === cur.id) ?? cur;
+    });
+  }, [challenges]);
+
+  useEffect(() => {
+    setChallengeRulesOpen(false);
+  }, [selectedChallengeDetail?.id]);
+
+  useEffect(() => {
     if (createEquityTouched) return;
-    setCreateBodyWeightScoring(suggestBodyWeightScoring(createType, createExercise));
-  }, [createType, createExercise, createEquityTouched]);
+    setCreateBodyWeightScoring(suggestBodyWeightScoring(createType, createExercises[0] || createExerciseDraft));
+  }, [createType, createExercises, createExerciseDraft, createEquityTouched]);
 
   // Marcar notificaciones como leídas al ver la pestaña Actividad
   useEffect(() => {
@@ -480,9 +979,16 @@ export const SocialView: React.FC<SocialViewProps> = ({
     setShowCheckInModal(true);
   });
 
+  const openCreateModal = useCallback(() => {
+    setCreateStep(0);
+    setCreateError('');
+    setCreateCalOpen(false);
+    setShowCreateChallengeModal(true);
+  }, []);
+
   useIncrementSignal('create-challenge-modal', openCreateChallengeSignal, () => {
     setActiveTab('challenges');
-    setShowCreateChallengeModal(true);
+    openCreateModal();
   });
 
   // Búsqueda desde la 1.ª letra (sin mínimo de 2); debounce corto para que responda al instante
@@ -536,6 +1042,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
         c =>
           c.title.toLowerCase().includes(challengeSearchLower) ||
           (c.exercise || '').toLowerCase().includes(challengeSearchLower) ||
+          (c.exercises || []).some(ex => ex.toLowerCase().includes(challengeSearchLower)) ||
           (c.description || '').toLowerCase().includes(challengeSearchLower)
       )
     : displayedChallenges;
@@ -546,7 +1053,19 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const openJoinModal = useCallback((challenge: Challenge) => {
     setShowJoinChallengeModal(challenge);
     setJoinValue('');
-  }, []);
+    setJoinPassword('');
+    setJoinError('');
+    const lifts: Record<string, string> = {};
+    const mine = challenge.participants.find(p => sameUserId(p.userId, user.id));
+    for (const ex of challengeExercises(challenge)) {
+      const prev = mine?.lifts?.find(l => l.exercise.toLowerCase() === ex.toLowerCase());
+      lifts[ex] = prev != null ? String(prev.value) : '';
+    }
+    if (mine && challengeExercises(challenge).length <= 1) {
+      setJoinValue(String(mine.value || ''));
+    }
+    setJoinLifts(lifts);
+  }, [user.id]);
 
   const openFriendModal = useCallback(async (friend: Friend) => {
     setShowFriendModal(friend);
@@ -674,43 +1193,117 @@ export const SocialView: React.FC<SocialViewProps> = ({
     }
   }, []);
 
+  const addCreateExercise = (name: string) => {
+    const clean = name.trim();
+    if (!clean) return;
+    setCreateExercises((prev) => {
+      if (prev.some((e) => e.toLowerCase() === clean.toLowerCase())) return prev;
+      if (prev.length >= 8) return prev;
+      return [...prev, clean];
+    });
+    setCreateExerciseDraft('');
+  };
+
+  const createExerciseHits = useMemo(() => {
+    const q = createExerciseDraft.trim().toLowerCase();
+    if (!q) return [];
+    return (myExercises || [])
+      .filter((ex) => ex.toLowerCase().includes(q) && !createExercises.some((e) => e.toLowerCase() === ex.toLowerCase()))
+      .slice(0, 5);
+  }, [createExerciseDraft, createExercises, myExercises]);
+
+  const createCanNext =
+    createStep === 0
+      ? createTitle.trim().length > 0
+      : createStep === 1
+        ? createExercises.length > 0 || createExerciseDraft.trim().length > 0
+        : createStep === 2
+          ? Boolean(createEndDate) && (!createPrivate || createPassword.trim().length >= 4)
+          : true;
+
+  const goCreateNext = () => {
+    if (createStep === 1 && createExerciseDraft.trim()) addCreateExercise(createExerciseDraft);
+    if (createStep === 2 && createPrivate && createPassword.trim().length < 4) {
+      setCreateError('La contraseña debe tener al menos 4 caracteres.');
+      return;
+    }
+    setCreateError('');
+    setCreateStep((s) => Math.min(3, s + 1));
+  };
+
   const handleCreateSubmit = async () => {
-    if (!createTitle.trim() || !createExercise.trim() || !createEndDate) return;
+    const extras = createExerciseDraft.trim() ? [createExerciseDraft.trim()] : [];
+    const exercises = [...createExercises, ...extras].filter(
+      (e, i, arr) => arr.findIndex((x) => x.toLowerCase() === e.toLowerCase()) === i
+    );
+    if (!createTitle.trim() || exercises.length === 0 || !createEndDate) return;
+    if (createPrivate && createPassword.trim().length < 4) {
+      setCreateError('La contraseña debe tener al menos 4 caracteres.');
+      return;
+    }
+    setCreateError('');
     setCreateSubmitting(true);
     try {
       await onCreateChallenge({
         title: createTitle.trim(),
         description: createDesc.trim() || undefined,
         type: createType,
-        exercise: createExercise.trim(),
+        exercise: exercises.join(' · '),
+        exercises,
         endDate: createEndDate,
         usePointsSystem: createUsePointsSystem,
         bodyWeightScoring: createBodyWeightScoring,
+        isPrivate: createPrivate,
+        password: createPrivate ? createPassword.trim() : undefined,
       });
       setShowCreateChallengeModal(false);
       setCreateTitle('');
       setCreateDesc('');
-      setCreateExercise('');
+      setCreateExercises([]);
+      setCreateExerciseDraft('');
+      setCreatePrivate(false);
+      setCreatePassword('');
       setCreateEndDate('');
       setCreateUsePointsSystem(true);
-      setCreateBodyWeightScoring(suggestBodyWeightScoring(createType, createExercise));
+      setCreateBodyWeightScoring(suggestBodyWeightScoring(createType, exercises[0] || ''));
       setCreateEquityOpen(false);
       setCreateEquityTouched(false);
+      setCreateStep(0);
       onRefreshChallenges?.();
+    } catch (e: any) {
+      setCreateError(e?.message || 'No se pudo crear el torneo.');
     } finally {
       setCreateSubmitting(false);
     }
   };
 
   const handleJoinSubmit = async () => {
-    const val = parseFloat(joinValue);
-    if (isNaN(val) || !showJoinChallengeModal) return;
+    if (!showJoinChallengeModal) return;
+    const names = challengeExercises(showJoinChallengeModal);
+    const lifts = names.map((exercise) => ({
+      exercise,
+      value: parseFloat(names.length > 1 ? joinLifts[exercise] : joinValue || joinLifts[exercise]),
+    }));
+    if (lifts.some((l) => !Number.isFinite(l.value) || l.value < 0)) return;
+    const alreadyIn = showJoinChallengeModal.participants.some((p) => sameUserId(p.userId, user.id));
+    if (showJoinChallengeModal.isPrivate && !alreadyIn && !joinPassword.trim()) {
+      setJoinError('Este torneo es privado. Escribe la contraseña.');
+      return;
+    }
+    setJoinError('');
     setJoinSubmitting(true);
     try {
-      await onJoinChallenge(showJoinChallengeModal.id, val);
+      await onJoinChallenge(showJoinChallengeModal.id, {
+        value: lifts[0]?.value,
+        lifts,
+        password: showJoinChallengeModal.isPrivate ? joinPassword : undefined,
+      });
       setShowJoinChallengeModal(null);
       setJoinValue('');
+      setJoinPassword('');
       onRefreshChallenges?.();
+    } catch (e: any) {
+      setJoinError(e?.message || 'No se pudo guardar la marca.');
     } finally {
       setJoinSubmitting(false);
     }
@@ -719,11 +1312,10 @@ export const SocialView: React.FC<SocialViewProps> = ({
   return (
     <motion.div 
       ref={socialRootRef}
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.16, ease: EASE_OUT }}
-      className="mx-auto max-w-5xl origin-top px-4 pb-28 pt-5 text-slate-900 sm:px-6 sm:pb-32 sm:pt-7 dark:text-slate-100"
+      variants={PAGE_ENTER_ROOT}
+      initial={false}
+      animate={pageEnter}
+      className="app-page mx-auto max-w-5xl origin-top text-slate-900 dark:text-slate-100"
     >
       <div
         className="flex items-center justify-center overflow-hidden"
@@ -742,10 +1334,10 @@ export const SocialView: React.FC<SocialViewProps> = ({
           />
         )}
       </div>
-      <header className={cn('space-y-4', activeTab === 'chat' ? 'mb-0' : 'mb-5')}>
+      <motion.header variants={PAGE_ENTER_ITEM} initial={false} className={cn('space-y-4', activeTab === 'chat' ? 'mb-0' : 'mb-5')}>
         {activeTab !== 'chat' && (
         <div className="flex items-center gap-3">
-          {activeTab !== 'feed' && activeTab !== 'challenges' ? (
+          {activeTab !== 'challenges' ? (
             <button
               type="button"
               onClick={() => {
@@ -754,89 +1346,39 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   setActiveTab('chat');
                   return;
                 }
+                if (socialBackTo === 'chat') {
+                  setActiveTab('chat');
+                  return;
+                }
                 if (socialBackTo === 'profile') {
                   onGoToProfile?.();
                   return;
                 }
-                if (socialBackTo === 'feed') {
-                  setActiveTab('feed');
-                  return;
-                }
                 onGoToDashboard?.();
               }}
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-slate-500"
+              className="app-icon-hit rounded-full text-slate-500"
               aria-label={
                 activeTab === 'friends' && friendsFromChat
                   ? 'Volver al chat'
-                  : socialBackTo === 'profile'
-                    ? 'Volver al perfil'
-                    : socialBackTo === 'feed'
-                      ? 'Volver al inicio'
+                  : socialBackTo === 'chat'
+                    ? 'Volver a social'
+                    : socialBackTo === 'profile'
+                      ? 'Volver al perfil'
                       : 'Volver al perfil'
               }
             >
               <ArrowRight className="rotate-180" size={16} />
             </button>
-          ) : activeTab === 'feed' ? (
-            <button
-              type="button"
-              onClick={onGoToProfile}
-              className="shrink-0 rounded-full"
-              title="Mi perfil"
-              aria-label="Mi perfil"
-            >
-              <Avatar
-                src={user.avatar}
-                name={user.name}
-                className="h-10 w-10 rounded-full border border-slate-200 dark:border-slate-700"
-              />
-            </button>
           ) : null}
           <div className="min-w-0 flex-1">
             <h1 className="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">
-              {activeTab === 'feed' ? 'Inicio' : TAB_LABELS[activeTab]}
+              {TAB_LABELS[activeTab]}
             </h1>
           </div>
-          {activeTab === 'feed' && (
-            <div className="ml-auto flex shrink-0 items-center gap-0.5">
-              <button
-                type="button"
-                onClick={() => setActiveTab('friends')}
-                className="flex h-10 w-10 items-center justify-center rounded-full text-slate-700 transition-colors active:bg-slate-100 dark:text-slate-200 dark:active:bg-slate-800"
-                aria-label="Amigos"
-                title="Amigos"
-              >
-                <Users size={22} strokeWidth={2} />
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveTab('checkins')}
-                className="flex h-10 w-10 items-center justify-center rounded-full text-slate-700 transition-colors active:bg-slate-100 dark:text-slate-200 dark:active:bg-slate-800"
-                aria-label="Gym"
-                title="Gym"
-              >
-                <MapPin size={22} strokeWidth={2} />
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowHomeActivity(true)}
-                className="relative flex h-10 w-10 items-center justify-center rounded-full text-slate-700 transition-colors active:bg-slate-100 dark:text-slate-200 dark:active:bg-slate-800"
-                aria-label="Avisos"
-                title="Avisos"
-              >
-                <Bell size={22} strokeWidth={2} />
-                {homeActivityCount > 0 && (
-                  <span className="absolute right-0.5 top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-indigo-600 px-1 text-[10px] font-semibold text-white">
-                    {homeActivityCount > 9 ? '9+' : homeActivityCount}
-                  </span>
-                )}
-              </button>
-            </div>
-          )}
           {activeTab === 'challenges' && (
             <button
               type="button"
-              onClick={() => setShowCreateChallengeModal(true)}
+              onClick={openCreateModal}
               className="ml-auto inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full bg-indigo-600 px-3.5 text-sm font-semibold text-white"
             >
               <Plus size={15} />
@@ -898,24 +1440,9 @@ export const SocialView: React.FC<SocialViewProps> = ({
           )}
         </div>
         )}
-      </header>
+      </motion.header>
 
-      <div>
-        <div className={activeTab === 'feed' ? undefined : 'hidden'} aria-hidden={activeTab !== 'feed'}>
-            <FeedTab
-              myName={user.name}
-              myAvatar={user.avatar ?? null}
-              refreshTick={storyRefreshTick}
-              pageActive={pageActive && activeTab === 'feed'}
-              openPublishSignal={openPublishSignal}
-              onOpenAuthor={authorId => void openFriendModal({ id: authorId, name: 'Atleta' })}
-              onOpenChat={peerId => {
-                setChatPeerId(peerId);
-                setActiveTab('chat');
-              }}
-            />
-        </div>
-
+      <motion.div variants={PAGE_ENTER_ITEM} initial={false}>
         <div className={activeTab === 'chat' ? undefined : 'hidden'} aria-hidden={activeTab !== 'chat'}>
             <ChatTab
               myId={user.id}
@@ -1138,21 +1665,21 @@ export const SocialView: React.FC<SocialViewProps> = ({
                 <Card padding="sm" rounded="md" variant="white">
                   <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Así vas en cada torneo</p>
                   <p className="mt-1 text-xs text-slate-500">
-                    Tu puesto, tu marca y si has subido desde que te uniste. Pulsa un torneo para ver la clasificación.
+                    Tu puesto en cada torneo. Pulsa uno para ver la clasificación y las marcas.
                   </p>
                 </Card>
 
                 {activeChallenges.length === 0 ? (
                   <Card padding="lg" rounded="md" variant="white" className="border-dashed text-center">
-                    <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300">
-                      <Trophy size={20} />
+                    <div className="mx-auto mb-3 flex justify-center">
+                      <ChallengeTrophyIcon />
                     </div>
                     <p className="text-sm text-slate-500">
                       No hay torneos activos. Crea uno o espera a que un amigo lo haga.
                     </p>
                     <button
                       type="button"
-                      onClick={() => setShowCreateChallengeModal(true)}
+                      onClick={openCreateModal}
                       className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white"
                     >
                       <Plus size={14} />
@@ -1160,126 +1687,55 @@ export const SocialView: React.FC<SocialViewProps> = ({
                     </button>
                   </Card>
                 ) : (
-                  <SlimeScroll embed scrollFrom="parent" contentClassName="space-y-3.5">
+                  <SlimeScroll embed scrollFrom="parent" contentClassName="space-y-3">
                     {activeChallenges.map(challenge => {
                       const ranking = sortChallengeRanking(challenge.participants, challenge.usePointsSystem);
                       const myIdx = ranking.findIndex(p => sameUserId(p.userId, user.id));
-                      const me = myIdx >= 0 ? ranking[myIdx] : undefined;
-                      const isParticipant = Boolean(me);
-                      const days = Math.max(0, Math.ceil((new Date(challenge.endDate).getTime() - Date.now()) / 86400000));
-                      const typeLabel = challenge.type === 'weight' ? 'Fuerza' : CHALLENGE_TYPE_LABELS[challenge.type as ChallengeType];
-                      const unit = CHALLENGE_TYPE_UNIT[challenge.type as ChallengeType] || '';
-                      const delta = me ? formatJoinDelta(challenge, me) : null;
-                      const maxMetric = ranking.reduce((acc, p) => {
-                        const v = challenge.usePointsSystem !== false ? p.score : p.value;
-                        return Math.max(acc, v);
-                      }, 0);
+                      const isParticipant = myIdx >= 0;
+                      const people = peopleCountLabel(challenge.participants.length);
+                      const myMove = isParticipant ? rankMovement(ranking[myIdx]?.initialRank, myIdx + 1) : null;
 
                       return (
-                        <Card
+                        <ChallengeListCard
                           key={challenge.id}
-                          padding="md"
-                          rounded="md"
-                          variant="white"
-                          className="cursor-pointer"
-                          onClick={() => setSelectedChallengeDetail(challenge)}
+                          challenge={challenge}
+                          userId={user.id}
+                          onOpen={() => setSelectedChallengeDetail(challenge)}
+                          onAskDelete={() => setDeleteChallenge(challenge)}
                         >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <h3 className="text-[15px] font-semibold leading-snug text-slate-900 dark:text-slate-100">
-                                {challenge.title}
+                          <div className="flex items-center gap-3">
+                            <ChallengeTrophyIcon />
+                            <div className="min-w-0 flex-1">
+                              <h3 className="flex items-center gap-1.5 text-[15px] font-semibold leading-snug text-slate-900 dark:text-slate-100">
+                                {challenge.isPrivate && <Lock size={13} className="shrink-0 text-slate-400" />}
+                                <span className="truncate">{challenge.title}</span>
                               </h3>
-                              <p className="mt-1 text-xs text-slate-500">
+                              <p className="mt-0.5 truncate text-xs text-slate-500">
                                 {challenge.exercise}
                                 <span className="mx-1.5 text-slate-300 dark:text-slate-600">·</span>
-                                {typeLabel}
-                                <span className="mx-1.5 text-slate-300 dark:text-slate-600">·</span>
-                                {days === 0 ? 'Termina hoy' : `${days} días`}
+                                {people}
                               </p>
                             </div>
                             {isParticipant ? (
                               <div className="shrink-0 text-right">
-                                <p className="text-lg font-black tabular-nums text-slate-900 dark:text-slate-100">
+                                <p className="text-lg font-black tabular-nums leading-none text-slate-900 dark:text-slate-100">
                                   #{myIdx + 1}
                                 </p>
-                                <p className="text-[11px] font-semibold tabular-nums text-slate-500">
-                                  {formatChallengeMark(challenge, me)}
-                                </p>
+                                <div className="mt-1 flex justify-end">
+                                  <RankMoveBadge delta={myMove} />
+                                </div>
                               </div>
                             ) : (
-                              <span className="shrink-0 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-500 dark:bg-slate-800">
-                                Sin unirte
-                              </span>
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); openJoinModal(challenge); }}
+                                className="shrink-0 rounded-full bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white"
+                              >
+                                Unirse
+                              </button>
                             )}
                           </div>
-
-                          {isParticipant && (
-                            <p className={cn(
-                              'mt-2 text-xs font-medium',
-                              delta && delta.startsWith('+')
-                                ? 'text-emerald-600 dark:text-emerald-400'
-                                : delta && delta.startsWith('-')
-                                  ? 'text-rose-600 dark:text-rose-400'
-                                  : 'text-slate-500'
-                            )}>
-                              {delta ?? `Marca actual: ${me.value} ${unit}`}
-                            </p>
-                          )}
-
-                          {ranking.length === 0 ? (
-                            <p className="mt-3 text-xs text-slate-400">Aún nadie se ha unido</p>
-                          ) : (
-                            <div className="mt-3 space-y-2">
-                              {ranking.slice(0, 4).map((p, idx) => {
-                                const metric = challenge.usePointsSystem !== false ? p.score : p.value;
-                                const width = maxMetric > 0 ? Math.max(8, Math.round((metric / maxMetric) * 100)) : 8;
-                                const isMe = sameUserId(p.userId, user.id);
-                                return (
-                                  <div key={p.userId} className="flex items-center gap-2.5">
-                                    <span className={cn(
-                                      'w-5 shrink-0 text-center text-xs font-bold',
-                                      idx === 0 ? 'text-amber-600' : 'text-slate-400'
-                                    )}>
-                                      {idx + 1}
-                                    </span>
-                                    <Avatar src={p.avatar} name={p.name} className="h-7 w-7 shrink-0 rounded-full border border-slate-100 dark:border-slate-700" />
-                                    <div className="min-w-0 flex-1">
-                                      <div className="mb-1 flex items-center justify-between gap-2">
-                                        <p className="truncate text-xs font-semibold text-slate-800 dark:text-slate-100">
-                                          {p.name}{isMe ? ' (tú)' : ''}
-                                        </p>
-                                        <p className="shrink-0 text-[11px] font-semibold tabular-nums text-slate-500">
-                                          {formatChallengeMark(challenge, p)}
-                                        </p>
-                                      </div>
-                                      <div className="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-                                        <div
-                                          className={cn('h-full rounded-full', isMe ? 'bg-indigo-500' : 'bg-slate-300 dark:bg-slate-600')}
-                                          style={{ width: `${width}%` }}
-                                        />
-                                      </div>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                              {ranking.length > 4 && (
-                                <p className="pl-8 text-[11px] text-slate-400">
-                                  +{ranking.length - 4} más
-                                </p>
-                              )}
-                            </div>
-                          )}
-
-                          <div className="mt-3.5 flex justify-end border-t border-slate-100 pt-3 dark:border-slate-800">
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); openJoinModal(challenge); }}
-                              className="rounded-full bg-indigo-600 px-4 py-2 text-xs font-semibold text-white"
-                            >
-                              {isParticipant ? 'Actualizar marca' : 'Unirse'}
-                            </button>
-                          </div>
-                        </Card>
+                        </ChallengeListCard>
                       );
                     })}
                   </SlimeScroll>
@@ -1288,79 +1744,47 @@ export const SocialView: React.FC<SocialViewProps> = ({
             )}
 
             {challengeSubTab !== 'progress' && (
-            <SlimeScroll embed scrollFrom="parent" contentClassName="space-y-3.5">
+            <SlimeScroll embed scrollFrom="parent" contentClassName="space-y-3">
               {filteredChallenges.map(challenge => {
-                const isFinished = challengeSubTab === 'finished' || new Date(challenge.endDate) <= now;
-                const isParticipant = challenge.participants.some(p => sameUserId(p.userId, user.id));
-                const ranking = sortChallengeRanking(challenge.participants, challenge.usePointsSystem);
-                const myIdx = ranking.findIndex(p => sameUserId(p.userId, user.id));
-                const me = challenge.participants.find(p => sameUserId(p.userId, user.id));
-                const days = Math.max(0, Math.ceil((new Date(challenge.endDate).getTime() - Date.now()) / 86400000));
-                const typeLabel = challenge.type === 'weight' ? 'Fuerza' : CHALLENGE_TYPE_LABELS[challenge.type as ChallengeType];
-                const unit = CHALLENGE_TYPE_UNIT[challenge.type as ChallengeType] || '';
+                const isFinished = challengeSubTab === 'finished' || new Date(challenge.endDate).getTime() <= countdownNow;
+                const isJoined = challenge.participants.some((p) => sameUserId(p.userId, user.id));
+                const left = formatCountdown(challenge.endDate, countdownNow);
+                const people = peopleCountLabel(challenge.participants.length);
 
                 return (
-                  <Card
+                  <ChallengeListCard
                     key={challenge.id}
-                    padding="md"
-                    rounded="md"
-                    variant="white"
-                    className="cursor-pointer"
-                    onClick={() => setSelectedChallengeDetail(challenge)}
+                    challenge={challenge}
+                    userId={user.id}
+                    onOpen={() => setSelectedChallengeDetail(challenge)}
+                    onAskDelete={() => setDeleteChallenge(challenge)}
                   >
-                    <div className="flex items-start gap-3.5">
-                      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-300">
-                        <Trophy size={20} />
-                      </div>
+                    <div className="flex items-center gap-3">
+                      <ChallengeTrophyIcon />
                       <div className="min-w-0 flex-1">
-                        <h3 className="text-[15px] font-semibold leading-snug text-slate-900 dark:text-slate-100">
-                          {challenge.title}
+                        <h3 className="flex items-center gap-1.5 text-[15px] font-semibold leading-snug text-slate-900 dark:text-slate-100">
+                          {challenge.isPrivate && <Lock size={13} className="shrink-0 text-slate-400" />}
+                          <span className="truncate">{challenge.title}</span>
                         </h3>
-                        <p className="mt-1.5 text-xs leading-relaxed text-slate-500">
+                        <p className="mt-0.5 truncate text-xs text-slate-500">
                           {challenge.exercise}
                           <span className="mx-1.5 text-slate-300 dark:text-slate-600">·</span>
-                          {typeLabel}
+                          {people}
                           <span className="mx-1.5 text-slate-300 dark:text-slate-600">·</span>
-                          {isFinished ? 'Finalizado' : days === 0 ? 'Termina hoy' : `${days} días`}
+                          {left}
                         </p>
                       </div>
-                    </div>
-                    <div className="mt-4 flex items-center justify-between gap-3 border-t border-slate-100 pt-3.5 dark:border-slate-800">
-                      <div className="flex min-w-0 items-center gap-2.5">
-                        {ranking.length > 0 ? (
-                          <>
-                            <div className="flex -space-x-2">
-                              {ranking.slice(0, 4).map(p => (
-                                <Avatar key={p.userId} src={p.avatar} name={p.name} className="h-7 w-7 rounded-full border-2 border-white dark:border-slate-900" />
-                              ))}
-                            </div>
-                            <span className="truncate text-[12px] text-slate-400">
-                              {myIdx >= 0 ? `#${myIdx + 1} · ` : ''}
-                              {ranking.length} {ranking.length === 1 ? 'persona' : 'personas'}
-                            </span>
-                          </>
-                        ) : (
-                          <span className="text-[12px] text-slate-400">Aún nadie se ha unido</span>
-                        )}
-                        {isParticipant && me && (
-                          <span className="shrink-0 text-[12px] font-semibold tabular-nums text-slate-600 dark:text-slate-300">
-                            {challenge.usePointsSystem ? `${Math.round(me.score)} pts` : `${me.value} ${unit}`}
-                          </span>
-                        )}
-                      </div>
-                      {!isFinished ? (
+                      {!isFinished && !isJoined && (
                         <button
                           type="button"
                           onClick={(e) => { e.stopPropagation(); openJoinModal(challenge); }}
-                          className="shrink-0 rounded-full bg-indigo-600 px-4 py-2 text-xs font-semibold text-white"
+                          className="shrink-0 rounded-full bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white"
                         >
-                          {isParticipant ? 'Actualizar' : 'Unirse'}
+                          Unirse
                         </button>
-                      ) : (
-                        <span className="shrink-0 text-xs text-slate-400">Fin</span>
                       )}
                     </div>
-                  </Card>
+                  </ChallengeListCard>
                 );
               })}
             </SlimeScroll>
@@ -1368,8 +1792,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
 
             {challengeSubTab !== 'progress' && filteredChallenges.length === 0 && (
               <Card padding="lg" rounded="md" variant="white" className="border-dashed text-center">
-                <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300">
-                  <Trophy size={20} />
+                <div className="mx-auto mb-3 flex justify-center">
+                  <ChallengeTrophyIcon />
                 </div>
                 <p className="text-sm text-slate-500">
                   {challengeSubTab === 'active'
@@ -1379,7 +1803,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                 {challengeSubTab === 'active' && (
                   <button
                     type="button"
-                    onClick={() => setShowCreateChallengeModal(true)}
+                    onClick={openCreateModal}
                     className="mt-3 inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white"
                   >
                     <Plus size={14} />
@@ -1672,7 +2096,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
               );
             })()}
         </div>
-      </div>
+      </motion.div>
 
       <GlassModal
         open={showCheckInModal || !!editingCheckIn}
@@ -1736,210 +2160,568 @@ export const SocialView: React.FC<SocialViewProps> = ({
       </GlassModal>
 
       <GlassModal
-        open={showCreateChallengeModal}
-        onClose={() => setShowCreateChallengeModal(false)}
+        open={showCreateChallengeModal && !createCalOpen}
+        onClose={() => {
+          setShowCreateChallengeModal(false);
+          setCreateCalOpen(false);
+          setCreateStep(0);
+          setCreateError('');
+        }}
         title="Crear torneo"
-        subtitle="Solo se unen tus amigos"
+        subtitle={CREATE_WIZARD_STEPS[createStep]?.blurb}
+        wide
+        persist={createSubmitting}
+        footer={
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="md"
+              className="flex-1 py-2.5 shadow-none"
+              onClick={() => {
+                if (createStep > 0) {
+                  setCreateError('');
+                  setCreateStep((s) => s - 1);
+                } else {
+                  setShowCreateChallengeModal(false);
+                  setCreateStep(0);
+                }
+              }}
+            >
+              {createStep > 0 ? <><ArrowLeft size={15} /> Atrás</> : 'Cancelar'}
+            </Button>
+            {createStep < 3 ? (
+              <Button
+                type="button"
+                variant="primary"
+                size="md"
+                className="flex-1 py-2.5"
+                disabled={!createCanNext}
+                onClick={goCreateNext}
+              >
+                Siguiente
+                <ArrowRight size={15} />
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                variant="primary"
+                size="md"
+                className="flex-1 py-2.5"
+                disabled={createSubmitting}
+                onClick={() => void handleCreateSubmit()}
+              >
+                {createSubmitting ? <><Loader2 size={15} className="animate-spin" /> Creando…</> : 'Crear'}
+              </Button>
+            )}
+          </div>
+        }
       >
-        <div className="space-y-3">
-                <div>
-                  <label className="mb-1 block text-[11px] text-slate-400">Título</label>
-                  <Input 
-                    placeholder="Dominadas de marzo" 
-                    value={createTitle}
-                    onChange={(e) => setCreateTitle(e.target.value)}
-                    className="h-10 rounded-xl border-white/50 bg-white/60 shadow-none dark:border-white/10 dark:bg-slate-800/60"
+        <div className="mb-2.5 flex items-center">
+          {CREATE_WIZARD_STEPS.map((step, i) => {
+            const Icon = step.icon;
+            const done = i < createStep;
+            const current = i === createStep;
+            return (
+              <React.Fragment key={step.label}>
+                {i > 0 && (
+                  <span
+                    className={cn(
+                      'mb-3.5 h-0.5 w-3 shrink-0 rounded-full sm:w-5',
+                      i <= createStep ? 'bg-indigo-400' : 'bg-slate-200 dark:bg-slate-700'
+                    )}
                   />
-                </div>
-                <div>
-                  <label className="mb-1 block text-[11px] text-slate-400">Descripción</label>
-                  <Input 
-                    placeholder="Opcional" 
-                    value={createDesc}
-                    onChange={(e) => setCreateDesc(e.target.value)}
-                    className="h-10 rounded-xl border-white/50 bg-white/60 shadow-none dark:border-white/10 dark:bg-slate-800/60"
-                  />
-                </div>
-                <div>
-                  <p className="mb-1 text-[11px] text-slate-400">Tipo</p>
-                  <div className="grid grid-cols-3 gap-1">
-                    {CHALLENGE_TYPE_OPTIONS.map(opt => (
-                      <button
-                        key={opt.value}
-                        type="button"
-                        onClick={() => setCreateType(opt.value)}
-                        className={cn(
-                          'rounded-xl px-2 py-2 text-[11px] font-medium',
-                          createType === opt.value
-                            ? 'bg-indigo-600 text-white'
-                            : 'bg-white/50 text-slate-600 dark:bg-white/5 dark:text-slate-300'
-                        )}
-                      >
-                        {opt.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="rounded-xl bg-white/50 px-3 py-2.5 dark:bg-white/5">
-                  <p className="text-[12px] leading-snug text-slate-600 dark:text-slate-300">
-                    {createUsePointsSystem
-                      ? equitySummary(createType, createBodyWeightScoring)
-                      : 'Gana quien tenga el número más alto. No se mira el peso.'}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => setCreateEquityOpen(v => !v)}
-                    className="mt-1.5 text-[11px] font-medium text-indigo-600 dark:text-indigo-300"
+                )}
+                <button
+                  type="button"
+                  disabled={i >= createStep}
+                  onClick={() => {
+                    setCreateError('');
+                    setCreateStep(i);
+                  }}
+                  className={cn(
+                    'flex min-w-0 flex-1 flex-col items-center gap-0.5 disabled:cursor-default',
+                    done && 'cursor-pointer'
+                  )}
+                >
+                  <span
+                    className={cn(
+                      'flex h-7 w-7 items-center justify-center rounded-full transition-colors',
+                      current && 'bg-indigo-600 text-white shadow-md shadow-indigo-300/50 dark:shadow-indigo-900/50',
+                      done && 'bg-indigo-100 text-indigo-600 dark:bg-indigo-950/70 dark:text-indigo-300',
+                      !done && !current && 'bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500'
+                    )}
                   >
-                    {createEquityOpen ? 'Listo' : 'Cambiar esto'}
-                  </button>
-                  {createEquityOpen && (
-                    <div className="mt-2 space-y-1">
-                      {createType !== 'weight' && EQUITY_OPTIONS.map(opt => (
+                    {done ? <Check size={13} strokeWidth={2.5} /> : <Icon size={13} />}
+                  </span>
+                  <span
+                    className={cn(
+                      'max-w-full truncate text-[8px] font-bold uppercase tracking-wide sm:text-[9px]',
+                      current ? 'text-indigo-600 dark:text-indigo-300' : 'text-slate-400 dark:text-slate-500'
+                    )}
+                  >
+                    {step.label}
+                  </span>
+                </button>
+              </React.Fragment>
+            );
+          })}
+        </div>
+
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={createStep}
+            initial={{ opacity: 0, x: 14 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: -14 }}
+            transition={VIEW_TRANSITION}
+          >
+            {createStep === 0 && (
+              <div className="space-y-2.5">
+                <Input
+                  label="Título"
+                  placeholder="Dominadas de marzo"
+                  value={createTitle}
+                  onChange={(e) => setCreateTitle(e.target.value)}
+                  className="h-11 rounded-2xl border-white/50 bg-white/70 py-0 shadow-none dark:border-white/10 dark:bg-slate-800/70"
+                />
+                <Input
+                  label="Descripción"
+                  placeholder="Opcional"
+                  value={createDesc}
+                  onChange={(e) => setCreateDesc(e.target.value)}
+                  className="h-11 rounded-2xl border-white/50 bg-white/70 py-0 shadow-none dark:border-white/10 dark:bg-slate-800/70"
+                />
+                <div>
+                  <p className="mb-1.5 ml-1 text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500">Tipo</p>
+                  <div className="grid grid-cols-3 gap-2">
+                    {CHALLENGE_TYPE_OPTIONS.map((opt) => {
+                      const ui = CREATE_TYPE_UI[opt.value];
+                      const Icon = ui.icon;
+                      const selected = createType === opt.value;
+                      const value = opt.value;
+                      return (
                         <button
-                          key={opt.value}
+                          key={value}
                           type="button"
-                          onClick={() => {
-                            setCreateUsePointsSystem(true);
-                            setCreateEquityTouched(true);
-                            setCreateBodyWeightScoring(opt.value);
-                          }}
+                          onClick={() => setCreateType(value)}
                           className={cn(
-                            'flex w-full items-center justify-between rounded-xl px-3 py-2 text-left',
-                            createUsePointsSystem && createBodyWeightScoring === opt.value
-                              ? 'bg-indigo-50 dark:bg-indigo-950/40'
-                              : 'hover:bg-white/40 dark:hover:bg-white/5'
+                            'flex flex-col items-center gap-1 rounded-2xl border px-1.5 py-2.5 text-center transition-colors',
+                            selected
+                              ? 'border-indigo-400/80 bg-indigo-600 text-white shadow-lg shadow-indigo-300/40 dark:border-indigo-400/50 dark:shadow-indigo-950/40'
+                              : 'border-white/50 bg-white/60 text-slate-700 dark:border-white/10 dark:bg-slate-800/55 dark:text-slate-200'
                           )}
                         >
-                          <span className="min-w-0">
-                            <span className="block text-[13px] font-medium text-slate-800 dark:text-slate-100">{opt.short}</span>
-                            <span className="text-[11px] text-slate-400">{opt.hint}</span>
+                          <span
+                            className={cn(
+                              'flex h-8 w-8 items-center justify-center rounded-xl',
+                              selected ? 'bg-white/20' : 'bg-indigo-50 text-indigo-600 dark:bg-indigo-950/60 dark:text-indigo-300'
+                            )}
+                          >
+                            <Icon size={16} />
+                          </span>
+                          <span className="text-xs font-bold">{ui.short}</span>
+                          <span className={cn('text-[10px] leading-tight', selected ? 'text-indigo-100' : 'text-slate-400')}>
+                            {ui.hint}
                           </span>
                         </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {createStep === 1 && (
+              <div className="space-y-2.5">
+                <div className="rounded-2xl border border-white/50 bg-gradient-to-b from-indigo-50/80 to-white/40 p-2.5 dark:border-white/10 dark:from-indigo-950/40 dark:to-slate-900/40">
+                  <div className="flex items-end gap-2">
+                    <Input
+                      label="Ejercicio"
+                      placeholder="Buscar o escribir…"
+                      value={createExerciseDraft}
+                      onChange={(e) => setCreateExerciseDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          addCreateExercise(createExerciseDraft);
+                        }
+                      }}
+                      icon={<Search size={16} />}
+                      className="h-11 rounded-2xl border-white/60 bg-white/80 py-0 shadow-none dark:border-white/10 dark:bg-slate-800/70"
+                    />
+                    <Button
+                      type="button"
+                      variant="primary"
+                      size="sm"
+                      className="mb-0.5 h-11 shrink-0 px-3.5"
+                      onClick={() => addCreateExercise(createExerciseDraft)}
+                    >
+                      Añadir
+                    </Button>
+                  </div>
+                  {createExerciseHits.length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      {createExerciseHits.map((ex) => (
+                        <button
+                          key={ex}
+                          type="button"
+                          onClick={() => addCreateExercise(ex)}
+                          className="flex w-full items-center justify-between rounded-xl border border-white/60 bg-white/70 px-3 py-2 text-left text-sm font-medium text-slate-700 hover:bg-white dark:border-white/10 dark:bg-slate-800/70 dark:text-slate-200 dark:hover:bg-slate-800"
+                        >
+                          {ex}
+                          <Plus size={14} className="text-indigo-500" />
+                        </button>
                       ))}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setCreateEquityTouched(true);
-                          setCreateUsePointsSystem(v => !v);
-                        }}
-                        className="w-full rounded-xl px-3 py-2 text-left text-[12px] text-slate-500"
-                      >
-                        {createUsePointsSystem ? 'Usar solo la marca, sin ajustar' : 'Volver a igualar por peso'}
-                      </button>
                     </div>
                   )}
                 </div>
-                <div>
-                  <label className="mb-1 block text-[11px] text-slate-400">Ejercicio</label>
-                  <Input 
-                    placeholder="Dominadas, sentadilla…" 
-                    value={createExercise}
-                    onChange={(e) => setCreateExercise(e.target.value)}
-                    className="h-10 rounded-xl border-white/50 bg-white/60 shadow-none dark:border-white/10 dark:bg-slate-800/60"
-                  />
-                </div>
-                <div>
-                  <label className="mb-1 block text-[11px] text-slate-400">Fecha de fin</label>
-                  <Input 
-                    type="date" 
-                    value={createEndDate}
-                    onChange={(e) => setCreateEndDate(e.target.value)}
-                    className="h-10 rounded-xl border-white/50 bg-white/60 shadow-none dark:border-white/10 dark:bg-slate-800/60"
-                  />
-                  <p className="mt-1 text-[10px] text-slate-400">Día / mes / año</p>
-                </div>
-                <button
-                  type="button"
-                  disabled={!createTitle.trim() || !createExercise.trim() || !createEndDate || createSubmitting}
-                  onClick={handleCreateSubmit}
-                  className="mt-1 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300/70 py-2.5 text-sm font-medium text-slate-600 hover:border-indigo-300 hover:text-indigo-600 disabled:opacity-50 dark:border-slate-600 dark:text-slate-300"
+
+                <div
+                  className={cn(
+                    'min-h-[4.25rem] rounded-2xl border border-dashed p-2.5',
+                    createExercises.length
+                      ? 'border-indigo-200/80 bg-indigo-50/50 dark:border-indigo-500/30 dark:bg-indigo-950/30'
+                      : 'border-slate-200/80 bg-white/40 dark:border-white/10 dark:bg-slate-800/30'
+                  )}
                 >
-                  <Plus size={15} />
-                  {createSubmitting ? 'Creando…' : 'Crear torneo'}
-                </button>
-        </div>
+                  {createExercises.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5">
+                      {createExercises.map((ex) => (
+                        <span
+                          key={ex}
+                          className="inline-flex items-center gap-1 rounded-full border border-indigo-200/80 bg-white/80 px-2.5 py-1 text-[11px] font-bold text-indigo-700 dark:border-indigo-500/30 dark:bg-indigo-950/50 dark:text-indigo-300"
+                        >
+                          {ex}
+                          <button
+                            type="button"
+                            aria-label={`Quitar ${ex}`}
+                            onClick={() => setCreateExercises((prev) => prev.filter((e) => e !== ex))}
+                            className="rounded-full p-0.5 hover:bg-indigo-100 dark:hover:bg-white/10"
+                          >
+                            <X size={12} />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="flex h-[3.25rem] items-center justify-center gap-2 text-[11px] font-medium text-slate-400">
+                      <Dumbbell size={14} className="text-indigo-400" />
+                      Añade al menos uno
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {createStep === 2 && (
+              <div className="space-y-3">
+                <section>
+                  <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-black uppercase tracking-widest text-slate-400">
+                    <Scale size={12} />
+                    Cómo se gana
+                  </p>
+                  <div className="space-y-1.5">
+                    {scoringChoices(createType).map((choice) => {
+                      const raw = !createUsePointsSystem || (createType !== 'weight' && createBodyWeightScoring === 'neutral');
+                      const selected = !choice.points
+                        ? raw
+                        : createType === 'weight'
+                          ? createUsePointsSystem
+                          : !raw && createBodyWeightScoring === choice.mode;
+                      return (
+                        <button
+                          key={choice.id}
+                          type="button"
+                          onClick={() => {
+                            setCreateEquityTouched(true);
+                            setCreateUsePointsSystem(choice.points);
+                            setCreateBodyWeightScoring(choice.mode);
+                          }}
+                          className={cn(
+                            'flex w-full items-start gap-3 rounded-2xl border px-3 py-2.5 text-left transition-colors',
+                            selected
+                              ? 'border-indigo-500 bg-indigo-50/90 dark:border-indigo-400 dark:bg-indigo-950/50'
+                              : 'border-white/50 bg-white/60 dark:border-white/10 dark:bg-slate-800/50'
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              'mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2',
+                              selected
+                                ? 'border-indigo-600 bg-indigo-600 text-white'
+                                : 'border-slate-300 dark:border-slate-500'
+                            )}
+                          >
+                            {selected && <Check size={11} strokeWidth={3} />}
+                          </span>
+                          <span className="min-w-0">
+                            <span className="block text-[13px] font-bold text-slate-800 dark:text-slate-100">{choice.title}</span>
+                            <span className="mt-0.5 block text-[11px] leading-snug text-slate-500 dark:text-slate-400">{choice.hint}</span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+
+                <div className="rounded-2xl border border-white/50 bg-white/60 px-3 py-2.5 dark:border-white/10 dark:bg-slate-800/50">
+                  <button
+                    type="button"
+                    onClick={() => setCreatePrivate((v) => !v)}
+                    className="flex w-full items-center justify-between gap-3 text-left"
+                  >
+                    <span className="flex items-start gap-2.5">
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600 dark:bg-indigo-950/60 dark:text-indigo-300">
+                        <Lock size={15} />
+                      </span>
+                      <span>
+                        <span className="block text-[13px] font-bold text-slate-800 dark:text-slate-100">
+                          Privado con contraseña
+                        </span>
+                        <span className="mt-0.5 block text-[11px] text-slate-400">
+                          Solo entra quien tenga la clave.
+                        </span>
+                      </span>
+                    </span>
+                    <span className={cn(
+                      'relative h-6 w-10 shrink-0 rounded-full p-0.5 transition-colors',
+                      createPrivate ? 'bg-indigo-600' : 'bg-slate-200 dark:bg-slate-600'
+                    )}>
+                      <span className={cn(
+                        'block h-5 w-5 rounded-full bg-white transition-transform',
+                        createPrivate ? 'translate-x-4' : 'translate-x-0'
+                      )} />
+                    </span>
+                  </button>
+                  {createPrivate && (
+                    <Input
+                      type="password"
+                      placeholder="Mínimo 4 caracteres"
+                      value={createPassword}
+                      onChange={(e) => setCreatePassword(e.target.value)}
+                      className="mt-2 h-10 rounded-xl border-white/50 bg-white/80 py-0 shadow-none dark:border-white/10 dark:bg-slate-800/70"
+                    />
+                  )}
+                </div>
+
+                <section>
+                  <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-black uppercase tracking-widest text-slate-400">
+                    <Calendar size={12} />
+                    Hasta cuándo
+                  </p>
+                  <div className="rounded-2xl border border-white/50 bg-white/70 p-2.5 dark:border-white/10 dark:bg-slate-800/50">
+                    <EndDatePresets
+                      value={createEndDate}
+                      onPick={setCreateEndDate}
+                      onCustom={() => {
+                        setCreateCalDraft(createEndDate || shiftIsoDate(7));
+                        setCreateCalOpen(true);
+                      }}
+                    />
+                  </div>
+                </section>
+                {createError && <p className="text-[12px] font-medium text-rose-500">{createError}</p>}
+              </div>
+            )}
+
+            {createStep === 3 && (
+              <div>
+                <div className="overflow-hidden rounded-2xl border border-white/50 bg-white/65 dark:border-white/10 dark:bg-slate-800/50">
+                  <div className="flex items-start gap-2.5 bg-gradient-to-br from-indigo-500/15 to-transparent px-3.5 py-3 dark:from-indigo-500/20">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-500 dark:bg-amber-950/50 dark:text-amber-400">
+                      <Trophy size={16} />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-slate-900 dark:text-slate-100">{createTitle || '—'}</p>
+                      {createDesc.trim() && (
+                        <p className="mt-0.5 text-xs text-slate-500">{createDesc.trim()}</p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="divide-y divide-slate-100/80 dark:divide-white/10">
+                    <div className="flex items-start gap-2.5 px-3.5 py-2.5">
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600 dark:bg-indigo-950/60 dark:text-indigo-300">
+                        {React.createElement(CREATE_TYPE_UI[createType].icon, { size: 14 })}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-[13px] font-semibold text-slate-800 dark:text-slate-100">
+                          {CREATE_TYPE_UI[createType].short}
+                          <span className="mx-1.5 font-normal text-slate-300 dark:text-slate-600">·</span>
+                          {CHALLENGE_TYPE_OPTIONS.find((o) => o.value === createType)?.label}
+                        </p>
+                        <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
+                          {createUsePointsSystem
+                            ? equitySummary(createType, createBodyWeightScoring)
+                            : 'Gana la marca más alta, sin ajustar por peso.'}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-2.5 px-3.5 py-2.5">
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600 dark:bg-indigo-950/60 dark:text-indigo-300">
+                        <Dumbbell size={14} />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400">Ejercicios</p>
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {(createExercises.length ? createExercises : createExerciseDraft.trim() ? [createExerciseDraft.trim()] : []).length
+                            ? (createExercises.length ? createExercises : [createExerciseDraft.trim()]).map((ex) => (
+                              <span
+                                key={ex}
+                                className="rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-semibold text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300"
+                              >
+                                {ex}
+                              </span>
+                            ))
+                            : <span className="text-sm font-semibold text-slate-800 dark:text-slate-100">Ninguno</span>}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-2.5 px-3.5 py-2.5">
+                      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600 dark:bg-indigo-950/60 dark:text-indigo-300">
+                        <Calendar size={14} />
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-[13px] font-semibold text-slate-800 dark:text-slate-100">
+                          {createEndDate ? new Date(`${createEndDate}T12:00:00`).toLocaleDateString('es-ES') : 'Sin fecha'}
+                        </p>
+                        <p className="mt-0.5 flex items-center gap-1 text-[11px] text-slate-500">
+                          {createPrivate
+                            ? <><Lock size={11} /> Privado con contraseña</>
+                            : <><Users size={11} /> Abierto a tus amigos</>}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                {createError && <p className="mt-2 text-[12px] font-medium text-rose-500">{createError}</p>}
+              </div>
+            )}
+          </motion.div>
+        </AnimatePresence>
+      </GlassModal>
+
+      <GlassModal
+        open={createCalOpen}
+        onClose={() => setCreateCalOpen(false)}
+        title="Fecha de fin"
+        subtitle="Elige el día y pulsa Aceptar"
+        wide
+        footer={
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="md"
+              className="flex-1 py-2.5 shadow-none"
+              onClick={() => setCreateCalOpen(false)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              size="md"
+              className="flex-1 py-2.5"
+              disabled={!createCalDraft}
+              onClick={() => {
+                if (!createCalDraft) return;
+                setCreateEndDate(createCalDraft);
+                setCreateCalOpen(false);
+              }}
+            >
+              Aceptar
+            </Button>
+          </div>
+        }
+      >
+        <EndDateCalendar value={createCalDraft} onChange={setCreateCalDraft} />
+      </GlassModal>
+
+      <GlassModal
+        open={!!deleteChallenge}
+        onClose={() => { if (!deleteSubmitting) setDeleteChallenge(null); }}
+        title="Borrar torneo"
+        subtitle={deleteChallenge?.title}
+        persist={deleteSubmitting}
+        footer={
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="flex-1"
+              disabled={deleteSubmitting}
+              onClick={() => setDeleteChallenge(null)}
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              variant="danger"
+              className="flex-1"
+              disabled={deleteSubmitting}
+              onClick={() => {
+                if (!deleteChallenge) return;
+                setDeleteSubmitting(true);
+                void Promise.resolve(onDeleteChallenge?.(deleteChallenge.id))
+                  .then(() => {
+                    setSelectedChallengeDetail((cur) => (cur?.id === deleteChallenge.id ? null : cur));
+                    setDeleteChallenge(null);
+                  })
+                  .catch((e: any) => {
+                    setCreateError(e?.message || 'No se pudo borrar.');
+                  })
+                  .finally(() => setDeleteSubmitting(false));
+              }}
+            >
+              {deleteSubmitting ? 'Borrando…' : 'Borrar'}
+            </Button>
+          </div>
+        }
+      >
+        <p className="text-sm text-slate-600 dark:text-slate-300">
+          Se elimina para todos. Esta acción no se puede deshacer.
+        </p>
       </GlassModal>
 
       <GlassModal
         open={!!selectedChallengeDetail}
         onClose={() => setSelectedChallengeDetail(null)}
+        wide
         title={selectedChallengeDetail?.title}
         subtitle={
           selectedChallengeDetail
-            ? `${selectedChallengeDetail.exercise} · ${CHALLENGE_TYPE_LABELS[selectedChallengeDetail.type as ChallengeType]}`
+            ? `${selectedChallengeDetail.isPrivate ? 'Privado · ' : ''}${selectedChallengeDetail.exercise} · ${CREATE_TYPE_UI[selectedChallengeDetail.type as ChallengeType].short}`
             : undefined
+        }
+        footer={
+          selectedChallengeDetail && new Date(selectedChallengeDetail.endDate) > now ? (
+            <Button
+              type="button"
+              variant="primary"
+              className="w-full"
+              onClick={() => {
+                const challenge = selectedChallengeDetail;
+                setSelectedChallengeDetail(null);
+                openJoinModal(challenge);
+              }}
+            >
+              {selectedChallengeDetail.participants.some((p) => sameUserId(p.userId, user.id))
+                ? 'Actualizar marca'
+                : 'Unirse'}
+            </Button>
+          ) : undefined
         }
       >
         {selectedChallengeDetail && (
-          <div>
-                <p className="mb-3 flex items-center gap-1.5 text-[11px] text-slate-500">
-                  <Calendar size={12} />
-                  Hasta {new Date(selectedChallengeDetail.endDate).toLocaleDateString('es-ES')}
-                </p>
-                <p className="mb-3 rounded-xl border border-white/50 bg-white/40 px-3 py-2 text-[11px] leading-snug text-slate-500 dark:border-white/10 dark:bg-slate-800/40">
-                  {bodyWeightScoringSummary(
-                    selectedChallengeDetail.type as ChallengeType,
-                    selectedChallengeDetail.usePointsSystem !== false,
-                    selectedChallengeDetail.bodyWeightScoring
-                  )}
-                </p>
-
-                <p className="mb-2 text-[11px] font-medium text-slate-500">Clasificación</p>
-                <div className="space-y-1.5">
-                  {sortChallengeRanking(selectedChallengeDetail.participants, selectedChallengeDetail.usePointsSystem).map((p, idx) => {
-                    const rank = idx + 1;
-                    const unit = CHALLENGE_TYPE_UNIT[selectedChallengeDetail.type as ChallengeType] || '';
-                    return (
-                      <div 
-                        key={p.userId} 
-                        className={cn(
-                          'flex items-center gap-3 rounded-xl border px-2.5 py-2',
-                          rank === 1
-                            ? 'border-amber-200/80 bg-amber-50/70 dark:border-amber-700/40 dark:bg-amber-900/25'
-                            : rank === 2
-                              ? 'border-white/50 bg-white/50 dark:border-white/10 dark:bg-slate-800/50'
-                              : rank === 3
-                                ? 'border-amber-100/80 bg-amber-50/40 dark:border-amber-800/30 dark:bg-amber-950/20'
-                                : 'border-white/40 bg-white/30 dark:border-white/10 dark:bg-slate-800/30',
-                          sameUserId(p.userId, user.id) && 'ring-1 ring-indigo-400/70'
-                        )}
-                      >
-                        <span className={cn(
-                          'w-6 text-center text-sm font-semibold',
-                          rank === 1 ? 'text-amber-600 dark:text-amber-400' :
-                          rank === 2 ? 'text-slate-500' :
-                          rank === 3 ? 'text-amber-700 dark:text-amber-500' :
-                          'text-slate-400'
-                        )}>{rank}</span>
-                        <Avatar src={p.avatar} name={p.name} className="h-8 w-8 shrink-0 rounded-full border border-white/70 dark:border-slate-700" />
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-medium text-slate-900 dark:text-slate-100">{p.name}</p>
-                          <p className="text-[11px] text-slate-500">
-                            {selectedChallengeDetail.usePointsSystem !== false
-                              ? `${p.score} pts · ${p.value} ${unit}`
-                              : `${p.value} ${unit}`}
-                          </p>
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {selectedChallengeDetail.participants.length === 0 && (
-                    <p className="rounded-xl border border-dashed border-white/50 px-3 py-4 text-center text-xs text-slate-400 dark:border-white/10">
-                      Nadie se ha unido todavía.
-                    </p>
-                  )}
-                </div>
-              {new Date(selectedChallengeDetail.endDate) > now && (
-                <button
-                  type="button"
-                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300/70 py-2.5 text-sm font-medium text-slate-600 hover:border-indigo-300 hover:text-indigo-600 dark:border-slate-600 dark:text-slate-300"
-                  onClick={(e) => { e.stopPropagation(); setSelectedChallengeDetail(null); openJoinModal(selectedChallengeDetail); }}
-                >
-                  {selectedChallengeDetail.participants.some(p => sameUserId(p.userId, user.id)) ? 'Actualizar marca' : 'Unirse'}
-                </button>
-              )}
-          </div>
+          <ChallengeDetailBody
+            challenge={selectedChallengeDetail}
+            userId={user.id}
+            countdownNow={countdownNow}
+            rulesOpen={challengeRulesOpen}
+            onToggleRules={() => setChallengeRulesOpen((v) => !v)}
+            onAskDelete={() => setDeleteChallenge(selectedChallengeDetail)}
+          />
         )}
       </GlassModal>
 
@@ -1954,22 +2736,55 @@ export const SocialView: React.FC<SocialViewProps> = ({
         }
       >
         {showJoinChallengeModal && (
-          <div>
-            <label className="mb-1 block text-[11px] text-slate-400">Marca</label>
-            <Input
-              type="number"
-              placeholder={`Ej: 8 ${CHALLENGE_TYPE_UNIT[showJoinChallengeModal.type as ChallengeType]}`}
-              value={joinValue}
-              onChange={(e) => setJoinValue(e.target.value)}
-              min="0"
-              step={showJoinChallengeModal.type === 'weight' ? 0.5 : 1}
-              className="h-10 rounded-xl border-white/50 bg-white/60 shadow-none dark:border-white/10 dark:bg-slate-800/60"
-            />
+          <div className="space-y-3">
+            {challengeExercises(showJoinChallengeModal).length > 1 ? (
+              challengeExercises(showJoinChallengeModal).map((ex) => (
+                <div key={ex}>
+                  <label className="mb-1 block text-[11px] text-slate-400">{ex}</label>
+                  <Input
+                    type="number"
+                    placeholder={`Marca en ${CHALLENGE_TYPE_UNIT[showJoinChallengeModal.type as ChallengeType]}`}
+                    value={joinLifts[ex] || ''}
+                    onChange={(e) => setJoinLifts((prev) => ({ ...prev, [ex]: e.target.value }))}
+                    min="0"
+                    step={showJoinChallengeModal.type === 'weight' ? 0.5 : 1}
+                    className="h-10 rounded-xl border-white/50 bg-white/60 shadow-none dark:border-white/10 dark:bg-slate-800/60"
+                  />
+                </div>
+              ))
+            ) : (
+              <div>
+                <label className="mb-1 block text-[11px] text-slate-400">Marca</label>
+                <Input
+                  type="number"
+                  placeholder={`Ej: 8 ${CHALLENGE_TYPE_UNIT[showJoinChallengeModal.type as ChallengeType]}`}
+                  value={joinValue}
+                  onChange={(e) => setJoinValue(e.target.value)}
+                  min="0"
+                  step={showJoinChallengeModal.type === 'weight' ? 0.5 : 1}
+                  className="h-10 rounded-xl border-white/50 bg-white/60 shadow-none dark:border-white/10 dark:bg-slate-800/60"
+                />
+              </div>
+            )}
+            {showJoinChallengeModal.isPrivate &&
+              !showJoinChallengeModal.participants.some((p) => sameUserId(p.userId, user.id)) && (
+                <div>
+                  <label className="mb-1 block text-[11px] text-slate-400">Contraseña</label>
+                  <Input
+                    type="password"
+                    placeholder="Te la tiene que pasar quien lo creó"
+                    value={joinPassword}
+                    onChange={(e) => setJoinPassword(e.target.value)}
+                    className="h-10 rounded-xl border-white/50 bg-white/60 shadow-none dark:border-white/10 dark:bg-slate-800/60"
+                  />
+                </div>
+              )}
+            {joinError && <p className="text-[12px] font-medium text-rose-500">{joinError}</p>}
             <button
               type="button"
-              disabled={!joinValue || joinSubmitting}
+              disabled={joinSubmitting}
               onClick={handleJoinSubmit}
-              className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300/70 py-2.5 text-sm font-medium text-slate-600 hover:border-indigo-300 hover:text-indigo-600 disabled:opacity-50 dark:border-slate-600 dark:text-slate-300"
+              className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300/70 py-2.5 text-sm font-medium text-slate-600 hover:border-indigo-300 hover:text-indigo-600 disabled:opacity-50 dark:border-slate-600 dark:text-slate-300"
             >
               {joinSubmitting ? 'Guardando…' : 'Confirmar'}
             </button>
@@ -1987,7 +2802,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
           className="fixed inset-0 overflow-y-auto bg-slate-50 dark:bg-slate-950"
           style={{ zIndex: 99000 }}
         >
-          <div className="mx-auto max-w-2xl px-4 py-5 pb-28">
+          <div className="app-page mx-auto max-w-2xl">
             <ProfileScreen
               userId={viewingProfileId}
               liveAvatar={viewingProfileId === user.id ? user.avatar : undefined}
