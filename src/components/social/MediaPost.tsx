@@ -19,16 +19,27 @@ import {
 
 export function Avatar({ name, avatar, size = 40 }: { name: string; avatar: string | null; size?: number }) {
   const src = resolveAvatarUrl(avatar);
-  if (src) {
+  const [broken, setBroken] = useState(false);
+  useEffect(() => {
+    setBroken(false);
+  }, [src]);
+  if (src && !broken) {
     return (
-      <img
-        src={src}
-        alt={name}
-        width={size}
-        height={size}
-        className="rounded-full object-cover"
+      <span
+        className="inline-block overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700"
         style={{ width: size, height: size }}
-      />
+      >
+        <img
+          src={src}
+          alt={name}
+          width={size}
+          height={size}
+          className="block h-full w-full object-cover object-center"
+          style={{ objectFit: 'cover', objectPosition: 'center' }}
+          referrerPolicy="no-referrer"
+          onError={() => setBroken(true)}
+        />
+      </span>
     );
   }
   return (

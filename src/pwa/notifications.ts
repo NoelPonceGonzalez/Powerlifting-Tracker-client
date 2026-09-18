@@ -200,17 +200,11 @@ export function useWebNotifications(): UseWebNotificationsResult {
   }, []);
 
   const sendTestNotification = useCallback(async (): Promise<boolean> => {
-    const local = await showLocalNotification(
+    return showLocalNotification(
       'Powerlifting Tracker',
       'Las notificaciones están activadas. Te avisaremos de tus entrenos y de la actividad de tus amigos.',
       { tag: 'test-notification' }
     );
-    try {
-      await apiPost('/api/notifications/test-push', {});
-    } catch {
-      /* sin VAPID o sin red: el aviso local ya basta para probar el permiso */
-    }
-    return local;
   }, []);
 
   return {

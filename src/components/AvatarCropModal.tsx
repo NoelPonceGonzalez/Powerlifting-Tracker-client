@@ -5,6 +5,7 @@ import { Button } from '@/src/components/ui/Button';
 import {
   AVATAR_CROP_MAX_SCALE,
   AVATAR_CROP_MIN_SCALE,
+  coverFit,
   exportFramedAvatar,
 } from '@/src/lib/avatarCrop';
 
@@ -18,6 +19,7 @@ export function AvatarCropModal({ image, onCancel, onConfirm }: AvatarCropModalP
   const [pos, setPos] = useState({ x: 0, y: 0 });
   const [scale, setScale] = useState(1);
   const [box, setBox] = useState(280);
+  const [nat, setNat] = useState({ w: 0, h: 0 });
   const imgRef = useRef<HTMLImageElement | null>(null);
   const areaRef = useRef<HTMLDivElement | null>(null);
   const posRef = useRef(pos);
@@ -32,6 +34,7 @@ export function AvatarCropModal({ image, onCancel, onConfirm }: AvatarCropModalP
   useEffect(() => {
     setPos({ x: 0, y: 0 });
     setScale(1);
+    setNat({ w: 0, h: 0 });
   }, [image]);
 
   useLayoutEffect(() => {
@@ -139,9 +142,13 @@ export function AvatarCropModal({ image, onCancel, onConfirm }: AvatarCropModalP
                 src={image}
                 alt=""
                 draggable={false}
-                className="pointer-events-none absolute left-1/2 top-1/2 max-h-full max-w-full object-contain"
+                onLoad={e => setNat({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
+                className="pointer-events-none absolute left-1/2 top-1/2 max-w-none select-none"
                 style={{
-                  transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px)) scale(${scale})`,
+                  width: nat.w && box ? nat.w * coverFit(nat.w, nat.h, box) * scale : '100%',
+                  height: nat.h && box ? nat.h * coverFit(nat.w, nat.h, box) * scale : '100%',
+                  objectFit: 'cover',
+                  transform: `translate(calc(-50% + ${pos.x}px), calc(-50% + ${pos.y}px))`,
                 }}
               />
               <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden>

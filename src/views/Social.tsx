@@ -778,6 +778,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
     trainingMaxes: { id?: string; name: string; value: number; mode: string }[];
     trainingMaxesAll?: { name: string; mode: string; linkedExercise?: string }[];
     friendshipStatus?: string;
+    friendshipDirection?: string | null;
     canSendRequest?: boolean;
   } | null>(null);
   const [friendRequestBusy, setFriendRequestBusy] = useState(false);
@@ -1156,6 +1157,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
         followerCount: cover?.followerCount ?? 0,
         followingCount: cover?.followingCount ?? 0,
         friendshipStatus: cover?.friendshipStatus,
+        friendshipDirection: cover?.friendshipDirection,
         canSendRequest: cover?.canSendRequest,
       });
     } catch {
@@ -2871,6 +2873,14 @@ export const SocialView: React.FC<SocialViewProps> = ({
               onSendFriendRequest={
                 onSendFriendRequest ? async () => { await onSendFriendRequest(viewingProfileId); } : undefined
               }
+              onAcceptFriend={async () => {
+                const req = pendingRequests.find(r => r.userId === viewingProfileId || r.id === viewingProfileId);
+                if (req) await handleRequestAction(req.id, onAccept);
+              }}
+              onRejectFriend={async () => {
+                const req = pendingRequests.find(r => r.userId === viewingProfileId || r.id === viewingProfileId);
+                if (req) await handleRequestAction(req.id, onReject);
+              }}
               onOpenChat={peerId => {
                 setViewingProfileId(null);
                 setChatPeerId(peerId);
@@ -2903,7 +2913,55 @@ export const SocialView: React.FC<SocialViewProps> = ({
         footer={
           showFriendModal ? (
             <div className="flex gap-2">
-              {friendProfile?.canSendRequest || friendProfile?.friendshipStatus === 'follower' ? (
+              {friendProfile?.friendshipStatus === 'pending' && friendProfile?.friendshipDirection === 'incoming' ? (
+                <div className="flex flex-1 gap-2">
+                  <Button
+                    variant="outline"
+                    className="flex-1 rounded-xl"
+                    disabled={friendRequestBusy}
+                    onClick={async () => {
+                      const req = pendingRequests.find(r => r.userId === showFriendModal.id);
+                      if (!req) return;
+                      setFriendRequestBusy(true);
+                      try {
+                        await handleRequestAction(req.id, onReject);
+                        setFriendProfile(prev =>
+                          prev
+                            ? { ...prev, friendshipStatus: 'none', friendshipDirection: null, canSendRequest: true }
+                            : prev
+                        );
+                      } finally {
+                        setFriendRequestBusy(false);
+                      }
+                    }}
+                  >
+                    Rechazar
+                  </Button>
+                  <Button
+                    variant="primary"
+                    className="flex-1 rounded-xl"
+                    disabled={friendRequestBusy}
+                    onClick={async () => {
+                      const req = pendingRequests.find(r => r.userId === showFriendModal.id);
+                      if (!req) return;
+                      setFriendRequestBusy(true);
+                      try {
+                        await handleRequestAction(req.id, onAccept);
+                        setFriendProfile(prev =>
+                          prev
+                            ? { ...prev, friendshipStatus: 'accepted', friendshipDirection: null, canSendRequest: false }
+                            : prev
+                        );
+                      } finally {
+                        setFriendRequestBusy(false);
+                      }
+                    }}
+                  >
+                    {friendRequestBusy ? <Loader2 size={16} className="animate-spin" /> : <UserCheck size={16} />}
+                    Amigos
+                  </Button>
+                </div>
+              ) : friendProfile?.canSendRequest || friendProfile?.friendshipStatus === 'follower' ? (
                 <Button
                   variant="primary"
                   className="flex-1 rounded-xl"
@@ -2915,7 +2973,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                       await onSendFriendRequest(showFriendModal.id);
                       setFriendProfile(prev =>
                         prev
-                          ? { ...prev, canSendRequest: false, friendshipStatus: 'pending' }
+                          ? { ...prev, canSendRequest: false, friendshipStatus: 'pending', friendshipDirection: 'outgoing' }
                           : prev
                       );
                     } catch (e: any) {
@@ -2930,7 +2988,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                 </Button>
               ) : friendProfile?.friendshipStatus === 'pending' || friendProfile?.friendshipStatus === 'following' ? (
                 <Button variant="outline" className="flex-1 rounded-xl" disabled>
-                  Solicitud enviada
+                  {friendProfile?.friendshipStatus === 'following' ? 'Siguiendo' : 'Solicitud enviada'}
                 </Button>
               ) : (
                 <>

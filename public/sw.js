@@ -150,28 +150,36 @@ self.addEventListener('fetch', (event) => {
 
 /** Push del servidor (Web Push / VAPID). El payload esperado es JSON. */
 self.addEventListener('push', (event) => {
-  let payload = {};
-  if (event.data) {
-    try {
-      payload = event.data.json();
-    } catch {
-      payload = { body: event.data.text() };
-    }
-  }
-  const title = payload.title || 'Powerlifting Tracker';
-  const options = {
-    body: payload.body || '',
-    icon: payload.icon || '/icons/icon-192.png',
-    badge: '/icons/icon-192.png',
-    tag: payload.tag,
-    renotify: !!payload.tag,
-    data: {
-      url: payload.url || '/',
-      screen: payload.screen,
-      tab: payload.tab,
-    },
-  };
-  event.waitUntil(self.registration.showNotification(title, options));
+  event.waitUntil(
+    (async () => {
+      const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      if (windows.some((c) => c.visibilityState === 'visible')) {
+        return;
+      }
+      let payload = {};
+      if (event.data) {
+        try {
+          payload = event.data.json();
+        } catch {
+          payload = { body: event.data.text() };
+        }
+      }
+      const title = payload.title || 'Powerlifting Tracker';
+      const tag = payload.tag || payload.type || 'activity';
+      await self.registration.showNotification(title, {
+        body: payload.body || '',
+        icon: payload.icon || '/icons/icon-192.png',
+        badge: '/icons/icon-192.png',
+        tag,
+        renotify: true,
+        data: {
+          url: payload.url || '/',
+          screen: payload.screen,
+          tab: payload.tab,
+        },
+      });
+    })()
+  );
 });
 
 self.addEventListener('notificationclick', (event) => {

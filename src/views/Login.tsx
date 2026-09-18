@@ -105,7 +105,11 @@ interface LoginProps {
 }
 
 export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', onCancel }) => {
-  const [mode, setMode] = useState<'login' | 'register' | 'complete'>('login');
+  const [mode, setMode] = useState<
+    'login' | 'register' | 'complete' | 'forgot-email' | 'forgot-code' | 'forgot-password'
+  >('login');
+  const [resetCode, setResetCode] = useState('');
+  const [resetEmail, setResetEmail] = useState('');
   const [registerStep, setRegisterStep] = useState<'email' | 'code'>('email');
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
@@ -123,6 +127,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
   const [avatar, setAvatar] = useState('');
   const [cropImage, setCropImage] = useState<string | null>(null);
   const avatarInputRef = React.useRef<HTMLInputElement | null>(null);
+  const completingRef = React.useRef(false);
 
   // Limpiar errores al montar el componente
   React.useEffect(() => {
@@ -170,6 +175,126 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
     return () => window.removeEventListener('registrationTokenReady', onTokenReady);
   }, []);
 
+  const enterSession = (data: { token?: string; user?: any }) => {
+    if (!data?.token || !data?.user) throw new Error('Respuesta de sesión incompleta');
+    localStorage.setItem('auth_token', data.token);
+    onLogin({
+      id: String(data.user.id),
+      name: data.user.name || 'Atleta',
+      email: data.user.email,
+      avatar: data.user.avatar || '',
+      bodyWeight: data.user.bodyWeight ?? 80,
+      gender: data.user.gender === 'mujer' || data.user.gender === 'hombre' ? data.user.gender : undefined,
+      theme: (data.user.theme ?? (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) as 'light' | 'dark',
+      progressMode:
+        data.user.progressMode === 'year'
+          ? 'year'
+          : data.user.progressMode === 'month' || data.user.progressMode === 'week'
+            ? 'month'
+            : undefined,
+      mbMode: !!data.user.mbMode,
+    });
+  };
+
+  const backToLogin = () => {
+    setMode('login');
+    setError('');
+    setResetCode('');
+    setPassword('');
+    setConfirmPassword('');
+    setShowPassword(false);
+  };
+
+  const handleForgotEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setError('');
+    try {
+      const normalized = normalizeEmail(email);
+      if (!normalized || !normalized.includes('@')) {
+        setError('Introduce un correo válido');
+        setIsLoading(false);
+        return;
+      }
+      setEmail(normalized);
+      setResetEmail(normalized);
+      const res = await fetchAuth(authApiUrl('/api/auth/forgot-password'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: normalized }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || data?.errors?.[0]?.msg || 'No se pudo enviar el código');
+      setMode('forgot-code');
+    } catch (err: any) {
+      setError(err?.message || friendlyNetworkError(err));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleForgotCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setError('');
+    try {
+      const code = resetCode.trim();
+      if (!/^\d{6}$/.test(code)) {
+        setError('El código tiene 6 dígitos');
+        setIsLoading(false);
+        return;
+      }
+      const res = await fetchAuth(authApiUrl('/api/auth/verify-reset-code'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: resetEmail || normalizeEmail(email), code }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || data?.errors?.[0]?.msg || 'Código inválido o expirado');
+      setMode('forgot-password');
+    } catch (err: any) {
+      setError(err?.message || friendlyNetworkError(err));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setError('');
+    try {
+      if (!password || password.length < 6) {
+        setError('La contraseña debe tener al menos 6 caracteres');
+        setIsLoading(false);
+        return;
+      }
+      if (password !== confirmPassword) {
+        setError('Las contraseñas no coinciden');
+        setIsLoading(false);
+        return;
+      }
+      const res = await fetchAuth(authApiUrl('/api/auth/reset-password'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: resetEmail || normalizeEmail(email),
+          code: resetCode.trim(),
+          password,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.token) {
+        throw new Error(data?.error || data?.errors?.[0]?.msg || 'No se pudo cambiar la contraseña');
+      }
+      enterSession(data);
+    } catch (err: any) {
+      setError(err?.message || friendlyNetworkError(err));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleStandardLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
@@ -215,24 +340,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
         return;
       }
 
-      // Éxito
-      localStorage.setItem('auth_token', data.token);
-      onLogin({
-        id: String(data.user.id),
-        name: data.user.name || 'Atleta',
-        email: data.user.email,
-        avatar: data.user.avatar || '',
-        bodyWeight: data.user.bodyWeight ?? 80,
-        gender: data.user.gender === 'mujer' || data.user.gender === 'hombre' ? data.user.gender : undefined,
-        theme: (data.user.theme ?? (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) as 'light' | 'dark',
-        progressMode:
-          data.user.progressMode === 'year'
-            ? 'year'
-            : data.user.progressMode === 'month' || data.user.progressMode === 'week'
-              ? 'month'
-              : undefined,
-        mbMode: !!data.user.mbMode,
-      });
+      enterSession(data);
     } catch (err: any) {
       console.error('[CLIENT-LOGIN] Error completo:', err);
       setError(friendlyNetworkError(err));
@@ -305,8 +413,13 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
         
         // Mensajes específicos según el tipo de error
         if (res.status === 400) {
-          if (errorMsg.includes('ya está registrado')) {
-            setError('Este email ya está registrado');
+          if (errorMsg.toLowerCase().includes('ya está registrado')) {
+            setUsername(normalizedEmail);
+            setEmail(normalizedEmail);
+            setMode('login');
+            setError('Este email ya tiene cuenta. Entra o recupera la contraseña.');
+            setIsLoading(false);
+            return;
           } else if (errorMsg.includes('Email inválido') || errorMsg.includes('email inválido')) {
             setError('Email inválido');
           } else {
@@ -340,7 +453,13 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
         return;
       }
 
-      // Éxito
+      // Sin SMTP el servidor no puede mandar el correo: pasa directo a completar
+      // la cuenta con el token. Si no, el navegador se queda esperando un código.
+      if (data?.emailSent === false && typeof data?.token === 'string' && data.token.trim()) {
+        activateCompleteMode(data.token.trim());
+        return;
+      }
+
       setPendingVerificationEmail(normalizedEmail);
       setVerificationCode('');
       setRegisterStep('code');
@@ -378,8 +497,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
       if (!normalizedEmail || !normalizedEmail.includes('@')) throw new Error('Email inválido');
       if (cleanCode.length !== 6) throw new Error('Introduce un código de 6 dígitos');
 
-      const baseUrl = getApiBaseUrl();
-      const res = await fetch(`${baseUrl}/api/auth/verify-registration-code`, {
+      const res = await fetchAuth(authApiUrl('/api/auth/verify-registration-code'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: normalizedEmail, code: cleanCode }),
@@ -400,6 +518,8 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
 
   const handleCompleteRegistration = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (completingRef.current) return;
+    completingRef.current = true;
     setIsLoading(true);
     setError('');
 
@@ -426,10 +546,15 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
-        throw new Error(data?.error || data?.errors?.[0]?.msg || 'No se pudo completar el registro');
+        const errMsg = data?.error || data?.errors?.[0]?.msg || 'No se pudo completar el registro';
+        if (String(errMsg).toLowerCase().includes('ya está registrado')) {
+          setUsername(email);
+          setMode('login');
+          throw new Error('Este email ya tiene cuenta. Entra o recupera la contraseña.');
+        }
+        throw new Error(errMsg);
       }
 
-      localStorage.setItem('auth_token', data.token);
       let savedAvatar = data.user.avatar || '';
       if (avatar) {
         try {
@@ -439,26 +564,12 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
           savedAvatar = data.user.avatar || '';
         }
       }
-      onLogin({
-        id: String(data.user.id),
-        name: data.user.name || 'Atleta',
-        email: data.user.email,
-        avatar: savedAvatar,
-        bodyWeight: data.user.bodyWeight ?? bw,
-        gender: data.user.gender === 'mujer' || data.user.gender === 'hombre' ? data.user.gender : undefined,
-        theme: (data.user.theme ?? (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')) as 'light' | 'dark',
-        progressMode:
-          data.user.progressMode === 'year'
-            ? 'year'
-            : data.user.progressMode === 'month' || data.user.progressMode === 'week'
-              ? 'month'
-              : undefined,
-        mbMode: !!data.user.mbMode,
-      });
+      enterSession({ token: data.token, user: { ...data.user, avatar: savedAvatar } });
     } catch (err: any) {
       const msg = err?.message || 'Error al completar el registro';
       setError(msg);
     } finally {
+      completingRef.current = false;
       setIsLoading(false);
     }
   };
@@ -516,7 +627,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
 
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
           <Card padding="xl" rounded="2xl" className="shadow-sm bg-white dark:bg-slate-950 border border-slate-100 dark:border-slate-800">
-            {mode !== 'complete' && (
+            {mode !== 'complete' && !mode.startsWith('forgot') && (
               <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl mb-6">
                 <button
                   type="button"
@@ -598,6 +709,139 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
                 <Button type="submit" className="w-full" size="lg" disabled={isLoading}>
                   {isLoading ? 'Entrando…' : 'Entrar'}
                 </Button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode('forgot-email');
+                    setError('');
+                    setResetCode('');
+                    setPassword('');
+                    setConfirmPassword('');
+                    if (username.includes('@')) setEmail(username);
+                  }}
+                  className="w-full text-center text-sm font-semibold text-indigo-600 hover:opacity-80 dark:text-indigo-400"
+                >
+                  ¿Has olvidado tu contraseña?
+                </button>
+              </form>
+            ) : mode === 'forgot-email' ? (
+              <form onSubmit={handleForgotEmail} className="space-y-5">
+                <button type="button" onClick={backToLogin} className="flex items-center gap-2 text-sm font-bold text-indigo-600 dark:text-indigo-400">
+                  <ArrowLeft size={16} />
+                  Volver a entrar
+                </button>
+                <p className="text-sm font-medium text-slate-600 dark:text-slate-300">
+                  Escribe el correo de tu cuenta. Te enviaremos un código de 6 dígitos.
+                </p>
+                <Input
+                  label="Correo"
+                  placeholder="tu@email.com"
+                  type="text"
+                  required
+                  autoFocus
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  onBlur={() => setEmail((prev) => normalizeEmail(prev))}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  icon={<Mail size={18} />}
+                />
+                {error && (
+                  <p role="alert" className="rounded-xl bg-rose-50 px-3 py-2.5 text-sm font-medium text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">
+                    {error}
+                  </p>
+                )}
+                <Button type="submit" className="w-full" size="lg" disabled={isLoading}>
+                  {isLoading ? 'Enviando…' : 'Enviar código'}
+                </Button>
+              </form>
+            ) : mode === 'forgot-code' ? (
+              <form onSubmit={handleForgotCode} className="space-y-5">
+                <button type="button" onClick={() => { setMode('forgot-email'); setError(''); }} className="flex items-center gap-2 text-sm font-bold text-indigo-600 dark:text-indigo-400">
+                  <ArrowLeft size={16} />
+                  Cambiar correo
+                </button>
+                <p className="text-sm font-medium text-slate-600 dark:text-slate-300">
+                  Revisa el correo e introduce el código de 6 dígitos.
+                </p>
+                <Input
+                  label="Correo"
+                  type="text"
+                  value={resetEmail || email}
+                  readOnly
+                  className="bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
+                  icon={<Mail size={18} />}
+                />
+                <Input
+                  label="Código"
+                  placeholder="000000"
+                  type="text"
+                  inputMode="numeric"
+                  required
+                  autoFocus
+                  value={resetCode}
+                  onChange={(e) => setResetCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  autoComplete="one-time-code"
+                  icon={<Lock size={18} />}
+                />
+                {error && (
+                  <p role="alert" className="rounded-xl bg-rose-50 px-3 py-2.5 text-sm font-medium text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">
+                    {error}
+                  </p>
+                )}
+                <Button type="submit" className="w-full" size="lg" disabled={isLoading}>
+                  {isLoading ? 'Comprobando…' : 'Continuar'}
+                </Button>
+              </form>
+            ) : mode === 'forgot-password' ? (
+              <form onSubmit={handleResetPassword} className="space-y-5">
+                <button type="button" onClick={() => { setMode('forgot-code'); setError(''); }} className="flex items-center gap-2 text-sm font-bold text-indigo-600 dark:text-indigo-400">
+                  <ArrowLeft size={16} />
+                  Volver al código
+                </button>
+                <p className="text-sm font-medium text-slate-600 dark:text-slate-300">
+                  Elige una contraseña nueva. Entrarás automáticamente.
+                </p>
+                <Input
+                  label="Nueva contraseña"
+                  placeholder="••••••••"
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  autoFocus
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="new-password"
+                  icon={<Lock size={18} />}
+                  trailing={
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((v) => !v)}
+                      className="rounded-xl p-2 text-slate-400 transition-colors hover:text-indigo-600 dark:hover:text-indigo-400"
+                      aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                    >
+                      {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                    </button>
+                  }
+                />
+                <Input
+                  label="Repite la contraseña"
+                  placeholder="••••••••"
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  autoComplete="new-password"
+                  icon={<Lock size={18} />}
+                />
+                {error && (
+                  <p role="alert" className="rounded-xl bg-rose-50 px-3 py-2.5 text-sm font-medium text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">
+                    {error}
+                  </p>
+                )}
+                <Button type="submit" className="w-full" size="lg" disabled={isLoading}>
+                  {isLoading ? 'Guardando…' : 'Cambiar e entrar'}
+                </Button>
               </form>
             ) : mode === 'register' ? (
               registerStep === 'email' ? (
@@ -672,7 +916,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
             ) : (
               <form onSubmit={handleCompleteRegistration} className="space-y-5">
                 <p className="text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider">
-                  Completa tu registro en la app
+                  Completa tu cuenta
                 </p>
                 <div className="flex flex-col items-center gap-2">
                   <button

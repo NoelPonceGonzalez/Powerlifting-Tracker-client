@@ -55,10 +55,23 @@ export function registerServiceWorker(): void {
   // nada que recargar, solo interesa cuando una versión nueva releva a la anterior.
   const hadController = !!navigator.serviceWorker.controller;
   let reloading = false;
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (!hadController || reloading) return;
+  const reloadWhenSafe = () => {
+    if (reloading) return;
     reloading = true;
     window.location.reload();
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloading) return;
+    if (document.visibilityState === 'hidden') {
+      const onBack = () => {
+        if (document.visibilityState !== 'visible') return;
+        document.removeEventListener('visibilitychange', onBack);
+        reloadWhenSafe();
+      };
+      document.addEventListener('visibilitychange', onBack);
+      return;
+    }
+    reloadWhenSafe();
   });
 
   if (document.readyState === 'complete') void register();

@@ -1,4 +1,4 @@
-import { apiUpload, mediaUrl } from '@/src/lib/api';
+import { apiUpload, getApiBaseUrl, mediaUrl } from '@/src/lib/api';
 
 const FAKE_AVATAR = /picsum\.photos|ui-avatars\.com|pravatar\.cc|randomuser\.me/i;
 
@@ -10,14 +10,11 @@ export function avatarInitial(name?: string | null): string {
 export function resolveAvatarUrl(avatar?: string | null): string | null {
   const raw = (avatar || '').trim();
   if (!raw || FAKE_AVATAR.test(raw)) return null;
-  if (
-    raw.startsWith('http://') ||
-    raw.startsWith('https://') ||
-    raw.startsWith('data:') ||
-    raw.startsWith('blob:') ||
-    raw.startsWith('/')
-  ) {
-    return raw;
+  if (raw.startsWith('data:') || raw.startsWith('blob:')) return raw;
+  if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
+  if (raw.startsWith('/')) {
+    const origin = getApiBaseUrl().replace(/\/$/, '');
+    return origin ? `${origin}${raw}` : raw;
   }
   return mediaUrl(raw);
 }

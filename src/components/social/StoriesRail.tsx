@@ -21,24 +21,6 @@ function groupUnseen(group: StoryGroup) {
   return group.items.some(s => !s.viewedByMe);
 }
 
-function ringStyle(items: Array<{ viewedByMe?: boolean }>, forceUnseen: boolean): React.CSSProperties | undefined {
-  const n = Math.max(1, items.length);
-  if (n <= 1) return undefined;
-  const gap = 10;
-  const sweep = (360 - n * gap) / n;
-  const parts: string[] = [];
-  let a = -90;
-  for (let i = 0; i < n; i++) {
-    const fresh = forceUnseen || !items[i]?.viewedByMe;
-    const on = fresh ? '#f43f5e' : '#94a3b8';
-    parts.push(`${on} ${a}deg ${a + sweep}deg`);
-    a += sweep;
-    parts.push(`transparent ${a}deg ${a + gap}deg`);
-    a += gap;
-  }
-  return { background: `conic-gradient(from -90deg, ${parts.join(', ')})` };
-}
-
 function Bubble({
   name,
   avatar,
@@ -58,18 +40,16 @@ function Bubble({
   onClick: () => void;
   onAdd?: () => void;
 }) {
-  const multi = items.length > 1;
+  const hasStory = items.length > 0;
   return (
     <button type="button" onClick={onClick} className="w-[4.6rem] shrink-0 text-center">
       <span
         className={cn(
-          'mx-auto flex h-[4.35rem] w-[4.35rem] items-center justify-center rounded-full p-[3px]',
-          !multi && (unseen
-            ? 'bg-gradient-to-tr from-amber-400 via-rose-500 to-fuchsia-600'
-            : 'bg-slate-200 dark:bg-slate-700'),
-          !unseen && items.length > 0 && 'opacity-70'
+          'mx-auto flex h-[4.35rem] w-[4.35rem] items-center justify-center rounded-full',
+          hasStory ? 'p-[3px]' : 'p-0',
+          hasStory && unseen && 'bg-gradient-to-tr from-amber-400 via-rose-500 to-fuchsia-600',
+          hasStory && !unseen && 'bg-slate-200 opacity-70 dark:bg-slate-700'
         )}
-        style={ringStyle(items, false)}
       >
         <span className="relative block h-full w-full rounded-full bg-[var(--app-bg)] p-[2px]">
           <Avatar src={avatar} name={avatarName || name} className="h-full w-full rounded-full" />

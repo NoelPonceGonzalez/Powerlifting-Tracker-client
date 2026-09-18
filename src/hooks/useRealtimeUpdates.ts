@@ -2,7 +2,6 @@ import { useEffect, useRef, useCallback } from 'react';
 import { getApiBaseUrl } from '@/src/lib/api';
 import { emitChatRealtime, setRealtimeOpen, type ChatRealtimeEvent } from '@/src/lib/chatRealtime';
 import { emitSocialRealtime } from '@/src/lib/socialRealtime';
-import { showLocalNotification } from '@/src/pwa/notifications';
 
 export type SseEventType =
   | 'social_update'
@@ -122,36 +121,12 @@ export function useRealtimeUpdates(
           case 'social_update':
             emitSocialRealtime(data);
             throttleCall(lastSocialAt.current, optionsRef.current.onSocialUpdate);
-            if (document.hidden) {
-              void showLocalNotification('Nueva actividad', 'Tienes avisos en Social', {
-                screen: 'social',
-                tab: 'chat',
-                url: '/?pwa=social&tab=chat',
-                tag: 'social_update',
-              });
-            }
             break;
           case 'checkin_update':
             throttleCall(lastCheckinAt.current, optionsRef.current.onCheckinUpdate);
-            if (document.hidden) {
-              void showLocalNotification('Alguien está en el gym', 'Mira quién entrena ahora', {
-                screen: 'social',
-                tab: 'checkins',
-                url: '/?pwa=social&tab=checkins',
-                tag: 'checkin_update',
-              });
-            }
             break;
           case 'challenge_update':
             throttleCall(lastChallengeAt.current, optionsRef.current.onChallengeUpdate);
-            if (document.hidden) {
-              void showLocalNotification('Torneos', 'Hay movimiento en un torneo', {
-                screen: 'social',
-                tab: 'challenges',
-                url: '/?pwa=social&tab=challenges',
-                tag: 'challenge_update',
-              });
-            }
             break;
           case 'routine_update':
             throttleCall(lastRoutineAt.current, optionsRef.current.onRoutineUpdate);
@@ -159,13 +134,6 @@ export function useRealtimeUpdates(
           case 'chat_message': {
             const chat = data as ChatRealtimeEvent;
             emitChatRealtime(chat);
-            if (document.hidden && chat.type === 'chat_message' && chat.message && !chat.message.mine) {
-              void showLocalNotification(
-                chat.message.author?.name || 'Nuevo mensaje',
-                chat.message.text || 'Te han escrito en el chat',
-                { screen: 'social', tab: 'chat', url: '/?pwa=social&tab=chat', tag: 'chat_message' }
-              );
-            }
             break;
           }
           case 'chat_typing':

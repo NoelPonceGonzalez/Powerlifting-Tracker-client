@@ -29,7 +29,8 @@ export const Avatar: React.FC<AvatarProps> = ({ src, name, fallback, className, 
           {...props}
           src={resolved}
           alt={alt ?? name ?? 'Avatar'}
-          className="absolute inset-0 h-full w-full min-h-0 min-w-0 object-cover object-center"
+          className="absolute inset-0 block h-full w-full min-h-0 min-w-0 object-cover object-center"
+          style={{ objectFit: 'cover', objectPosition: 'center' }}
           referrerPolicy="no-referrer"
           onError={(e) => {
             setBroken(true);

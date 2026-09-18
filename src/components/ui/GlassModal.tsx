@@ -25,6 +25,8 @@ interface GlassModalProps {
   sheet?: boolean;
   /** Tarjeta flotante centrada también en móvil (perfil de amigo). */
   center?: boolean;
+  /** Cristal oscuro como las vistas de una historia. */
+  frost?: boolean;
 }
 
 /**
@@ -45,6 +47,7 @@ export function GlassModal({
   rise: _rise = false,
   sheet = false,
   center = false,
+  frost = false,
 }: GlassModalProps) {
   useEscapeClose(open && !persist, onClose);
 
@@ -82,7 +85,10 @@ export function GlassModal({
             exit={{ opacity: 0 }}
             transition={SCREEN_TRANSITION}
             onClick={persist ? undefined : onClose}
-            className="fixed inset-0 min-h-[100dvh] bg-slate-900/25 backdrop-blur-md dark:bg-black/45"
+            className={cn(
+              'fixed inset-0 min-h-[100dvh]',
+              frost ? 'bg-black/20 backdrop-blur-[2px]' : 'bg-slate-900/25 backdrop-blur-md dark:bg-black/45'
+            )}
           />
           <motion.div
             initial={center ? SLIME_CARD_IN : SLIME_SHEET_IN}
@@ -91,7 +97,10 @@ export function GlassModal({
             transition={STICKY}
             onClick={e => e.stopPropagation()}
             className={cn(
-              'relative z-10 flex w-full flex-col overflow-hidden border border-white/50 bg-white/70 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl dark:border-white/10 dark:bg-slate-900/65',
+              'relative z-10 flex w-full flex-col overflow-hidden backdrop-blur-2xl',
+              frost
+                ? 'border border-white/15 bg-black/35 shadow-[0_16px_48px_rgba(0,0,0,0.28)]'
+                : 'border border-white/50 bg-white/70 shadow-2xl shadow-slate-900/10 dark:border-white/10 dark:bg-slate-900/65',
               center
                 ? 'max-h-[min(88dvh,calc(100dvh-1.5rem-env(safe-area-inset-top)-env(safe-area-inset-bottom)))] w-[min(100%,22rem)] rounded-[28px] sm:w-full sm:max-w-sm'
                 : 'rounded-t-[28px] sm:rounded-[28px]',
@@ -103,18 +112,34 @@ export function GlassModal({
             )}
           >
             {(title || subtitle) && (
-              <div className="sticky top-0 z-10 flex shrink-0 items-center justify-between gap-3 border-b border-white/40 bg-white/40 px-4 py-3 backdrop-blur-xl dark:border-white/10 dark:bg-slate-900/40">
+              <div
+                className={cn(
+                  'sticky top-0 z-10 flex shrink-0 items-center justify-between gap-3 border-b px-4 py-3 backdrop-blur-xl',
+                  frost
+                    ? 'border-white/10 bg-black/20'
+                    : 'border-white/40 bg-white/40 dark:border-white/10 dark:bg-slate-900/40'
+                )}
+              >
                 <div className="min-w-0">
                   {title && (
-                    <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{title}</p>
+                    <p className={cn('truncate text-sm font-semibold', frost ? 'text-white' : 'text-slate-900 dark:text-slate-100')}>
+                      {title}
+                    </p>
                   )}
-                  {subtitle && <p className="truncate text-[11px] text-slate-500">{subtitle}</p>}
+                  {subtitle && (
+                    <p className={cn('truncate text-[11px]', frost ? 'text-white/55' : 'text-slate-500')}>{subtitle}</p>
+                  )}
                 </div>
                 <button
                   type="button"
                   onClick={onClose}
                   disabled={persist}
-                  className="app-icon-hit rounded-full text-slate-400 hover:bg-white/60 disabled:opacity-40 dark:hover:bg-white/10"
+                  className={cn(
+                    'app-icon-hit rounded-full disabled:opacity-40',
+                    frost
+                      ? 'bg-white/10 text-white/80 backdrop-blur-md'
+                      : 'text-slate-400 hover:bg-white/60 dark:hover:bg-white/10'
+                  )}
                   aria-label="Cerrar"
                 >
                   <X size={18} />
@@ -126,7 +151,10 @@ export function GlassModal({
             </div>
             {footer && (
               <div className={cn(
-                'shrink-0 border-t border-white/40 bg-white/50 px-4 py-3 backdrop-blur-xl dark:border-white/10 dark:bg-slate-900/50',
+                'shrink-0 border-t px-4 py-3 backdrop-blur-xl',
+                frost
+                  ? 'border-white/10 bg-black/20'
+                  : 'border-white/40 bg-white/50 dark:border-white/10 dark:bg-slate-900/50',
                 center ? 'pb-3' : 'pb-[max(0.75rem,env(safe-area-inset-bottom))]'
               )}>
                 {footer}

@@ -21,7 +21,7 @@ export default defineConfig(() => {
       // `strictPort` evita que arranque en otro sin avisar y acabes mirando otra app.
       port: 5180,
       strictPort: true,
-      // La UI corre en :5173 y la API en :3000; sin proxy el login pega a /health aquí y devuelve 404.
+      // La UI corre en :5180 y la API en :3000; sin proxy el login pega a /health aquí y devuelve 404.
       // SSE no puede tener timeout: si el proxy cierra el stream, Vite llena la consola de ECONNRESET.
       proxy: {
         '/api/sse': {

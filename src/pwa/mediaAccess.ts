@@ -59,6 +59,19 @@ export function consumePrimedStoryCamera(): MediaStream | null {
   return stream;
 }
 
+export function releasePrimedStoryCamera(): void {
+  primedStoryStream?.getTracks().forEach(t => t.stop());
+  primedStoryStream = null;
+}
+
+if (typeof document !== 'undefined') {
+  const dropPrime = () => {
+    if (document.visibilityState === 'hidden') releasePrimedStoryCamera();
+  };
+  document.addEventListener('visibilitychange', dropPrime);
+  window.addEventListener('pagehide', () => releasePrimedStoryCamera());
+}
+
 /**
  * Pide cámara (y micrófono si se puede). Hay que llamarlo desde un clic.
  * Corta el stream al instante: solo sirve para dejar el permiso concedido.

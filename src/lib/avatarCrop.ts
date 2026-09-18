@@ -1,8 +1,12 @@
-/** Igual que el encuadre de la historia: caber dentro + blur detrás. */
-export const AVATAR_CROP_MIN_SCALE = 0.35;
+/** Encuadre tipo cover: la foto llena el recuadro sin deformarse. */
+export const AVATAR_CROP_MIN_SCALE = 1;
 export const AVATAR_CROP_MAX_SCALE = 4;
 
-/** JPEG del recuadro: fondo desenfocado y la foto encima, como en historias. */
+export function coverFit(nw: number, nh: number, box: number): number {
+  return Math.max(box / Math.max(1, nw), box / Math.max(1, nh));
+}
+
+/** JPEG cuadrado recortado en cover: misma vista que el círculo del editor. */
 export function exportFramedAvatar(
   img: HTMLImageElement,
   scale: number,
@@ -19,23 +23,19 @@ export function exportFramedAvatar(
   const ctx = canvas.getContext('2d');
   if (!ctx) return '';
 
-  const cover = Math.max(outputSize / nw, outputSize / nh);
-  ctx.filter = 'blur(36px)';
-  ctx.drawImage(img, (outputSize - nw * cover) / 2, (outputSize - nh * cover) / 2, nw * cover, nh * cover);
-  ctx.filter = 'none';
-  ctx.fillStyle = 'rgba(0,0,0,0.18)';
-  ctx.fillRect(0, 0, outputSize, outputSize);
-
-  const fit = Math.min(view / nw, view / nh);
+  const zoom = Math.max(AVATAR_CROP_MIN_SCALE, Math.min(AVATAR_CROP_MAX_SCALE, scale));
+  const cover = coverFit(nw, nh, view) * zoom;
   const ratio = outputSize / view;
-  ctx.save();
-  ctx.translate(outputSize / 2 + pos.x * ratio, outputSize / 2 + pos.y * ratio);
-  ctx.scale(scale, scale);
-  const dw = nw * fit * ratio;
-  const dh = nh * fit * ratio;
-  ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
-  ctx.restore();
-  return canvas.toDataURL('image/jpeg', 0.9);
+  const dw = nw * cover * ratio;
+  const dh = nh * cover * ratio;
+  ctx.drawImage(
+    img,
+    outputSize / 2 + pos.x * ratio - dw / 2,
+    outputSize / 2 + pos.y * ratio - dh / 2,
+    dw,
+    dh
+  );
+  return canvas.toDataURL('image/jpeg', 0.92);
 }
 
 /** Baja fotos enormes antes de recortar para que el gesto no vaya a tirones. */

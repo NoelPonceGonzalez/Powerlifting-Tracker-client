@@ -294,6 +294,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
   fileRef.current = file;
 
   const stopStream = useCallback(() => {
+    camGen.current += 1;
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
@@ -301,14 +302,27 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
   }, []);
 
   const startStream = useCallback(async (mode: 'user' | 'environment') => {
+    const gen = ++camGen.current;
     setCamError(false);
     setCamDenied(false);
+    setCamReady(false);
+    const stale = () => camGen.current !== gen;
+    const drop = (stream: MediaStream) => stream.getTracks().forEach(t => t.stop());
     const attach = async (stream: MediaStream) => {
+      if (stale()) {
+        drop(stream);
+        return false;
+      }
       if (streamRef.current && streamRef.current !== stream) {
         streamRef.current.getTracks().forEach(t => t.stop());
       }
       streamRef.current = stream;
       if (!videoRef.current) await new Promise(r => requestAnimationFrame(r));
+      if (stale()) {
+        drop(stream);
+        if (streamRef.current === stream) streamRef.current = null;
+        return false;
+      }
       const video = videoRef.current;
       if (video) {
         video.srcObject = stream;
@@ -316,16 +330,21 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
         video.setAttribute('playsinline', 'true');
         await video.play().catch(() => {});
       }
+      if (stale()) {
+        drop(stream);
+        if (streamRef.current === stream) streamRef.current = null;
+        return false;
+      }
       setCamReady(true);
       setCamError(false);
+      return true;
     };
     const primed = consumePrimedStoryCamera();
     if (primed) {
-      await attach(primed);
-      return;
+      if (await attach(primed)) return;
     }
     if (!navigator.mediaDevices?.getUserMedia) {
-      setCamError(true);
+      if (!stale()) setCamError(true);
       return;
     }
     const tries: MediaStreamConstraints[] = [
@@ -336,15 +355,17 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     let denied = false;
     for (const cons of tries) {
       try {
-        await attach(await navigator.mediaDevices.getUserMedia(cons));
-        return;
+        if (stale()) return;
+        if (await attach(await navigator.mediaDevices.getUserMedia(cons))) return;
       } catch (err) {
         const name = err instanceof DOMException ? err.name : '';
         if (name === 'NotAllowedError' || name === 'PermissionDeniedError') denied = true;
       }
     }
-    setCamDenied(denied);
-    setCamError(true);
+    if (!stale()) {
+      setCamDenied(denied);
+      setCamError(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -362,13 +383,13 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
 
   useEffect(() => {
     if (!open || file || justPublished) return;
-    const id = ++camGen.current;
     void startStream(facing);
     return () => {
       if (holdTimer.current != null) window.clearTimeout(holdTimer.current);
       if (recorderRef.current && recorderRef.current.state !== 'inactive') {
         try { recorderRef.current.stop(); } catch { /* ignore */ }
       }
+      const id = camGen.current;
       window.setTimeout(() => {
         if (camGen.current === id) stopStream();
       }, 160);
@@ -400,6 +421,43 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     previewUrlRef.current = url;
     setPreviewUrl(url);
   }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const resume = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (fileRef.current) {
+        revivePreview();
+        return;
+      }
+      if (justPublished) return;
+      const live = streamRef.current?.getVideoTracks().some(t => t.readyState === 'live');
+      if (!live) void startStream(facing);
+      else if (videoRef.current && videoRef.current.paused) {
+        void videoRef.current.play().catch(() => { void startStream(facing); });
+      }
+    };
+    const park = () => {
+      if (recorderRef.current && recorderRef.current.state !== 'inactive') {
+        try { recorderRef.current.stop(); } catch { /* ignore */ }
+      }
+      if (!fileRef.current) stopStream();
+    };
+    const onVis = () => {
+      if (document.visibilityState === 'hidden') park();
+      else resume();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('pageshow', resume);
+    window.addEventListener('focus', resume);
+    window.addEventListener('pagehide', park);
+    return () => {
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('pageshow', resume);
+      window.removeEventListener('focus', resume);
+      window.removeEventListener('pagehide', park);
+    };
+  }, [open, facing, startStream, stopStream, justPublished, revivePreview]);
 
   useEffect(() => {
     if (open) return;
@@ -530,7 +588,11 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
 
   const takePhoto = () => {
     const video = videoRef.current;
-    if (!video || !video.videoWidth) return;
+    if (!video || !video.videoWidth) {
+      setError('La cámara aún no está lista. Espera un segundo o pulsa para reintentar.');
+      void startStream(facing);
+      return;
+    }
     const canvas = document.createElement('canvas');
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
@@ -551,7 +613,12 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     const stream = streamRef.current;
     if (!stream || typeof MediaRecorder === 'undefined') return;
     if (stream.getAudioTracks().length === 0) {
+      const gen = camGen.current;
       void navigator.mediaDevices?.getUserMedia({ audio: true, video: false }).then(mic => {
+        if (camGen.current !== gen || streamRef.current !== stream) {
+          mic.getTracks().forEach(t => t.stop());
+          return;
+        }
         mic.getAudioTracks().forEach(t => stream.addTrack(t));
       }).catch(() => {});
     }
@@ -926,8 +993,10 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
         accept={avatarOnly ? 'image/*' : 'image/*,video/*'}
         className="hidden"
         onChange={e => {
-          acceptFile(e.target.files?.[0] ?? null);
+          const picked = e.target.files?.[0] ?? null;
+          acceptFile(picked);
           e.target.value = '';
+          if (!picked && !fileRef.current) void startStream(facing);
         }}
       />
       {!file && !justPublished && (
@@ -942,9 +1011,25 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
               facing === 'user' && 'scale-x-[-1]'
             )}
           />
-          {!camReady && (
+          {!camReady && !camError && (
             <div className="absolute inset-0 flex items-center justify-center">
               <Loader2 size={28} className="animate-spin text-white/50" />
+            </div>
+          )}
+          {camError && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center">
+              <p className="text-sm font-semibold text-white/80">
+                {camDenied
+                  ? 'Sin permiso de cámara. Actívalo en el navegador y reintenta.'
+                  : 'No se ha podido abrir la cámara.'}
+              </p>
+              <button
+                type="button"
+                onClick={() => void startStream(facing)}
+                className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-900"
+              >
+                Reintentar
+              </button>
             </div>
           )}
         </>

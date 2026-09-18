@@ -11,7 +11,7 @@ exactamente las mismas (mismo `src`, mismo backend); lo que se añade aquí es l
 
 ```bash
 npm install
-npm run dev        # http://localhost:5173 (API en http://localhost:3000)
+npm run dev        # http://localhost:5180 (API en http://localhost:3000)
 ```
 
 El backend es el mismo de siempre: `Powerlifting-APP/server`. En desarrollo la app llama a

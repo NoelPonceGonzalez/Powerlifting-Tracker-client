@@ -236,6 +236,26 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
   }, [paused, insights, leaving, askDelete, item?.id, item?.mediaType]);
 
   useEffect(() => {
+    const onVis = () => {
+      const video = videoRef.current;
+      if (document.visibilityState === 'hidden') {
+        setPaused(true);
+        video?.pause();
+        return;
+      }
+      if (!insights && !leaving && !askDelete) {
+        setPaused(false);
+        if (video && item?.mediaType === 'video') {
+          if (video.readyState < 2) video.load();
+          void video.play().catch(() => {});
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [askDelete, insights, item?.mediaType, leaving]);
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'ArrowRight') {
         e.preventDefault();
@@ -546,6 +566,9 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
                   if (e.currentTarget.readyState >= 2) markReady(item.id);
                 }}
                 onEnded={() => { if (!paused && !insights && !leaving) finishForward(); }}
+                onError={() => {
+                  if (loadGen < 2) setLoadGen(g => g + 1);
+                }}
               />
             ) : (
               <img

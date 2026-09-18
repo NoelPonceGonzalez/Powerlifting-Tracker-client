@@ -14,6 +14,7 @@ import { TrainingPlanView } from '@/src/views/TrainingPlan';
 import { RoutineManagerView } from '@/src/views/RoutineManager';
 import { SocialView } from '@/src/views/Social';
 import { normalizeSocialTab, type SocialTab } from '@/src/lib/socialTab';
+import { clearSavedAppNav, navFromLaunchUrl, readSavedAppNav, writeSavedAppNav } from '@/src/lib/appNavState';
 import { ProfileView } from '@/src/views/Profile';
 
 // Components
@@ -551,13 +552,16 @@ const createRoutinePlan = (id: string, name: string, options?: boolean | CreateR
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isCheckingSession, setIsCheckingSession] = useState(true);
-  const [view, setView] = useState<ViewType>('dashboard');
+  const [view, setView] = useState<ViewType>(() => navFromLaunchUrl()?.view || readSavedAppNav()?.view || 'dashboard');
   /** Una vez visitada, la pantalla se queda montada: al volver no se recarga de cero. */
-  const [aliveViews, setAliveViews] = useState<Record<ViewType, boolean>>({
-    dashboard: true,
-    program: false,
-    social: false,
-    settings: false,
+  const [aliveViews, setAliveViews] = useState<Record<ViewType, boolean>>(() => {
+    const current = navFromLaunchUrl()?.view || readSavedAppNav()?.view || 'dashboard';
+    return {
+      dashboard: true,
+      program: current === 'program',
+      social: current === 'social',
+      settings: current === 'settings',
+    };
   });
   useEffect(() => {
     setAliveViews((prev) => (prev[view] ? prev : { ...prev, [view]: true }));
@@ -588,7 +592,9 @@ export default function App() {
   activeRoutineIdRef.current = activeRoutineId;
   /** Clave anterior user::routine; el cleanup del efecto la actualiza para detectar solo cambio real de rutina/usuario. */
   const prevRoutineDataKeyRef = useRef('');
-  const [programScreen, setProgramScreen] = useState<'plan' | 'routines'>('plan');
+  const [programScreen, setProgramScreen] = useState<'plan' | 'routines'>(
+    () => navFromLaunchUrl()?.programScreen || readSavedAppNav()?.programScreen || 'plan'
+  );
   /** Tras crear una rutina con «tengo un documento»: abre el importador en el plan. */
   const [openImportAfterCreate, setOpenImportAfterCreate] = useState(0);
   const [openCreateRoutineSignal, setOpenCreateRoutineSignal] = useState(0);
@@ -597,8 +603,21 @@ export default function App() {
   const [friendsList, setFriendsList] = useState<Friend[]>([]);
   const [challenges, setChallenges] = useState<Challenge[]>([]);
   const [checkIns, setCheckIns] = useState<GymCheckIn[]>([]);
-  const [socialTab, setSocialTab] = useState<SocialTab>('chat');
-  const [socialFriendsFilter, setSocialFriendsFilter] = useState<'all' | 'following' | 'followers'>('all');
+  const [socialTab, setSocialTab] = useState<SocialTab>(
+    () => navFromLaunchUrl()?.socialTab || readSavedAppNav()?.socialTab || 'chat'
+  );
+  const [socialFriendsFilter, setSocialFriendsFilter] = useState<'all' | 'following' | 'followers'>(
+    () => navFromLaunchUrl()?.friendsFilter || readSavedAppNav()?.friendsFilter || 'all'
+  );
+  useEffect(() => {
+    if (!user) return;
+    writeSavedAppNav({
+      view,
+      socialTab,
+      programScreen,
+      friendsFilter: socialFriendsFilter,
+    });
+  }, [user?.id, view, socialTab, programScreen, socialFriendsFilter]);
   const [savedAccountsState, setSavedAccountsState] = useState<SavedAccount[]>(() => loadSavedAccounts());
   const [addAccountMode, setAddAccountMode] = useState(false);
   const [isSwitchingAccount, setIsSwitchingAccount] = useState(false);
@@ -1674,9 +1693,16 @@ export default function App() {
   };
 
   const handleAcceptFriend = async (id: string) => {
+    const req = friends.find(f => f.id === id);
     try {
-      await apiPut(`/api/social/requests/${id}/accept`, {});
+      const res = await apiPut<{ friend?: Friend }>(`/api/social/requests/${id}/accept`, {});
       setFriends(prev => prev.filter(f => f.id !== id));
+      const friend = res?.friend || (req
+        ? { id: req.userId || req.id, name: req.name, avatar: req.avatar }
+        : null);
+      if (friend?.id && friend.id !== user?.id) {
+        setFriendsList(prev => (prev.some(f => f.id === friend.id) ? prev : [friend, ...prev]));
+      }
       const [friendsRes, requestsRes] = await Promise.all([
         apiGet<Friend[]>('/api/social/friends'),
         apiGet<FriendRequest[]>('/api/social/requests'),
@@ -1850,23 +1876,6 @@ export default function App() {
     };
 
     upsertLocalDailyCheckIn(myCheckIn);
-
-    // Notificación in-app (compatible con móvil vía WebView).
-
-    // Intentar notificación del sistema si está disponible.
-    try {
-      if (typeof window !== 'undefined' && 'Notification' in window) {
-        if (Notification.permission === 'granted') {
-          new Notification('Powerlifting Tracker', {
-            body: `Confirmaste que vas con ${friendCheckIn.userName} a las ${friendCheckIn.time}`,
-          });
-        } else if (Notification.permission !== 'denied') {
-          await Notification.requestPermission();
-        }
-      }
-    } catch {
-      // Ignorar si el entorno no soporta notifications del sistema.
-    }
 
     // Enviar notificación al amigo en backend.
     try {
@@ -3237,6 +3246,7 @@ export default function App() {
     }
     setUser(userData);
     setView('dashboard');
+    writeSavedAppNav({ view: 'dashboard', socialTab: 'chat', programScreen: 'plan', friendsFilter: 'all' });
     setAddAccountMode(false);
   }, [user?.id]);
 
@@ -3358,6 +3368,7 @@ export default function App() {
     setActiveAccountId(null);
     localStorage.removeItem(AUTH_USER_STORAGE_KEY);
     setAddAccountMode(false);
+    clearSavedAppNav();
     setView('dashboard');
     setUser(null);
   }, [user?.id]);

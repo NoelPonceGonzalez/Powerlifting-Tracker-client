@@ -392,7 +392,16 @@ export function ChatPeoplePanel({
                   <AcceptRow
                     busy={busyId === req.id}
                     onReject={() => onReject(req.id)}
-                    onAccept={() => onAccept(req.id)}
+                    onAccept={() => {
+                      setHits(prev =>
+                        prev.map(h =>
+                          h.id === (req.userId || req.id)
+                            ? { ...h, friendshipStatus: 'accepted', friendshipDirection: null, canSendRequest: false }
+                            : h
+                        )
+                      );
+                      onAccept(req.id);
+                    }}
                   />
                 </div>
               ))}
@@ -497,7 +506,16 @@ export function ChatPeoplePanel({
                         <AcceptRow
                           busy={busyId === incomingReq.id}
                           onReject={() => onReject(incomingReq.id)}
-                          onAccept={() => onAccept(incomingReq.id)}
+                          onAccept={() => {
+                            setHits(prev =>
+                              prev.map(h =>
+                                h.id === u.id
+                                  ? { ...h, friendshipStatus: 'accepted', friendshipDirection: null, canSendRequest: false }
+                                  : h
+                              )
+                            );
+                            onAccept(incomingReq.id);
+                          }}
                         />
                       ) : incoming ? (
                         <span className="text-[12px] font-medium text-slate-400">Pendiente</span>

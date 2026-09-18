@@ -39,6 +39,8 @@ interface ProfileScreenProps {
   onBack?: () => void;
   onOpenRoutine?: () => void;
   onSendFriendRequest?: () => Promise<void> | void;
+  onAcceptFriend?: () => Promise<void> | void;
+  onRejectFriend?: () => Promise<void> | void;
   onOpenProfile?: (userId: string) => void;
   onOpenChat?: (userId: string) => void;
   onOpenFriends?: (filter?: 'all' | 'following' | 'followers') => void;
@@ -74,6 +76,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   onBack,
   onOpenRoutine,
   onSendFriendRequest,
+  onAcceptFriend,
+  onRejectFriend,
   onOpenProfile,
   onOpenChat,
   onOpenFriends,
@@ -388,9 +392,45 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                     </>
                   )}
                 </>
+              ) : profile.friendshipStatus === 'pending' && profile.friendshipDirection === 'incoming' ? (
+                <div className="flex flex-1 gap-2">
+                  {onRejectFriend && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await onRejectFriend();
+                        setProfile(prev =>
+                          prev
+                            ? { ...prev, friendshipStatus: 'none', friendshipDirection: null, canSendRequest: true, isFriend: false }
+                            : prev
+                        );
+                      }}
+                      className="flex-1 rounded-xl border-2 border-rose-200 py-2.5 text-xs font-black uppercase tracking-wider text-rose-500 dark:border-rose-900"
+                    >
+                      Rechazar
+                    </button>
+                  )}
+                  {onAcceptFriend && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await onAcceptFriend();
+                        setProfile(prev =>
+                          prev
+                            ? { ...prev, isFriend: true, friendshipStatus: 'accepted', friendshipDirection: null, canSendRequest: false }
+                            : prev
+                        );
+                      }}
+                      className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-emerald-500 py-2.5 text-xs font-black uppercase tracking-wider text-white"
+                    >
+                      <Check size={15} />
+                      Amigos
+                    </button>
+                  )}
+                </div>
               ) : profile.friendshipStatus === 'pending' || profile.friendshipStatus === 'following' || requestSent ? (
                 <span className="flex-1 rounded-xl bg-slate-100 py-2.5 text-center text-xs font-black uppercase tracking-wider text-slate-400 dark:bg-slate-800">
-                  Solicitud enviada
+                  {profile.friendshipStatus === 'following' ? 'Siguiendo' : 'Solicitud enviada'}
                 </span>
               ) : (
                 onSendFriendRequest && (
@@ -399,6 +439,11 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                     onClick={async () => {
                       await onSendFriendRequest();
                       setRequestSent(true);
+                      setProfile(prev =>
+                        prev
+                          ? { ...prev, friendshipStatus: 'pending', friendshipDirection: 'outgoing', canSendRequest: false }
+                          : prev
+                      );
                     }}
                     className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-indigo-600 py-2.5 text-xs font-black uppercase tracking-wider text-white"
                   >

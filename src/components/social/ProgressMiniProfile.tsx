@@ -3,6 +3,7 @@ import { Camera, Settings } from 'lucide-react';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { StoryCamera } from '@/src/components/social/StoryCamera';
 import { fetchProfile, saveBio } from '@/src/lib/feedApi';
+import { hasRealAvatar } from '@/src/lib/avatar';
 import { primeStoryCamera } from '@/src/pwa/mediaAccess';
 import type { User } from '@/src/types';
 
@@ -124,11 +125,16 @@ export function ProgressMiniProfile({
   aside,
 }: ProgressMiniProfileProps) {
   const [camOpen, setCamOpen] = useState(false);
+  const [face, setFace] = useState(user.avatar || '');
   const [marcas, setMarcas] = useState(marcaCount);
 
   useEffect(() => {
     setMarcas(marcaCount);
   }, [marcaCount]);
+
+  useEffect(() => {
+    setFace(user.avatar || '');
+  }, [user.avatar]);
   const [following, setFollowing] = useState(friendCount);
   const [followers, setFollowers] = useState(friendCount);
   const [bio, setBio] = useState('');
@@ -146,6 +152,10 @@ export function ProgressMiniProfile({
         setFollowers(p.followerCount);
         setBio(p.bio || '');
         setSavedBio(p.bio || '');
+        if (hasRealAvatar(p.avatar)) {
+          setFace(p.avatar || '');
+          if (p.avatar && p.avatar !== user.avatar) onUpdateUser?.({ avatar: p.avatar });
+        }
       })
       .catch(() => {});
     return () => {
@@ -205,7 +215,7 @@ export function ProgressMiniProfile({
             aria-label="Cambiar foto de perfil"
           >
             <Avatar
-              src={user.avatar}
+              src={face || user.avatar}
               name={user.name}
               className="h-16 w-16 rounded-full ring-2 ring-slate-200/80 dark:ring-slate-700 max-[360px]:h-14 max-[360px]:w-14 sm:h-[84px] sm:w-[84px]"
             />

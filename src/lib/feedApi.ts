@@ -58,6 +58,7 @@ export interface PublicProfile {
   isSelf: boolean;
   isFriend: boolean;
   friendshipStatus: 'self' | 'accepted' | 'pending' | 'rejected' | 'none' | 'follower' | 'following';
+  friendshipDirection?: 'incoming' | 'outgoing' | null;
   canSendRequest?: boolean;
   postCount: number;
   friendCount: number;
@@ -250,6 +251,14 @@ export interface ChatLine {
 
 export function fetchChats() {
   return apiGet<{ threads: ChatThread[] }>('/api/social/chats');
+}
+
+export function markChatRead(peerId: string) {
+  return apiPost<{ ok: true }>(`/api/social/chats/${peerId}/read`, {});
+}
+
+export function markGroupRead(groupId: string) {
+  return apiPost<{ ok: true }>(`/api/social/chats/groups/${groupId}/read`, {});
 }
 
 export function fetchChatMessages(peerId: string) {

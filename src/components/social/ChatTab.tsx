@@ -23,6 +23,8 @@ import {
   fetchChatMessages,
   fetchChats,
   fetchGroupMessages,
+  markChatRead,
+  markGroupRead,
   fetchOwnProfile,
   fetchProfile,
   removeChatGroupMember,
@@ -113,6 +115,7 @@ function inboxPreview(text?: string): string {
 
 function InboxRow({
   row,
+  photo,
   onOpen,
   highlighted,
   onLongPress,
@@ -123,6 +126,7 @@ function InboxRow({
   onDelete,
 }: {
   row: ChatThread;
+  photo?: string | null;
   onOpen: () => void;
   highlighted?: boolean;
   onLongPress?: () => void;
@@ -233,7 +237,7 @@ function InboxRow({
             {row.group?.kind === 'team' ? <Dumbbell size={20} /> : <Users size={20} />}
           </span>
         ) : (
-          <Face name={row.peer!.name} avatar={row.peer!.avatar} size={52} online={row.peer!.online} />
+          <Face name={row.peer!.name} avatar={photo ?? row.peer!.avatar} size={52} online={row.peer!.online} />
         )}
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline justify-between gap-2">
@@ -404,6 +408,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({
     if (accountAvatar) setMyAvatar(accountAvatar);
   }, [accountAvatar]);
   const [open, setOpen] = useState<OpenChat | null>(null);
+  const openRef = useRef<OpenChat | null>(null);
+  const seenAtRef = useRef<Map<string, number>>(new Map());
+  openRef.current = open;
   const [messages, setMessages] = useState<ChatLine[]>([]);
   const [draft, setDraft] = useState('');
   const [loading, setLoading] = useState(true);
@@ -521,6 +528,17 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   }, [friends, coach, athletes, myId]);
 
   const friendIds = useMemo(() => new Set(people.map(p => p.id)), [people]);
+  const photoById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const person of people) {
+      if (person.avatar) map.set(person.id, person.avatar);
+    }
+    for (const friend of friends) {
+      if (friend.avatar && !map.has(friend.id)) map.set(friend.id, friend.avatar);
+    }
+    return map;
+  }, [people, friends]);
+  const photoOf = (id?: string, avatar?: string | null) => avatar || (id ? photoById.get(id) ?? null : null) || null;
   const panelFriendIds = useMemo(() => friends.map(f => f.id), [friends]);
 
   useEffect(() => {
@@ -544,13 +562,40 @@ export const ChatTab: React.FC<ChatTabProps> = ({
     return () => window.clearTimeout(t);
   }, [searchQ, myId, friendIds]);
 
+  const applyInbox = useCallback((incoming: ChatThread[]) => {
+    setThreads(
+      incoming.map(t => {
+        const key = threadKey(t);
+        const seenAt = seenAtRef.current.get(key);
+        if (!seenAt) return t;
+        const current = openRef.current;
+        const isOpen =
+          (current?.kind === 'dm' && key === `d:${current.peer.id}`) ||
+          (current?.kind === 'group' && key === `g:${current.group.id}`);
+        if (isOpen) return { ...t, unread: 0 };
+        const last = new Date(t.lastAt || 0).getTime();
+        if (t.unread > 0 && last > seenAt + 500) {
+          seenAtRef.current.delete(key);
+          return t;
+        }
+        return { ...t, unread: 0 };
+      })
+    );
+  }, []);
+
+  const markThreadRead = useCallback((key: string, persist?: Promise<unknown>) => {
+    seenAtRef.current.set(key, Date.now());
+    setThreads(prev => prev.map(t => (threadKey(t) === key ? { ...t, unread: 0 } : t)));
+    void persist?.catch(() => {});
+  }, []);
+
   const loadInbox = useCallback(async () => {
     try {
       const [inbox, me] = await Promise.all([
         fetchChats(),
         fetchOwnProfile().catch(() => null),
       ]);
-      setThreads(inbox.threads);
+      applyInbox(inbox.threads);
       setCoach(me?.coach ?? null);
       setAthletes(me?.athletes ?? []);
       setMyAvatar(me?.avatar || accountAvatar || null);
@@ -559,7 +604,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [accountAvatar, applyInbox]);
 
   useEffect(() => {
     if (!pageActive) return;
@@ -575,8 +620,14 @@ export const ChatTab: React.FC<ChatTabProps> = ({
     return () => window.clearInterval(id);
   }, [loadInbox, pageActive]);
 
+  const closeConversation = useCallback(() => {
+    setOpen(null);
+    void loadInbox();
+  }, [loadInbox]);
+
   const openDm = useCallback(async (author: FeedAuthor) => {
     setOpen({ kind: 'dm', peer: author });
+    markThreadRead(`d:${author.id}`, markChatRead(author.id));
     setActionRow(null);
     setPeopleOpen(false);
     setGroupPanel(false);
@@ -584,6 +635,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
     setTypingLabel('');
     try {
       const res = await fetchChatMessages(author.id);
+      markThreadRead(`d:${author.id}`);
       setMessages(res.messages);
       setWaitingPeer(!!res.waiting);
       setIncomingPeer(!!res.incoming);
@@ -595,10 +647,11 @@ export const ChatTab: React.FC<ChatTabProps> = ({
       setIncomingPeer(false);
       setIncomingRequestId(null);
     }
-  }, []);
+  }, [markThreadRead]);
 
   const openGroup = useCallback(async (group: ChatGroupCard) => {
     setOpen({ kind: 'group', group });
+    markThreadRead(`g:${group.id}`, markGroupRead(group.id));
     setActionRow(null);
     setPeopleOpen(false);
     setGroupPanel(false);
@@ -610,10 +663,11 @@ export const ChatTab: React.FC<ChatTabProps> = ({
       setOpen({ kind: 'group', group: res.group });
       setGroupNameDraft(res.group.name);
       setMessages(res.messages);
+      markThreadRead(`g:${group.id}`);
     } catch {
       setMessages([]);
     }
-  }, []);
+  }, [markThreadRead]);
 
   const startedFor = useRef<string | null>(null);
   useEffect(() => {
@@ -640,6 +694,19 @@ export const ChatTab: React.FC<ChatTabProps> = ({
       })
       .catch(() => {});
   }, [startWith, threads, friends, coach, openDm, onOpened]);
+
+  useEffect(() => {
+    if (!open || !pageActive) return;
+    const markOpen = () => {
+      if (open.kind === 'dm') markThreadRead(`d:${open.peer.id}`, markChatRead(open.peer.id));
+      else markThreadRead(`g:${open.group.id}`, markGroupRead(open.group.id));
+    };
+    const onVis = () => {
+      if (document.visibilityState === 'visible') markOpen();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [open, pageActive, markThreadRead]);
 
   useEffect(() => {
     if (!open || !pageActive) return;
@@ -681,6 +748,11 @@ export const ChatTab: React.FC<ChatTabProps> = ({
           if (prev.some(m => m.id === line.id)) return prev;
           return [...prev, line];
         });
+        if (open?.kind === 'dm' && event.peerId === open.peer.id) {
+          markThreadRead(`d:${open.peer.id}`, markChatRead(open.peer.id));
+        } else if (open?.kind === 'group' && event.groupId === open.group.id) {
+          markThreadRead(`g:${open.group.id}`, markGroupRead(open.group.id));
+        }
         void loadInbox();
         return;
       }
@@ -693,7 +765,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
         window.setTimeout(() => setTypingLabel(''), 3500);
       }
     });
-  }, [open, loadInbox]);
+  }, [open, loadInbox, markThreadRead]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -988,7 +1060,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
         <div className="flex items-center gap-2 border-b border-white/40 bg-white/70 px-3 py-3 pt-[max(0.75rem,env(safe-area-inset-top))] backdrop-blur-xl dark:border-white/10 dark:bg-slate-900/70 sm:gap-3 sm:px-4">
           <button
             type="button"
-            onClick={() => setOpen(null)}
+            onClick={closeConversation}
             className="app-icon-hit rounded-xl text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
             aria-label="Volver"
           >
@@ -1000,7 +1072,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
               onClick={() => onOpenMini?.(open.peer)}
               className="flex min-w-0 flex-1 items-center gap-3 text-left"
             >
-              <Face name={open.peer.name} avatar={open.peer.avatar} size={40} online={peerOnline} />
+              <Face name={open.peer.name} avatar={photoOf(open.peer.id, open.peer.avatar)} size={40} online={peerOnline} />
               <span className="min-w-0">
                 <span className="block truncate text-sm font-black text-slate-900 dark:text-slate-100">{title}</span>
                 <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">{subtitle}</span>
@@ -1447,6 +1519,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
               <InboxRow
                 key={threadKey(row)}
                 row={row}
+                photo={row.peer ? photoOf(row.peer.id, row.peer.avatar) : row.group?.members[0]?.avatar}
                 highlighted={!!actionRow && threadKey(actionRow) === threadKey(row)}
                 onLongPress={() => setActionRow(row)}
                 onDismiss={() => setActionRow(null)}
@@ -1510,7 +1583,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
             >
               <Face
                 name={row.kind === 'group' && row.group ? row.group.name : row.peer?.name || ''}
-                avatar={row.peer?.avatar ?? row.group?.members[0]?.avatar ?? null}
+                avatar={row.peer ? photoOf(row.peer.id, row.peer.avatar) : row.group?.members[0]?.avatar ?? null}
                 size={48}
               />
               <span className="min-w-0">
