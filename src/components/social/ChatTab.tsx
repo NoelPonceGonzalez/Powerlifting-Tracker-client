@@ -1361,7 +1361,8 @@ export const ChatTab: React.FC<ChatTabProps> = ({
             type="button"
             disabled={waitingPeer || incomingPeer}
             onClick={() => {
-              void primeStoryCamera().then(() => setCamOpen(true));
+              void primeStoryCamera();
+              setCamOpen(true);
             }}
             className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-slate-200 text-slate-500 disabled:opacity-30 dark:border-slate-700"
             aria-label="Cámara · toca foto, mantén para vídeo"

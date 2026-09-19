@@ -5,8 +5,27 @@ export type MediaPermissionState = 'unsupported' | 'prompt' | 'granted' | 'denie
 const CAMERA_OK_KEY = 'power_camera_ok';
 const GALLERY_OK_KEY = 'power_gallery_ok';
 
+/** iOS antiguo / WebView: mediaDevices a veces no existe aunque el gesto sí vale. */
+export function ensureMediaDevices(): MediaDevices | null {
+  if (typeof navigator === 'undefined') return null;
+  const nav = navigator as Navigator & {
+    webkitGetUserMedia?: (c: MediaStreamConstraints, ok: (s: MediaStream) => void, err: (e: Error) => void) => void;
+    mozGetUserMedia?: (c: MediaStreamConstraints, ok: (s: MediaStream) => void, err: (e: Error) => void) => void;
+  };
+  if (!nav.mediaDevices) {
+    (nav as unknown as { mediaDevices: MediaDevices }).mediaDevices = {} as MediaDevices;
+  }
+  if (!nav.mediaDevices.getUserMedia) {
+    const legacy = nav.webkitGetUserMedia || nav.mozGetUserMedia;
+    if (!legacy) return null;
+    nav.mediaDevices.getUserMedia = (constraints: MediaStreamConstraints) =>
+      new Promise((resolve, reject) => legacy.call(nav, constraints, resolve, reject));
+  }
+  return nav.mediaDevices;
+}
+
 export function isCameraSupported(): boolean {
-  return typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia;
+  return !!ensureMediaDevices()?.getUserMedia;
 }
 
 export function isGallerySupported(): boolean {
@@ -76,32 +95,86 @@ export function queryMicrophonePermission(): Promise<MediaPermissionState> {
 }
 
 let primedStoryStream: MediaStream | null = null;
+let primeInFlight: Promise<MediaStream | null> | null = null;
 
 function keepStream(stream: MediaStream): void {
-  primedStoryStream?.getTracks().forEach(t => t.stop());
+  if (primedStoryStream && primedStoryStream !== stream) {
+    primedStoryStream.getTracks().forEach(t => t.stop());
+  }
   primedStoryStream = stream;
   markCameraGranted();
 }
 
-/** Mismo clic que abre el compositor: iOS solo da cámara si el gesto es reciente. */
-export async function primeStoryCamera(facing: 'user' | 'environment' = 'environment'): Promise<boolean> {
-  if (!isCameraSupported()) return false;
+function liveTracks(stream: MediaStream | null): boolean {
+  return !!stream?.getVideoTracks().some(t => t.readyState === 'live');
+}
+
+/**
+ * MDN / WebKit: facingMode como string (ideal). Sin width/height: iOS falla el prompt.
+ * No uses `exact`: si no hay esa cámara, ni siquiera pregunta.
+ */
+export async function getCameraStream(facing: 'user' | 'environment' = 'environment'): Promise<MediaStream> {
+  const devices = ensureMediaDevices();
+  if (!devices?.getUserMedia) {
+    throw new DOMException('No hay cámara en este navegador.', 'NotFoundError');
+  }
   const tries: MediaStreamConstraints[] = [
-    { video: { facingMode: { ideal: facing } }, audio: false },
-    { video: true, audio: false },
+    { audio: false, video: { facingMode: facing } },
+    { audio: false, video: { facingMode: { ideal: facing } } },
+    { audio: false, video: true },
   ];
+  let last: unknown;
   for (const cons of tries) {
     try {
-      keepStream(await navigator.mediaDevices.getUserMedia(cons));
-      return true;
-    } catch {
-      /* siguiente */
+      return await devices.getUserMedia(cons);
+    } catch (err) {
+      last = err;
     }
   }
-  return false;
+  throw last instanceof Error ? last : new DOMException('No se ha podido abrir la cámara.', 'NotAllowedError');
+}
+
+function isDenied(err: unknown): boolean {
+  const name = err instanceof DOMException ? err.name : '';
+  return name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError';
+}
+
+/** Mismo clic que abre el compositor. No mates el stream en pagehide: iOS lo dispara al pedir permiso. */
+export async function primeStoryCamera(facing: 'user' | 'environment' = 'environment'): Promise<boolean> {
+  if (liveTracks(primedStoryStream)) return true;
+  if (primeInFlight) return primeInFlight.then(s => liveTracks(s));
+  if (!isCameraSupported()) return false;
+  primeInFlight = getCameraStream(facing)
+    .then(stream => {
+      keepStream(stream);
+      return stream;
+    })
+    .catch(() => null)
+    .finally(() => {
+      primeInFlight = null;
+    });
+  return primeInFlight.then(s => liveTracks(s));
+}
+
+export async function takePrimedCamera(): Promise<MediaStream | null> {
+  if (liveTracks(primedStoryStream)) {
+    const stream = primedStoryStream;
+    primedStoryStream = null;
+    return stream;
+  }
+  if (primeInFlight) {
+    const stream = await primeInFlight;
+    if (stream && primedStoryStream === stream) primedStoryStream = null;
+    return liveTracks(stream) ? stream : null;
+  }
+  return null;
 }
 
 export function consumePrimedStoryCamera(): MediaStream | null {
+  if (!liveTracks(primedStoryStream)) {
+    primedStoryStream = null;
+    return null;
+  }
   const stream = primedStoryStream;
   primedStoryStream = null;
   return stream;
@@ -112,38 +185,20 @@ export function releasePrimedStoryCamera(): void {
   primedStoryStream = null;
 }
 
-if (typeof window !== 'undefined') {
-  window.addEventListener('pagehide', () => releasePrimedStoryCamera());
-}
-
 /**
  * Pide cámara desde un clic. Eso es lo que hace salir el diálogo «Permitir».
  */
 export async function requestCameraAccess(): Promise<MediaPermissionState> {
   if (!isCameraSupported()) return 'unsupported';
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: 'environment' } },
-      audio: false,
-    });
+    const stream = await getCameraStream('environment');
     stream.getTracks().forEach(t => t.stop());
     markCameraGranted();
     return 'granted';
   } catch (err) {
+    if (isDenied(err)) return 'denied';
     const name = err instanceof DOMException ? err.name : '';
-    if (name === 'NotFoundError' || name === 'OverconstrainedError') {
-      try {
-        const videoOnly = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-        videoOnly.getTracks().forEach(t => t.stop());
-        markCameraGranted();
-        return 'granted';
-      } catch (inner) {
-        const innerName = inner instanceof DOMException ? inner.name : '';
-        if (innerName === 'NotAllowedError' || innerName === 'PermissionDeniedError') return 'denied';
-        return 'unsupported';
-      }
-    }
-    if (name === 'NotAllowedError' || name === 'PermissionDeniedError') return 'denied';
+    if (name === 'NotFoundError' || name === 'OverconstrainedError') return 'unsupported';
     return 'denied';
   }
 }
