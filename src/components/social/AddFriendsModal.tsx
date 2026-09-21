@@ -5,6 +5,11 @@ import { Avatar } from '@/src/components/social/MediaPost';
 import { Button } from '@/src/components/ui/Button';
 import { GlassModal } from '@/src/components/ui/GlassModal';
 import { apiGet } from '@/src/lib/api';
+import {
+  fetchFollowSuggestions,
+  flattenFollowSuggestions,
+  type FollowSuggestPack,
+} from '@/src/lib/followSuggestions';
 import { EASE_OUT } from '@/src/lib/motionPresets';
 import { useLongPress } from '@/src/lib/useLongPress';
 import { cn } from '@/src/lib/utils';
@@ -13,12 +18,6 @@ import type { UserSearchResult } from '@/src/types';
 type Person = { id: string; name: string; avatar?: string };
 
 type Kind = 'friend' | 'following' | 'sent' | 'incoming' | 'follow';
-
-type SuggestPack = {
-  followBack: UserSearchResult[];
-  friends: UserSearchResult[];
-  discover: UserSearchResult[];
-};
 
 function kindOf(u: UserSearchResult, sentIds: Set<string>): Kind {
   if (u.friendshipStatus === 'accepted') return 'friend';
@@ -38,18 +37,6 @@ function kindCopy(kind: Kind, follower: boolean): { title: string; hint: string 
   return { title: 'Seguir', hint: follower ? 'Te sigue' : 'Aún no le sigues' };
 }
 
-function parseSuggestPack(raw: unknown): SuggestPack {
-  const empty: SuggestPack = { followBack: [], friends: [], discover: [] };
-  if (!raw) return empty;
-  if (Array.isArray(raw)) return { ...empty, discover: raw };
-  const obj = raw as Partial<SuggestPack>;
-  return {
-    followBack: Array.isArray(obj.followBack) ? obj.followBack : [],
-    friends: Array.isArray(obj.friends) ? obj.friends : [],
-    discover: Array.isArray(obj.discover) ? obj.discover : [],
-  };
-}
-
 export function AddFriendsModal({
   open,
   onClose,
@@ -65,19 +52,21 @@ export function AddFriendsModal({
 }) {
   const [q, setQ] = useState('');
   const [hits, setHits] = useState<UserSearchResult[]>([]);
-  const [suggest, setSuggest] = useState<SuggestPack>({ followBack: [], friends: [], discover: [] });
+  const [suggest, setSuggest] = useState<FollowSuggestPack>({ followBack: [], friends: [], discover: [] });
   const [searching, setSearching] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
+  const [suggestError, setSuggestError] = useState(false);
   const [sendingId, setSendingId] = useState<string | null>(null);
   const [sentIds, setSentIds] = useState<Set<string>>(() => new Set());
 
   const loadSuggest = async () => {
     setSuggesting(true);
+    setSuggestError(false);
     try {
-      const raw = await apiGet<SuggestPack | UserSearchResult[]>('/api/social/suggestions');
-      setSuggest(parseSuggestPack(raw));
+      setSuggest(await fetchFollowSuggestions());
     } catch {
       setSuggest({ followBack: [], friends: [], discover: [] });
+      setSuggestError(true);
     } finally {
       setSuggesting(false);
     }
@@ -155,7 +144,8 @@ export function AddFriendsModal({
   };
 
   const needle = q.trim();
-  const hasSuggest = suggest.followBack.length + suggest.friends.length + suggest.discover.length > 0;
+  const suggestedPeople = flattenFollowSuggestions(suggest);
+  const hasSuggest = suggestedPeople.length > 0;
 
   return (
     <GlassModal
@@ -164,7 +154,7 @@ export function AddFriendsModal({
       center
       frost
       title="Añadir amigos"
-      subtitle={needle ? 'Resultados' : 'Sugerencias y búsqueda'}
+      subtitle={needle ? 'Resultados de búsqueda' : 'Personas que puedes seguir'}
     >
       <div className="relative mb-3">
         <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-white/50" />
@@ -196,44 +186,31 @@ export function AddFriendsModal({
           />
         )
       ) : suggesting && !hasSuggest ? (
-        <p className="py-10 text-center text-sm text-white/55">Buscando gente…</p>
-      ) : !hasSuggest ? (
-        <p className="py-10 text-center text-sm text-white/55">Escribe un nombre para buscar.</p>
-      ) : (
-        <div className="space-y-4">
-          <SuggestBlock
-            title="Te siguen"
-            hint="Aún no les sigues"
-            people={suggest.followBack}
-            sentIds={sentIds}
-            sendingId={sendingId}
-            onSend={sendTo}
-            onHold={onHoldPerson}
-            onSendRequest={onSendRequest}
-          />
-          <SuggestBlock
-            title="Los siguen tus amigos"
-            hint="Gente de tu círculo"
-            people={suggest.friends}
-            sentIds={sentIds}
-            sendingId={sendingId}
-            onSend={sendTo}
-            onHold={onHoldPerson}
-            onSendRequest={onSendRequest}
-          />
-          <SuggestBlock
-            title="Descubrir"
-            hint="Ni tú ni tus amigos"
-            people={suggest.discover}
-            sentIds={sentIds}
-            sendingId={sendingId}
-            onSend={sendTo}
-            onHold={onHoldPerson}
-            onSendRequest={onSendRequest}
-            onRefresh={() => void loadSuggest()}
-            refreshing={suggesting}
-          />
+        <p className="py-10 text-center text-sm text-white/55">Cargando sugerencias…</p>
+      ) : suggestError ? (
+        <div className="py-10 text-center">
+          <p className="text-sm text-white/55">No se pudieron cargar sugerencias.</p>
+          <Button variant="secondary" size="sm" className="mt-3" onClick={() => void loadSuggest()} disabled={suggesting}>
+            Reintentar
+          </Button>
         </div>
+      ) : !hasSuggest ? (
+        <p className="py-10 text-center text-sm text-white/55">
+          De momento no hay nadie nuevo. Busca por nombre arriba.
+        </p>
+      ) : (
+        <SuggestBlock
+          title="Para ti"
+          hint="Gente que puedes seguir ahora"
+          people={suggestedPeople}
+          sentIds={sentIds}
+          sendingId={sendingId}
+          onSend={sendTo}
+          onHold={onHoldPerson}
+          onSendRequest={onSendRequest}
+          onRefresh={() => void loadSuggest()}
+          refreshing={suggesting}
+        />
       )}
     </GlassModal>
   );

@@ -5,6 +5,7 @@ import { Avatar } from '@/src/components/ui/Avatar';
 import { Button } from '@/src/components/ui/Button';
 import { SlimeScroll } from '@/src/components/ui/SlimeScroll';
 import { apiGet, apiPut } from '@/src/lib/api';
+import { fetchFollowSuggestions, flattenFollowSuggestions } from '@/src/lib/followSuggestions';
 import { timeAgo } from '@/src/lib/feedApi';
 import { EASE_OUT } from '@/src/lib/motionPresets';
 import { useLongPress } from '@/src/lib/useLongPress';
@@ -109,6 +110,8 @@ export function ChatPeoplePanel({
 }: ChatPeoplePanelProps) {
   const [q, setQ] = useState('');
   const [hits, setHits] = useState<UserSearchResult[]>([]);
+  const [suggestions, setSuggestions] = useState<UserSearchResult[]>([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [searching, setSearching] = useState(false);
   const [sendingId, setSendingId] = useState<string | null>(null);
   const [notes, setNotes] = useState<AppNotification[]>([]);
@@ -152,6 +155,25 @@ export function ChatPeoplePanel({
     setQ('');
     setHits([]);
   }, [page, friendsFilter]);
+
+  useEffect(() => {
+    if (page !== 'requests') return;
+    let live = true;
+    setLoadingSuggestions(true);
+    fetchFollowSuggestions()
+      .then(pack => {
+        if (live) setSuggestions(flattenFollowSuggestions(pack).filter(u => u.id !== myId));
+      })
+      .catch(() => {
+        if (live) setSuggestions([]);
+      })
+      .finally(() => {
+        if (live) setLoadingSuggestions(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [page, myId, refreshTick]);
 
   useEffect(() => {
     const query = q.trim();
@@ -321,13 +343,12 @@ export function ChatPeoplePanel({
   if (page === 'requests') {
     const searchingPeople = q.trim().length > 0;
     const markSent = (person: { id: string; name: string; avatar?: string }) => {
-      setHits(prev =>
-        prev.map(h =>
-          h.id === person.id
-            ? { ...h, friendshipStatus: 'pending', friendshipDirection: 'outgoing', canSendRequest: false }
-            : h
-        )
-      );
+      const patch = (h: UserSearchResult) =>
+        h.id === person.id
+          ? { ...h, friendshipStatus: 'pending' as const, friendshipDirection: 'outgoing' as const, canSendRequest: false }
+          : h;
+      setHits(prev => prev.map(patch));
+      setSuggestions(prev => prev.map(patch));
       setConnections(prev => {
         if (prev.sent.some(s => s.id === person.id)) return prev;
         return {
@@ -367,6 +388,82 @@ export function ChatPeoplePanel({
         </div>
 
         <div className={cn('space-y-4 transition-opacity duration-200', searchingPeople && 'pointer-events-none opacity-35')}>
+          {!searchingPeople && (
+            <section>
+              <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                Para ti
+              </p>
+              {loadingSuggestions ? (
+                <p className="rounded-2xl bg-white px-5 py-8 text-center text-sm text-slate-500 dark:bg-slate-900">
+                  Cargando sugerencias…
+                </p>
+              ) : suggestions.length === 0 ? (
+                <p className="rounded-2xl border border-dashed border-slate-200 bg-white px-5 py-8 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-900">
+                  Busca arriba para seguir a alguien.
+                </p>
+              ) : (
+                <div className="rounded-3xl bg-white shadow-sm dark:bg-slate-900">
+                  {suggestions.map((u, i) => {
+                    const pendingOut =
+                      sentIds.has(u.id) ||
+                      (u.friendshipStatus === 'pending' && u.friendshipDirection === 'outgoing');
+                    const alreadyFollow =
+                      u.friendshipStatus === 'following' || u.friendshipStatus === 'accepted';
+                    return (
+                      <div
+                        key={u.id}
+                        className={
+                          i > 0
+                            ? 'flex items-center gap-3 border-t border-slate-100 px-3.5 py-3 dark:border-slate-800'
+                            : 'flex items-center gap-3 px-3.5 py-3'
+                        }
+                      >
+                        <button
+                          type="button"
+                          onClick={() => onOpenPerson?.({ id: u.id, name: u.name, avatar: u.avatar })}
+                          className="min-w-0 flex-1 text-left"
+                        >
+                          <span className="flex items-center gap-3">
+                            <Avatar src={u.avatar} name={u.name} className="h-11 w-11 rounded-full" />
+                            <span className="min-w-0">
+                              <span className="block truncate text-[15px] font-semibold text-slate-900 dark:text-slate-100">
+                                {u.name}
+                              </span>
+                              <span className="text-[12px] text-slate-400">
+                                {u.reason === 'followback' || u.friendshipStatus === 'follower'
+                                  ? 'Te sigue'
+                                  : u.reason === 'friends'
+                                    ? 'Lo siguen tus amigos'
+                                    : 'Gente nueva'}
+                              </span>
+                            </span>
+                          </span>
+                        </button>
+                        {alreadyFollow || pendingOut ? (
+                          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                            {alreadyFollow ? <Check size={12} /> : <Clock size={12} />}
+                            {alreadyFollow ? 'Siguiendo' : 'Enviada'}
+                          </span>
+                        ) : (
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            className="h-9 shrink-0 rounded-full px-3 text-[12px]"
+                            disabled={sendingId === u.id || !onSendRequest}
+                            onClick={() => void sendTo({ id: u.id, name: u.name, avatar: u.avatar })}
+                          >
+                            {sendingId === u.id ? <Loader2 size={14} className="animate-spin" /> : <UserPlus size={14} />}
+                            Seguir
+                          </Button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          )}
+
           {inbox.length > 0 ? (
             <section className="rounded-3xl bg-white shadow-sm dark:bg-slate-900">
               {inbox.map((req, i) => (
@@ -406,10 +503,10 @@ export function ChatPeoplePanel({
                 </div>
               ))}
             </section>
-          ) : (
+          ) : !searchingPeople && suggestions.length > 0 ? null : (
             <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-5 py-14 text-center dark:border-slate-700 dark:bg-slate-900">
               <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">No tienes solicitudes</p>
-              <p className="mt-1 text-xs text-slate-400">Busca arriba para seguir a alguien.</p>
+              <p className="mt-1 text-xs text-slate-400">Usa las sugerencias de arriba o busca por nombre.</p>
             </div>
           )}
 
