@@ -2,12 +2,16 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   ArrowLeft,
+  Ban,
   Check,
   Dumbbell,
   FileUp,
+  Flag,
   GraduationCap,
+  Handshake,
   Loader2,
   MessageCircle,
+  MoreHorizontal,
   Pencil,
   UserPlus,
 } from 'lucide-react';
@@ -22,6 +26,10 @@ import {
   type PublicProfile,
 } from '@/src/lib/feedApi';
 import { TmHistoryModal } from '@/src/components/social/TmHistoryModal';
+import { CloseFriendButton } from '@/src/components/social/CloseFriendButton';
+import { CloseFriendsModal } from '@/src/components/social/CloseFriendsModal';
+import { GlassModal } from '@/src/components/ui/GlassModal';
+import { blockUser, reportUser, unblockUser } from '@/src/lib/privacyApi';
 import { weekOfYearFromDate } from '@/src/lib/mesocycleWeek';
 import { createEmptyTemplate, expandRoutineFromApi } from '@/src/lib/planMaterialize';
 import { mergeCoachImportIntoRoutine } from '@/src/lib/coachPlan/applyCoachPlan';
@@ -92,18 +100,28 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const [showAthleteImport, setShowAthleteImport] = useState(false);
   const [showAthleteEditor, setShowAthleteEditor] = useState(false);
   const [openTm, setOpenTm] = useState<{ id?: string; name: string; value: number; mode: string } | null>(null);
+  const [blocked, setBlocked] = useState<'you' | 'them' | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [confirmBlock, setConfirmBlock] = useState(false);
+  const [closeOpen, setCloseOpen] = useState(false);
+  const [privacyBusy, setPrivacyBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
+      setBlocked(null);
       try {
         const data = await fetchProfile(userId);
         if (cancelled) return;
         setProfile(data);
         setBioDraft(data.bio);
-      } catch {
-        if (!cancelled) setProfile(null);
+      } catch (e: unknown) {
+        if (cancelled) return;
+        const msg = String((e as { message?: string })?.message || '');
+        if (/te ha bloqueado/i.test(msg)) setBlocked('them');
+        else if (/has bloqueado/i.test(msg)) setBlocked('you');
+        setProfile(null);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -166,6 +184,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       name: raw.name,
       sameTemplateAllWeeks: raw.sameTemplateAllWeeks,
       cycleLength: raw.cycleLength,
+      cycleAnchorISO: raw.cycleAnchorISO,
+      weekStartsOn: raw.weekStartsOn,
       skippedWeeks: raw.skippedWeeks,
       shiftedAtCalendarWeeks: raw.shiftedAtCalendarWeeks,
       weeks: raw.weeks,
@@ -187,6 +207,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       clearUntouchedDays: opts.clearUntouchedDays,
       continuesPreviousPlan: opts.continuesPreviousPlan,
       currentWeekOfYear: weekOfYearFromDate(new Date(), year),
+      week1ISO: opts.week1ISO,
+      weekStartsOn: opts.weekStartsOn,
     });
     await apiPatch(`/api/routines/${expanded.id}/plan`, buildPlanPatchPayload(merged));
     if (opts.importMaxes && opts.plan.maxes.length) {
@@ -232,21 +254,101 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     );
   }
   if (!profile) {
+    if (blocked === 'them') {
+      return <p className="py-12 text-center text-sm text-slate-400">Te ha bloqueado.</p>;
+    }
+    if (blocked === 'you') {
+      return (
+        <div className="space-y-4 py-10 text-center">
+          <p className="text-sm text-slate-500">Has bloqueado a esta persona.</p>
+          <button
+            type="button"
+            disabled={privacyBusy}
+            onClick={async () => {
+              setPrivacyBusy(true);
+              try {
+                await unblockUser(userId);
+                setBlocked(null);
+                const data = await fetchProfile(userId);
+                setProfile(data);
+                setBioDraft(data.bio);
+              } finally {
+                setPrivacyBusy(false);
+              }
+            }}
+            className="min-h-11 rounded-full bg-slate-900 px-4 text-sm font-semibold text-white dark:bg-white dark:text-slate-900"
+          >
+            Desbloquear
+          </button>
+        </div>
+      );
+    }
     return <p className="py-12 text-center text-sm text-slate-400">No se ha podido cargar el perfil.</p>;
   }
 
   return (
     <div className="space-y-5">
-      {onBack && (
-        <button
-          type="button"
-          onClick={onBack}
-          className="inline-flex min-h-12 items-center gap-2 text-xs font-black uppercase tracking-wider text-slate-500 hover:text-indigo-600 dark:text-slate-400"
-        >
-          <ArrowLeft size={16} />
-          Volver
-        </button>
-      )}
+      <div className="flex items-center justify-between gap-2">
+        {onBack ? (
+          <button
+            type="button"
+            onClick={onBack}
+            className="inline-flex min-h-12 items-center gap-2 text-xs font-black uppercase tracking-wider text-slate-500 hover:text-indigo-600 dark:text-slate-400"
+          >
+            <ArrowLeft size={16} />
+            Volver
+          </button>
+        ) : (
+          <span />
+        )}
+        {!profile.isSelf && (
+          <div className="flex items-center gap-1">
+            {(profile.isFriend || profile.friendshipStatus === 'following') && (
+              <CloseFriendButton userId={userId} />
+            )}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setMenuOpen(v => !v)}
+                className="inline-flex h-11 w-11 items-center justify-center rounded-full text-slate-500"
+                aria-label="Más opciones"
+              >
+                <MoreHorizontal size={20} />
+              </button>
+              {menuOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
+                  <div className="absolute right-0 top-full z-50 mt-1 min-w-[11rem] rounded-2xl border border-slate-100 bg-white p-1.5 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+                    <button
+                      type="button"
+                      className="flex min-h-11 w-full items-center gap-2 rounded-xl px-3 text-left text-sm font-medium text-rose-600"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        setConfirmBlock(true);
+                      }}
+                    >
+                      <Ban size={15} />
+                      Bloquear
+                    </button>
+                    <button
+                      type="button"
+                      className="flex min-h-11 w-full items-center gap-2 rounded-xl px-3 text-left text-sm font-medium text-slate-700 dark:text-slate-200"
+                      onClick={async () => {
+                        setMenuOpen(false);
+                        await reportUser(userId).catch(() => {});
+                        window.alert('Gracias. Hemos recibido el aviso.');
+                      }}
+                    >
+                      <Flag size={15} />
+                      Reportar
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Portada: avatar grande y contadores, como en cualquier red */}
       <motion.div
@@ -275,6 +377,17 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         <div className="mt-4">
           <p className="text-lg font-semibold leading-tight text-slate-900 dark:text-slate-100">{profile.name}</p>
           {profile.username && <p className="text-xs font-bold text-indigo-600 dark:text-indigo-400">@{profile.username}</p>}
+
+          {profile.isSelf && (
+            <button
+              type="button"
+              onClick={() => setCloseOpen(true)}
+              className="mt-3 flex min-h-11 w-full items-center gap-2 rounded-2xl bg-slate-50 px-3 text-left dark:bg-slate-800/70"
+            >
+              <Handshake size={16} className="text-emerald-500" />
+              <span className="flex-1 text-sm font-semibold text-slate-800 dark:text-slate-100">Mejores amigos</span>
+            </button>
+          )}
 
           {profile.isSelf && editingBio ? (
             <div className="mt-2 flex items-start gap-2">
@@ -350,27 +463,27 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             )
           ) : (
             <>
+              {onOpenChat && (
+                <button
+                  type="button"
+                  onClick={() => onOpenChat(userId)}
+                  className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-indigo-600 py-2.5 text-xs font-black uppercase tracking-wider text-white"
+                >
+                  <MessageCircle size={15} />
+                  Chat
+                </button>
+              )}
+              {onOpenRoutine && (
+                <button
+                  type="button"
+                  onClick={onOpenRoutine}
+                  className="flex-1 rounded-xl border-2 border-indigo-200 py-2.5 text-xs font-black uppercase tracking-wider text-indigo-600 dark:border-indigo-800 dark:text-indigo-300"
+                >
+                  Ver su rutina
+                </button>
+              )}
               {profile.isFriend ? (
                 <>
-                  {onOpenChat && (
-                    <button
-                      type="button"
-                      onClick={() => onOpenChat(userId)}
-                      className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-indigo-600 py-2.5 text-xs font-black uppercase tracking-wider text-white"
-                    >
-                      <MessageCircle size={15} />
-                      Chat
-                    </button>
-                  )}
-                  {onOpenRoutine && (
-                    <button
-                      type="button"
-                      onClick={onOpenRoutine}
-                      className="flex-1 rounded-xl border-2 border-indigo-200 py-2.5 text-xs font-black uppercase tracking-wider text-indigo-600 dark:border-indigo-800 dark:text-indigo-300"
-                    >
-                      Ver su rutina
-                    </button>
-                  )}
                   {profile.iAmTheirCoach && (
                     <>
                       <button
@@ -505,7 +618,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         </div>
 
         {/* Las marcas viven en la propia ficha: son la carta de presentación, no una pestaña */}
-        {profile.isFriend && profile.trainingMaxes.length > 0 && (
+        {profile.trainingMaxes.length > 0 && (
           <div className="mt-4 border-t border-slate-200/70 pt-4 dark:border-slate-700/70">
             <p className="mb-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
               Marcas · toca una para ver cómo ha subido
@@ -532,11 +645,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         )}
       </motion.div>
 
-      {!profile.isFriend ? (
-        <p className="py-10 text-center text-sm text-slate-400">
-          Hazte amigo de {profile.name.split(' ')[0]} para ver sus marcas.
-        </p>
-      ) : profile.trainingMaxes.length === 0 ? (
+      {profile.trainingMaxes.length === 0 ? (
         <div className="flex w-full items-center gap-4 rounded-2xl border border-slate-200/80 bg-white p-4 dark:border-slate-700 dark:bg-slate-900">
           <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300">
             <Dumbbell size={20} />
@@ -573,6 +682,46 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       {openTm && (
         <TmHistoryModal userId={userId} tm={openTm} onClose={() => setOpenTm(null)} />
       )}
+
+      <CloseFriendsModal open={closeOpen} onClose={() => setCloseOpen(false)} />
+      <GlassModal
+        open={confirmBlock}
+        onClose={() => setConfirmBlock(false)}
+        center
+        frost
+        title="¿Bloquear?"
+        subtitle={`${profile.name.split(' ')[0]} no verá tus historias, chat ni avisos`}
+        footer={
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setConfirmBlock(false)}
+              className="min-h-11 flex-1 rounded-full bg-white/10 text-sm font-semibold text-white"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              disabled={privacyBusy}
+              onClick={async () => {
+                setPrivacyBusy(true);
+                try {
+                  await blockUser(userId);
+                  setConfirmBlock(false);
+                  onBack?.();
+                } finally {
+                  setPrivacyBusy(false);
+                }
+              }}
+              className="min-h-11 flex-1 rounded-full bg-rose-500 text-sm font-semibold text-white"
+            >
+              Bloquear
+            </button>
+          </div>
+        }
+      >
+        <p className="text-sm text-white/60">También deja de seguirle y le quita de mejores amigos.</p>
+      </GlassModal>
 
       {showAthleteEditor && (
         <CoachAthletePlan

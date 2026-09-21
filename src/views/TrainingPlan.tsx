@@ -21,7 +21,8 @@ import {
   CornerLeftDown,
   FileUp,
   Video,
-  Moon
+  Moon,
+  MoreHorizontal,
 } from 'lucide-react';
 import { Card } from '@/src/components/ui/Card';
 import { Button } from '@/src/components/ui/Button';
@@ -35,7 +36,7 @@ import { GlassModal } from '@/src/components/ui/GlassModal';
 import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 import { applyDaySkips, shiftsForCalendarWeek, type CalendarDayShift } from '@/src/lib/calendarDayShift';
-import { firstWeekOfYearStartingInMonth } from '@/src/lib/mesocycleWeek';
+import { cycleIndexFromCivilWeek, firstWeekOfYearStartingInMonth } from '@/src/lib/mesocycleWeek';
 import { guessLinkedTmId, normalizeExerciseNameKey } from '@/src/lib/normalizeExerciseName';
 import { getTMsForView } from '@/src/lib/historyTm';
 import { dateISOFromYearWeekDay, weekOfYearFromDate } from '@/src/lib/calendarWeekDate';
@@ -56,6 +57,7 @@ import {
 } from '@/src/lib/exerciseScheme';
 import type { ImportCoachPlanResult, LastCoachImport } from '@/src/components/ImportCoachPlanModal';
 import { useOnlineStatus } from '@/src/pwa/onlineStatus';
+import { pendingWriteCount, subscribePendingWrites } from '@/src/lib/offlineQueue';
 
 /** Los lectores de Word/Excel/PDF solo se descargan si el usuario abre el importador. */
 const ImportCoachPlanModal = React.lazy(() =>
@@ -137,6 +139,7 @@ function ExerciseHoldRow({
   canHold,
   canMoveUp,
   canMoveDown,
+  status = 'idle',
   onOpen,
   onLongPress,
   onDismiss,
@@ -149,6 +152,7 @@ function ExerciseHoldRow({
   canHold: boolean;
   canMoveUp: boolean;
   canMoveDown: boolean;
+  status?: 'idle' | 'partial' | 'done';
   onOpen: () => void;
   onLongPress: () => void;
   onDismiss: () => void;
@@ -202,7 +206,9 @@ function ExerciseHoldRow({
         padding="sm"
         rounded="xl"
         className={cn(
-          'group cursor-pointer border-0 bg-white !p-3 shadow-sm dark:bg-slate-900 sm:!p-4 lg:border-0 lg:bg-transparent lg:!p-0 lg:shadow-none lg:hover:bg-slate-50/80 dark:lg:hover:bg-slate-800/25',
+          'group cursor-pointer border border-slate-100/90 bg-white !p-3.5 shadow-[0_10px_28px_-18px_rgba(15,23,42,0.45)] dark:border-slate-700/80 dark:bg-slate-900 sm:!p-4 lg:border-0 lg:bg-transparent lg:!p-0 lg:shadow-none lg:hover:bg-slate-50/80 dark:lg:hover:bg-slate-800/25',
+          status === 'partial' && 'border-indigo-200/80 bg-indigo-50/40 dark:border-indigo-800/50 dark:bg-indigo-950/25',
+          status === 'done' && 'border-emerald-200/80 bg-emerald-50/50 dark:border-emerald-800/45 dark:bg-emerald-950/20',
           canHold && 'select-none touch-manipulation',
           highlighted && 'shadow-[0_10px_28px_-12px_rgba(15,23,42,0.28)] lg:bg-white lg:shadow-[0_10px_28px_-12px_rgba(15,23,42,0.28)] dark:lg:bg-slate-900'
         )}
@@ -318,6 +324,10 @@ interface TrainingPlanViewProps {
   /** `true` solo si modo mes (misma plantilla cada semana civil). Si es `false` u omisión → modo por semanas de ciclo: siempre mostrar Saltar semana. */
   sameTemplateAllWeeks?: boolean;
   cycleLength?: number;
+  /** YYYY-MM-DD de la semana 1 del ciclo. Sin esto se usa la semana civil desde el 1 de enero. */
+  cycleAnchorISO?: string;
+  /** 0 = domingo … 6 = sábado. */
+  weekStartsOn?: number;
   onToggleSameTemplateAllWeeks?: () => void;
   trainingMaxes: TrainingMax[];
   /** Snapshots de TM por semana/día (misma rutina); para mostrar el TM “como era” al ver otro día/semana. */
@@ -390,6 +400,8 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   /** `true` = misma plantilla todas las semanas (modo mes); `false` = ciclo por semanas → siempre botón Saltar. */
   sameTemplateAllWeeks = false,
   cycleLength = 4,
+  cycleAnchorISO,
+  weekStartsOn = 1,
   onToggleSameTemplateAllWeeks,
   trainingMaxes,
   tmHistory = [],
@@ -444,6 +456,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   const [expandedExerciseId, setExpandedExerciseId] = useState<string | null>(null);
   const [heldExerciseId, setHeldExerciseId] = useState<string | null>(null);
   const [showSkipDropdown, setShowSkipDropdown] = useState(false);
+  const [planMenuOpen, setPlanMenuOpen] = useState(false);
   const [rmListOpen, setRmListOpen] = useState(false);
   const [logExtrasOpen, setLogExtrasOpen] = useState(false);
   const [logSetExtrasOpen, setLogSetExtrasOpen] = useState(false);
@@ -532,8 +545,12 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
 
   /** Borrador local para poder vaciar el campo al editar (evita 3→32 al no poder borrar). Se confirma en onBlur. */
   const [showImportModal, setShowImportModal] = useState(false);
+  const [importFromCreate, setImportFromCreate] = useState(false);
   useIncrementSignal('import-plan', openImportSignal, () => {
-    if (onImportCoachPlan) setShowImportModal(true);
+    if (onImportCoachPlan) {
+      setImportFromCreate(true);
+      setShowImportModal(true);
+    }
   });
 
   useEffect(() => {
@@ -610,13 +627,12 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     [sameTemplateAllWeeks, shiftedAtCalendarWeeks, displayWeekNum]
   );
 
-  /** Semana del ciclo (1–N) teniendo en cuenta los shifts acumulados. */
+  /** Semana del ciclo (1–N) desde el ancla (cuándo empezó la semana 1), no desde el 1 de enero. */
   const cycleWeek = useMemo(() => {
     const cl = Math.max(1, cycleLength);
-    if (sameTemplateAllWeeks) return ((Math.max(1, displayWeekNum) - 1) % cl) + 1;
-    const effective = displayWeekNum - weekShift;
-    return (((Math.max(1, effective) - 1) % cl) + cl) % cl + 1;
-  }, [displayWeekNum, cycleLength, weekShift, sameTemplateAllWeeks]);
+    const effective = sameTemplateAllWeeks ? displayWeekNum : displayWeekNum - weekShift;
+    return cycleIndexFromCivilWeek(effective, cycleAnchorISO, cl, displayPlanYear);
+  }, [displayWeekNum, cycleLength, weekShift, sameTemplateAllWeeks, cycleAnchorISO, displayPlanYear]);
 
   /**
    * Clave en `skippedWeeks`: en rutina lineal, semana civil; en rutina por bloque, posición del mesociclo (1…N),
@@ -984,6 +1000,18 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   }, [currentWeek, currentDay, dayExercises, logs, effectiveTms, internalExerciseMaxes]);
 
   const online = useOnlineStatus();
+  const [pendingWrites, setPendingWrites] = useState(pendingWriteCount);
+  useEffect(() => {
+    const sync = () => setPendingWrites(pendingWriteCount());
+    const unsub = subscribePendingWrites(sync);
+    window.addEventListener('online', sync);
+    window.addEventListener('offline', sync);
+    return () => {
+      unsub();
+      window.removeEventListener('online', sync);
+      window.removeEventListener('offline', sync);
+    };
+  }, []);
 
   return (
     <motion.div 
@@ -994,31 +1022,31 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     >
       {!online && (
         <p className="mb-3 rounded-2xl bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
-          Sin conexión. Se muestra el último plan guardado en este dispositivo.
+          Sin conexión. Se muestra el último plan de este dispositivo.
+          {pendingWrites > 0
+            ? ` Tus series se quedan aquí y se suben al volver (${pendingWrites}).`
+            : ''}
         </p>
       )}
-      <motion.header variants={PAGE_ENTER_ITEM} initial={false} className="mb-4 sm:mb-6">
+      {online && pendingWrites > 0 && (
+        <p className="mb-3 rounded-2xl bg-indigo-50 px-3 py-2 text-[11px] font-semibold text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300">
+          {pendingWrites === 1
+            ? '1 cambio del gym se está subiendo…'
+            : `${pendingWrites} cambios del gym se están subiendo…`}
+        </p>
+      )}
+      <motion.header variants={PAGE_ENTER_ITEM} initial={false} className="mb-3 sm:mb-4">
         <div className="flex items-center justify-between gap-3">
           <button
             onClick={onOpenRoutineManager}
             className="group flex min-w-0 flex-1 items-center gap-1 text-left"
           >
-            <h1 className="truncate text-[17px] font-semibold tracking-tight text-slate-900 transition-colors group-hover:text-indigo-600 dark:text-slate-100 dark:group-hover:text-indigo-400">
+            <h1 className="truncate text-[17px] font-black tracking-tight text-slate-900 transition-colors group-hover:text-indigo-600 dark:text-slate-100 dark:group-hover:text-indigo-400">
               {activeRoutineName}
             </h1>
             <ChevronRight className="shrink-0 text-slate-300 dark:text-slate-600" size={16} />
           </button>
-          <div className="flex shrink-0 items-center gap-1.5">
-            {onImportCoachPlan && !isHistoryMode && (
-              <button
-                type="button"
-                onClick={() => setShowImportModal(true)}
-                className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 transition-transform active:scale-95 dark:text-slate-400"
-                aria-label="Importar Word o PDF"
-              >
-                <FileUp size={16} />
-              </button>
-            )}
+          <div className="flex shrink-0 items-center gap-1">
             <div className="flex rounded-full bg-slate-100 p-0.5 dark:bg-slate-800">
               <button
                 onClick={() => setViewMode('daily')}
@@ -1039,207 +1067,244 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 Semana
               </button>
             </div>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  setPlanMenuOpen(v => !v);
+                  setShowMonthSelector(false);
+                  setShowSkipDropdown(false);
+                }}
+                className="app-icon-hit rounded-full text-slate-500 dark:text-slate-300"
+                aria-label="Más opciones de la rutina"
+              >
+                <MoreHorizontal size={20} />
+              </button>
+              {planMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setPlanMenuOpen(false)} />
+                  <div className="absolute right-0 top-full z-50 mt-1 min-w-[13.5rem] rounded-2xl border border-slate-100 bg-white p-1.5 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+                    <button
+                      type="button"
+                      className="flex w-full items-center rounded-xl px-3 py-2.5 text-left text-sm font-medium text-slate-800 dark:text-slate-100"
+                      onClick={() => {
+                        setPlanMenuOpen(false);
+                        setRmListOpen(true);
+                      }}
+                    >
+                      Marcas (RM)
+                    </button>
+                    {onImportCoachPlan && !isHistoryMode && (
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm font-medium text-slate-800 dark:text-slate-100"
+                        onClick={() => {
+                          setPlanMenuOpen(false);
+                          setImportFromCreate(false);
+                          setShowImportModal(true);
+                        }}
+                      >
+                        <FileUp size={15} />
+                        Importar plan
+                      </button>
+                    )}
+                    {!isHistoryMode && (
+                      <div className="mt-1 border-t border-slate-100 px-2 pb-1 pt-2 dark:border-slate-700">
+                        <p className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Tipo de día</p>
+                        <div className="flex rounded-full bg-slate-100 p-0.5 dark:bg-slate-800">
+                          {([
+                            { id: 'workout' as DayType, label: 'Entreno' },
+                            { id: 'rest' as DayType, label: 'Descanso' },
+                            { id: 'deload' as DayType, label: 'Descarga' },
+                          ]).map(opt => {
+                            const selected = (calendarWeekSkipped ? effectiveCurrentDayType : currentDay?.type) === opt.id;
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                disabled={!currentWeek || !currentDay || calendarWeekSkipped}
+                                onClick={() => {
+                                  if (!currentWeek || !currentDay) return;
+                                  onUpdateDayType(currentWeek.id, templateDay?.id ?? currentDay.id, opt.id);
+                                  setPlanMenuOpen(false);
+                                }}
+                                className={cn(
+                                  'flex-1 rounded-full px-2 py-1.5 text-[11px] font-medium',
+                                  selected
+                                    ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white'
+                                    : 'text-slate-500'
+                                )}
+                              >
+                                {opt.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    {!isHistoryMode && onSkipWeek && sameTemplateAllWeeks !== true && (
+                      <button
+                        type="button"
+                        className="mt-1 flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm font-medium text-slate-800 dark:text-slate-100"
+                        onClick={() => {
+                          setPlanMenuOpen(false);
+                          if (calendarWeekSkipped) {
+                            if (isShiftedWeek) onSkipWeek(displayWeekNum, 'shift');
+                            else onSkipWeek(skipWeekKey, 'skip_only');
+                          } else {
+                            setShowSkipDropdown(true);
+                          }
+                        }}
+                      >
+                        <SkipForward size={15} />
+                        {calendarWeekSkipped ? 'Quitar semana libre' : 'No entreno esta semana'}
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => setRmListOpen(true)}
-          className="mt-2 flex w-full items-center gap-1.5 overflow-hidden text-left"
-          aria-label="Ver y editar RM"
-        >
-          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {effectiveTms.length === 0 ? (
-              <span className="truncate text-[12px] text-slate-400">Añadir marcas</span>
-            ) : (
-              effectiveTms.map((tm, tmIdx) => (
-                <span
-                  key={tm.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (tmCardsReadOnly) {
-                      setRmListOpen(true);
-                      return;
-                    }
-                    setEditingTM(tm);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key !== 'Enter' && e.key !== ' ') return;
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (!tmCardsReadOnly) setEditingTM(tm);
-                  }}
-                  className={cn(
-                    'inline-flex shrink-0 items-baseline gap-0.5 text-[12px] leading-tight',
-                    tmAutoHighlightIds.includes(tm.id)
-                      ? 'text-emerald-700 dark:text-emerald-300'
-                      : 'text-slate-500 dark:text-slate-400'
-                  )}
-                >
-                  {tmIdx > 0 && <span className="mr-1 text-slate-300 dark:text-slate-600">·</span>}
-                  <span className="max-w-[6.5rem] truncate">{tm.name}</span>
-                  <span className="font-semibold tabular-nums text-slate-800 dark:text-slate-100">
-                    {tm.value}
-                    <span className="font-medium text-slate-400">
-                      {tm.mode === 'weight' ? 'kg' : tm.mode === 'reps' ? 'r' : 's'}
-                    </span>
-                  </span>
-                </span>
-              ))
-            )}
-          </div>
-          <ChevronRight size={13} className="shrink-0 text-slate-300 dark:text-slate-600" />
-        </button>
       </motion.header>
 
       <motion.section variants={PAGE_ENTER_ITEM} initial={false} className="relative">
-        <div className="mb-3 flex flex-wrap items-end justify-between gap-x-2 gap-y-1.5">
-          <div className="min-w-0">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setShowMonthSelector(v => !v);
+              setPlanMenuOpen(false);
+            }}
+            className="min-w-0 text-left"
+          >
             <p className="text-[11px] font-medium text-slate-400">
               {sameTemplateAllWeeks || cycleLength <= 1
                 ? currentMonth
                 : `Semana ${cycleWeek} de ${cycleLength}`}
+              {viewMode === 'daily' && dayProgress.totalExercises > 0
+                ? ` · ${dayProgress.doneExercises}/${dayProgress.totalExercises}`
+                : ''}
             </p>
-            <h2 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white">
+            <h2 className="text-[22px] font-black tracking-tight text-slate-900 dark:text-white">
               {viewMode === 'daily' ? currentDay?.name || 'Hoy' : 'Esta semana'}
             </h2>
-          </div>
-          
-          <div className="flex flex-wrap items-center gap-1.5">
-            <div className="relative">
-              <button 
-                onClick={() => setShowMonthSelector(!showMonthSelector)}
-                className="flex items-center justify-center gap-2 rounded-full bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm dark:bg-slate-900 dark:text-slate-100"
-              >
-                {currentMonth}
-              </button>
-              <AnimatePresence>
-                {showMonthSelector && (
-                  <motion.div 
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 10 }}
-                    className="absolute top-full right-0 mt-2 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-700 shadow-2xl rounded-2xl p-2 grid grid-cols-3 gap-1 z-50 w-64"
-                  >
-                    {months.map((m, idx) => (
-                      <button
-                        key={m}
-                        onClick={() => {
-                          const year = displayPlanYear;
-                          const targetWeekNum = firstWeekOfYearStartingInMonth(year, idx);
-                          onViewAsOfWeekChange?.(targetWeekNum === currentWeekOfYear ? null : targetWeekNum);
-                          setShowMonthSelector(false);
-                        }}
-                        className={cn(
-                          "px-2 py-2 rounded-lg text-xs font-medium transition-all",
-                          currentMonth === m ? "bg-indigo-600 text-white" : "hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-400 dark:text-slate-300"
-                        )}
-                      >
-                        {m.substr(0, 3)}
-                      </button>
-                    ))}
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </div>
-
-            <div className="flex gap-1.5">
-              <button
-                type="button"
-                onClick={() => {
-                  if (displayWeekNum > 1) {
-                    const newWeek = displayWeekNum - 1;
-                    onViewAsOfWeekChange?.(newWeek === currentWeekOfYear ? null : newWeek);
-                  }
-                }}
-                className={cn(
-                  'app-icon-hit rounded-full bg-white text-slate-600 shadow-sm dark:bg-slate-900 dark:text-slate-200',
-                  displayWeekNum <= 1 && 'opacity-40'
-                )}
-                aria-label="Semana anterior"
-              >
-                <ChevronLeft size={18} />
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (displayWeekNum < 52) {
-                    const newWeek = displayWeekNum + 1;
-                    onViewAsOfWeekChange?.(newWeek === currentWeekOfYear ? null : newWeek);
-                  }
-                }}
-                className={cn(
-                  'app-icon-hit rounded-full bg-white text-slate-600 shadow-sm dark:bg-slate-900 dark:text-slate-200',
-                  displayWeekNum >= 52 && 'opacity-40'
-                )}
-                aria-label="Semana siguiente"
-              >
-                <ChevronRight size={18} />
-              </button>
-            </div>
-
-            {!isHistoryMode && onSkipWeek && sameTemplateAllWeeks !== true && (
-              <div className="relative">
+          </button>
+          <div className="flex shrink-0 items-center gap-0.5">
+            {viewMode === 'daily' && !isHistoryMode && onSkipDay && (
+              skippedDaysThisWeek.includes(activeDayIdx) ? (
                 <button
                   type="button"
-                  title={
-                    calendarWeekSkipped
-                      ? 'Pulsa para quitar el salto'
-                      : 'Marcar semana como saltada'
-                  }
-                  className={cn(
-                    "flex items-center gap-1.5 rounded-full px-3 py-2 text-xs font-medium shadow-sm transition-all",
-                    calendarWeekSkipped
-                      ? "bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
-                      : "bg-white text-slate-500 dark:bg-slate-900 dark:text-slate-400"
-                  )}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (calendarWeekSkipped) {
-                      if (isShiftedWeek) {
-                        onSkipWeek(displayWeekNum, 'shift');
-                      } else {
-                        onSkipWeek(skipWeekKey, 'skip_only');
-                      }
-                      setShowSkipDropdown(false);
-                      return;
-                    }
-                    setShowSkipDropdown((v) => !v);
-                  }}
+                  onClick={() => onSkipDay(activeDayIdx, displayPlanYear, displayWeekNum)}
+                  className="mr-1 rounded-full px-2 py-1 text-[11px] font-semibold text-amber-700 dark:text-amber-300"
                 >
-                  <SkipForward size={12} />
-                  {calendarWeekSkipped ? 'Semana libre' : 'No entreno'}
+                  Hoy sí
                 </button>
-                {showSkipDropdown && (
-                  <>
-                    <div className="fixed inset-0 z-40" onClick={() => setShowSkipDropdown(false)} />
-                    <div className="absolute right-0 top-full mt-1 z-50">
-                      <div className="bg-white dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-600 rounded-xl shadow-lg p-2 min-w-[10rem] space-y-1">
-                        <button
-                          type="button"
-                          onClick={() => { onSkipWeek(skipWeekKey, 'skip_only'); setShowSkipDropdown(false); }}
-                          className="w-full text-left px-3 py-2 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors"
-                        >
-                          Solo marcar
-                          <span className="block text-[10px] font-normal text-slate-500 dark:text-slate-400 mt-0.5">No mueve el resto del plan</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => { onSkipWeek(displayWeekNum, 'shift'); setShowSkipDropdown(false); }}
-                          className="w-full text-left px-3 py-2 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition-colors"
-                        >
-                          Vacaciones — mover el plan
-                          <span className="block text-[10px] font-normal text-slate-500 dark:text-slate-400 mt-0.5">Las semanas siguientes se desplazan</span>
-                        </button>
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
+              ) : (effectiveCurrentDayType === 'workout' || effectiveCurrentDayType === 'deload') ? (
+                <button
+                  type="button"
+                  onClick={() => onSkipDay(activeDayIdx, displayPlanYear, displayWeekNum)}
+                  className="mr-1 rounded-full px-2 py-1 text-[11px] font-medium text-slate-400 dark:text-slate-500"
+                >
+                  Hoy no voy
+                </button>
+              ) : null
             )}
+            {viewMode === 'daily' && skippedDaysThisWeek.length > 0 && onResetDayShifts && (
+              <button
+                type="button"
+                onClick={() => onResetDayShifts(displayPlanYear, displayWeekNum)}
+                className="mr-1 rounded-full px-2 py-1 text-[11px] font-semibold text-indigo-600 dark:text-indigo-300"
+              >
+                Mis días
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                if (displayWeekNum > 1) {
+                  const newWeek = displayWeekNum - 1;
+                  onViewAsOfWeekChange?.(newWeek === currentWeekOfYear ? null : newWeek);
+                }
+              }}
+              className={cn(
+                'flex h-9 w-9 items-center justify-center rounded-full text-slate-500',
+                displayWeekNum <= 1 && 'opacity-30'
+              )}
+              aria-label="Semana anterior"
+            >
+              <ChevronLeft size={18} />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (displayWeekNum < 52) {
+                  const newWeek = displayWeekNum + 1;
+                  onViewAsOfWeekChange?.(newWeek === currentWeekOfYear ? null : newWeek);
+                }
+              }}
+              className={cn(
+                'flex h-9 w-9 items-center justify-center rounded-full text-slate-500',
+                displayWeekNum >= 52 && 'opacity-30'
+              )}
+              aria-label="Semana siguiente"
+            >
+              <ChevronRight size={18} />
+            </button>
           </div>
         </div>
+        <AnimatePresence>
+          {showMonthSelector && (
+            <motion.div
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 6 }}
+              className="mb-3 grid grid-cols-3 gap-1 rounded-2xl border border-slate-100 bg-white p-2 dark:border-slate-700 dark:bg-slate-900"
+            >
+              {months.map((m, idx) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => {
+                    const year = displayPlanYear;
+                    const targetWeekNum = firstWeekOfYearStartingInMonth(year, idx);
+                    onViewAsOfWeekChange?.(targetWeekNum === currentWeekOfYear ? null : targetWeekNum);
+                    setShowMonthSelector(false);
+                  }}
+                  className={cn(
+                    'rounded-lg px-2 py-2 text-xs font-medium',
+                    currentMonth === m ? 'bg-indigo-600 text-white' : 'text-slate-400 dark:text-slate-300'
+                  )}
+                >
+                  {m.substr(0, 3)}
+                </button>
+              ))}
+            </motion.div>
+          )}
+        </AnimatePresence>
+        {showSkipDropdown && !isHistoryMode && onSkipWeek && (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setShowSkipDropdown(false)} />
+            <div className="relative z-50 mb-3 rounded-2xl border border-slate-100 bg-white p-2 shadow-lg dark:border-slate-600 dark:bg-slate-800">
+              <button
+                type="button"
+                onClick={() => { onSkipWeek(skipWeekKey, 'skip_only'); setShowSkipDropdown(false); }}
+                className="w-full rounded-xl px-3 py-2 text-left text-xs font-bold text-slate-700 dark:text-slate-200"
+              >
+                Solo marcar
+                <span className="mt-0.5 block text-[10px] font-normal text-slate-500">No mueve el resto del plan</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => { onSkipWeek(displayWeekNum, 'shift'); setShowSkipDropdown(false); }}
+                className="w-full rounded-xl px-3 py-2 text-left text-xs font-bold text-slate-700 dark:text-slate-200"
+              >
+                Vacaciones — mover el plan
+                <span className="mt-0.5 block text-[10px] font-normal text-slate-500">Las semanas siguientes se desplazan</span>
+              </button>
+            </div>
+          </>
+        )}
 
         <AnimatePresence mode="wait">
           {!currentWeek || !currentDay ? (
@@ -1279,10 +1344,10 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     key={day.id}
                     onClick={() => goToDay(idx)}
                     className={cn(
-                        "flex min-h-11 min-w-[2.85rem] flex-shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-xl px-2.5 text-[11px] font-medium transition-all sm:min-w-[3.4rem] sm:gap-1.5 sm:px-3 sm:text-[12px]",
+                        "flex min-h-10 min-w-[2.75rem] flex-shrink-0 items-center justify-center gap-1 whitespace-nowrap rounded-full px-2.5 text-[11px] font-semibold transition-all sm:min-w-[3.2rem] sm:px-3 sm:text-[12px]",
                         isActive
-                          ? "bg-indigo-600 text-white shadow-sm"
-                          : "bg-white text-slate-500 shadow-sm dark:bg-slate-800 dark:text-slate-400"
+                          ? "bg-indigo-600 text-white"
+                          : "bg-transparent text-slate-400 dark:text-slate-500"
                       )}
                     >
                       <motion.span
@@ -1332,88 +1397,6 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     Semana saltada: los días de entreno o descarga se muestran como descanso. El plan guardado no cambia; al pulsar «Saltada» vuelve todo como estaba.
                   </div>
                 )}
-                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      {dayProgress.totalExercises > 0 &&
-                        (effectiveCurrentDayType === 'workout' || effectiveCurrentDayType === 'deload') && (
-                          <div className="flex items-center gap-2.5">
-                            <div className="h-1.5 w-24 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
-                              <motion.div
-                                className="h-full rounded-full bg-emerald-500"
-                                initial={false}
-                                animate={{
-                                  width: `${(dayProgress.doneExercises / dayProgress.totalExercises) * 100}%`,
-                                }}
-                                transition={SCREEN_TRANSITION}
-                              />
-                            </div>
-                            <span className="text-xs text-slate-500 dark:text-slate-400">
-                              {dayProgress.doneExercises} de {dayProgress.totalExercises} hechos
-                            </span>
-                          </div>
-                        )}
-                    </div>
-                    <div className={cn("w-full sm:w-auto", isHistoryMode && "opacity-75 pointer-events-none")}>
-                      <div className="flex rounded-full bg-slate-100 p-0.5 dark:bg-slate-800">
-                        {([
-                          { id: 'workout' as DayType, label: 'Entreno' },
-                          { id: 'rest' as DayType, label: 'Descanso' },
-                          { id: 'deload' as DayType, label: 'Descarga' },
-                        ]).map(opt => {
-                          const selected = (calendarWeekSkipped ? effectiveCurrentDayType : currentDay.type) === opt.id;
-                          return (
-                            <button
-                              key={opt.id}
-                              type="button"
-                              disabled={isHistoryMode || calendarWeekSkipped}
-                              title={calendarWeekSkipped ? 'Quita el salto de semana para editar el tipo de día.' : undefined}
-                              onClick={() => onUpdateDayType(currentWeek.id, templateDay?.id ?? currentDay.id, opt.id)}
-                              className={cn(
-                                'flex-1 rounded-full px-3 py-1.5 text-xs font-medium transition-colors sm:flex-none',
-                                selected
-                                  ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-700 dark:text-white'
-                                  : 'text-slate-500'
-                              )}
-                            >
-                              {opt.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                </div>
-
-                {!isHistoryMode && (onSkipDay || onResetDayShifts) && (
-                  <div className="mb-3 flex flex-wrap items-center gap-2">
-                    {onSkipDay && skippedDaysThisWeek.includes(activeDayIdx) ? (
-                      <button
-                        type="button"
-                        onClick={() => onSkipDay(activeDayIdx, displayPlanYear, displayWeekNum)}
-                        className="rounded-full bg-amber-50 px-3 py-1.5 text-[12px] font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
-                      >
-                        Hoy sí
-                      </button>
-                    ) : onSkipDay && (effectiveCurrentDayType === 'workout' || effectiveCurrentDayType === 'deload') ? (
-                      <button
-                        type="button"
-                        onClick={() => onSkipDay(activeDayIdx, displayPlanYear, displayWeekNum)}
-                        className="rounded-full bg-slate-100 px-3 py-1.5 text-[12px] font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400"
-                      >
-                        Hoy no voy
-                      </button>
-                    ) : null}
-                    {skippedDaysThisWeek.length > 0 && onResetDayShifts && (
-                      <button
-                        type="button"
-                        onClick={() => onResetDayShifts(displayPlanYear, displayWeekNum)}
-                        className="rounded-full px-3 py-1.5 text-[12px] font-medium text-indigo-600 dark:text-indigo-300"
-                      >
-                        Mis días
-                      </button>
-                    )}
-                  </div>
-                )}
-
                 {effectiveCurrentDayType === 'workout' || effectiveCurrentDayType === 'deload' ? (
                   <div className="space-y-2">
                     {/* Table Header - Solo desktop. % RM solo si alguno tiene TM vinculado */}
@@ -1439,7 +1422,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                             setSavingSession(false);
                           }
                         }}
-                        className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-emerald-200 bg-emerald-50/70 py-2 text-[13px] font-medium text-emerald-700 transition-colors hover:bg-emerald-50 disabled:opacity-60 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300 dark:hover:bg-emerald-950/50"
+                        className="flex w-full items-center justify-center gap-1.5 rounded-2xl border border-emerald-200/80 bg-emerald-500/[0.07] py-2 text-[13px] font-medium text-emerald-700 transition-colors hover:bg-emerald-500/10 disabled:opacity-60 dark:border-emerald-800/70 dark:bg-emerald-400/[0.08] dark:text-emerald-300 dark:hover:bg-emerald-400/15"
                       >
                         {savingSession ? (
                           <><Loader2 size={16} className="animate-spin" /> Guardando…</>
@@ -1457,7 +1440,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
 
                     {/* Ejercicios */}
                     <LayoutGroup>
-                    <div className="space-y-2">
+                    <div className="space-y-2.5">
                       {dayExercises.map((ex, exIdx) => {
                         const logId = routineLogKeyFromIds(currentWeek, currentDay, ex);
                         const log = getLogEntryForExercise(logs, currentWeek, currentDay, ex);
@@ -1472,23 +1455,25 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                         /** Estado de un vistazo: así no hay que abrir el modal para saber qué falta. */
                         const exProgress = setsLoggedCount(ex, logId);
                         const setVideos = (log?.sets || []).filter(s => s.mediaKey).length;
+                        const exStatus: 'idle' | 'partial' | 'done' =
+                          exProgress.done <= 0 ? 'idle' : exProgress.done >= exProgress.total ? 'done' : 'partial';
                         const exStatusBadge =
                           exProgress.done === 0 ? null : (
                             <span
                               className={cn(
                                 'inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wider',
-                                exProgress.done >= exProgress.total
+                                exStatus === 'done'
                                   ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
-                                  : 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
+                                  : 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300'
                               )}
                             >
-                              {exProgress.done >= exProgress.total ? (
+                              {exStatus === 'done' ? (
                                 <>
                                   <CheckCircle2 size={12} className="fill-current" />
                                   Hecho
                                 </>
                               ) : (
-                                `${exProgress.done}/${exProgress.total} series`
+                                `${exProgress.done}/${exProgress.total}`
                               )}
                             </span>
                           );
@@ -1498,6 +1483,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                               key={ex.id}
                               highlighted={heldExerciseId === ex.id}
                               canHold={!isHistoryMode}
+                              status={exStatus}
                               canMoveUp={exIdx > 0}
                               canMoveDown={exIdx < dayExercises.length - 1}
                               onOpen={() => setLoggingExercise({ weekId: currentWeek.id, dayId: currentDay.id, exercise: ex })}
@@ -1515,10 +1501,20 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                               }}
                             >
                               {/* Mobile Card Layout */}
-                              <div className="flex items-center gap-2.5 lg:hidden">
+                              <div className="flex items-center gap-3 lg:hidden">
+                                <div
+                                  className={cn(
+                                    'flex size-10 shrink-0 items-center justify-center rounded-2xl text-[13px] font-black',
+                                    exStatus === 'done' && 'bg-emerald-500 text-white shadow-sm shadow-emerald-500/30',
+                                    exStatus === 'partial' && 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/25',
+                                    exStatus === 'idle' && 'bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300'
+                                  )}
+                                >
+                                  {exStatus === 'done' ? <CheckCircle2 size={18} strokeWidth={2.4} /> : exIdx + 1}
+                                </div>
                                 <div className="min-w-0 flex-1">
                                   <div className="flex items-start gap-1.5">
-                                    <h4 className="line-clamp-2 text-sm font-semibold leading-snug text-slate-900 dark:text-slate-100">
+                                    <h4 className="line-clamp-2 text-[15px] font-black leading-snug tracking-tight text-slate-900 dark:text-slate-100">
                                       {ex.name}
                                     </h4>
                                     {exStatusBadge}
@@ -1546,17 +1542,34 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                                       </>
                                     )}
                                   </p>
+                                  {exProgress.total > 0 && (
+                                    <div className="mt-2 flex items-center gap-1">
+                                      {Array.from({ length: Math.min(exProgress.total, 8) }).map((_, i) => (
+                                        <span
+                                          key={i}
+                                          className={cn(
+                                            'h-1.5 flex-1 max-w-7 rounded-full',
+                                            i < exProgress.done
+                                              ? exStatus === 'done'
+                                                ? 'bg-emerald-500'
+                                                : 'bg-indigo-500'
+                                              : 'bg-slate-200 dark:bg-slate-700'
+                                          )}
+                                        />
+                                      ))}
+                                    </div>
+                                  )}
                                 </div>
                                 <div
                                   className="shrink-0"
                                   onClick={(e) => e.stopPropagation()}
                                 >
                                   {compactScheme ? (
-                                    <span className="whitespace-nowrap rounded-lg bg-slate-50 px-2 py-1 text-[12px] font-bold tabular-nums text-slate-800 dark:bg-slate-800 dark:text-slate-100">
+                                    <span className="whitespace-nowrap rounded-xl bg-indigo-50 px-2.5 py-1.5 text-[12px] font-black tabular-nums text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-200">
                                       {compactScheme}
                                     </span>
                                   ) : (
-                                    <div className="flex items-center whitespace-nowrap rounded-lg bg-slate-50 px-1.5 py-1 dark:bg-slate-800">
+                                    <div className="flex items-center whitespace-nowrap rounded-xl bg-indigo-50 px-1.5 py-1 dark:bg-indigo-950/50">
                                       <input
                                         type="text"
                                         inputMode="numeric"
@@ -1795,12 +1808,12 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     setViewMode('daily');
                   }}
                   className={cn(
-                    "cursor-pointer border transition-all hover:border-indigo-200 dark:hover:border-indigo-600",
+                    "cursor-pointer border shadow-[0_10px_28px_-18px_rgba(15,23,42,0.4)] transition-all hover:border-indigo-200 dark:hover:border-indigo-600",
                     effType === 'rest' ? "border-slate-100 bg-slate-50/80 dark:border-slate-700 dark:bg-slate-800/40" : "border-slate-100 bg-white dark:border-slate-700 dark:bg-slate-800/50"
                   )}
                 >
                   <div className="mb-3 flex items-center justify-between gap-2">
-                    <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{day.name}</h3>
+                    <h3 className="text-sm font-black tracking-tight text-slate-900 dark:text-slate-100">{day.name}</h3>
                     <DayTypeBadge type={effType} />
                   </div>
 
@@ -1810,9 +1823,9 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                         <p className="text-xs text-slate-400 dark:text-slate-500">Sin ejercicios</p>
                       ) : (
                         mergeAdjacentSameExercises(day.exercises).map(ex => (
-                          <div key={ex.id} className="flex items-center justify-between gap-2 rounded-xl bg-slate-50 px-2.5 py-2 dark:bg-slate-700/40">
-                            <span className="min-w-0 truncate text-xs font-medium text-slate-700 dark:text-slate-200">{ex.name}</span>
-                            <span className="shrink-0 text-xs font-semibold tabular-nums text-indigo-600 dark:text-indigo-400">
+                          <div key={ex.id} className="flex items-center justify-between gap-2 rounded-xl bg-indigo-50/70 px-2.5 py-2 dark:bg-indigo-950/30">
+                            <span className="min-w-0 truncate text-xs font-bold text-slate-800 dark:text-slate-100">{ex.name}</span>
+                            <span className="shrink-0 text-xs font-black tabular-nums text-indigo-600 dark:text-indigo-300">
                               {isMultiBlock(ex) ? `${ex.sets} series` : `${ex.sets}×${ex.reps}`}
                             </span>
                           </div>
@@ -1852,10 +1865,17 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
             lastImport={lastCoachImport}
             routineName={activeRoutineName}
             routineCycleLength={cycleLength}
+            weekStartsOn={weekStartsOn}
+            initialWeek1ISO={cycleAnchorISO}
+            hidePlacement={importFromCreate}
             sameTemplateAllWeeks={sameTemplateAllWeeks}
-            onClose={() => setShowImportModal(false)}
+            onClose={() => {
+              setImportFromCreate(false);
+              setShowImportModal(false);
+            }}
             onConfirm={async (result) => {
               await onImportCoachPlan(result);
+              setImportFromCreate(false);
               setShowImportModal(false);
             }}
           />

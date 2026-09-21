@@ -71,6 +71,7 @@ export interface PublicProfile {
   athleteInviteStatus?: 'none' | 'pending' | 'accepted' | 'rejected';
   /** El que mira es el entrenador de esta persona. */
   iAmTheirCoach?: boolean;
+  isCloseFriend?: boolean;
   routineName: string | null;
   coach: FeedAuthor | null;
   trainingMaxes: { id?: string; name: string; value: number; mode: string }[];
@@ -114,11 +115,12 @@ export function fetchUserPosts(userId: string) {
   return apiGet<{ posts: FeedPost[] }>(`/api/feed/users/${userId}/posts`);
 }
 
-export function publishMedia(file: File, opts: { kind: 'post' | 'story'; caption?: string }) {
+export function publishMedia(file: File, opts: { kind: 'post' | 'story'; caption?: string; audience?: 'all' | 'close' }) {
   const form = new FormData();
   form.append('file', file);
   form.append('kind', opts.kind);
   if (opts.caption) form.append('caption', opts.caption);
+  if (opts.audience) form.append('audience', opts.audience);
   return apiUpload<FeedPost>('/api/feed/posts', form);
 }
 
@@ -331,8 +333,8 @@ export function removeChatGroupMember(groupId: string, userId: string) {
   return apiDelete(`/api/social/chats/groups/${groupId}/members/${userId}`);
 }
 
-export function deleteChat(peerId: string) {
-  return apiDelete(`/api/social/chats/${peerId}`);
+export function deleteChat(peerId: string, forEveryone = false) {
+  return apiDelete(`/api/social/chats/${peerId}`, forEveryone ? { forEveryone: true } : undefined);
 }
 
 export function deleteGroupChat(groupId: string) {

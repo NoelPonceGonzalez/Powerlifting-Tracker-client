@@ -106,6 +106,7 @@ import {
 } from '@/src/lib/savedAccounts';
 import { checkInExpiresAtMs, expiresAtFromSaved } from '@/src/lib/checkInExpires';
 import { hasUnseenMark, markSeenIds } from '@/src/lib/unseenMarks';
+import { silentRefreshToken } from '@/src/lib/authRefresh';
 
 function mapCheckInFromApi(c: Record<string, unknown>): GymCheckIn {
   const ts =
@@ -207,6 +208,8 @@ interface RoutinePlan {
   sameTemplateAllWeeks?: boolean;
   hiddenFromSocial?: boolean;
   cycleLength?: number;
+  cycleAnchorISO?: string;
+  weekStartsOn?: number;
   skippedWeeks?: number[];
   shiftedAtCalendarWeeks?: number[];
   calendarDayShifts?: CalendarDayShift[];
@@ -523,7 +526,13 @@ function resolveWeekDayIndex(
   return { weekIdx, dayIdx };
 }
 
-type CreateRoutinePlanOptions = { empty?: boolean; sameTemplateAllWeeks?: boolean; cycleLength?: number };
+type CreateRoutinePlanOptions = {
+  empty?: boolean;
+  sameTemplateAllWeeks?: boolean;
+  cycleLength?: number;
+  cycleAnchorISO?: string;
+  weekStartsOn?: number;
+};
 
 const createRoutinePlan = (id: string, name: string, options?: boolean | CreateRoutinePlanOptions) => {
   const opts: CreateRoutinePlanOptions =
@@ -538,6 +547,8 @@ const createRoutinePlan = (id: string, name: string, options?: boolean | CreateR
     sameTemplateAllWeeks,
     hiddenFromSocial: false,
     cycleLength,
+    cycleAnchorISO: opts.cycleAnchorISO,
+    weekStartsOn: opts.weekStartsOn ?? 1,
     skippedWeeks: [] as number[],
     createdAt: new Date().toISOString(),
     weeks,
@@ -642,6 +653,9 @@ export default function App() {
             ? 'month'
             : undefined,
       mbMode: !!u.mbMode,
+      workoutReminderOn: u.workoutReminderOn !== false,
+      workoutReminderTime: u.workoutReminderTime || '10:00',
+      timezone: u.timezone,
     };
   };
 
@@ -1206,6 +1220,8 @@ export default function App() {
               sameTemplateAllWeeks: r.sameTemplateAllWeeks,
               hiddenFromSocial: r.hiddenFromSocial,
               cycleLength: r.cycleLength,
+              cycleAnchorISO: r.cycleAnchorISO,
+              weekStartsOn: r.weekStartsOn,
               skippedWeeks: r.skippedWeeks,
               shiftedAtCalendarWeeks: r.shiftedAtCalendarWeeks,
               calendarDayShifts: r.calendarDayShifts,
@@ -1640,7 +1656,7 @@ export default function App() {
       }
     }
     setUser(prev => (prev ? { ...prev, ...next } : prev));
-    const toSync = ['theme', 'name', 'bodyWeight', 'gender', 'avatar', 'progressMode', 'mbMode'] as const;
+    const toSync = ['theme', 'name', 'bodyWeight', 'gender', 'avatar', 'progressMode', 'mbMode', 'workoutReminderOn', 'workoutReminderTime', 'timezone'] as const;
     const hasSync = toSync.some(k => k in next);
     if (hasSync) {
       try {
@@ -1669,6 +1685,7 @@ export default function App() {
     usePointsSystem?: boolean;
     bodyWeightScoring?: BodyWeightScoringMode;
     isPrivate?: boolean;
+    closeFriendsOnly?: boolean;
     password?: string;
   }) => {
     const created = await apiPost<Challenge>('/api/challenges', data);
@@ -1793,7 +1810,7 @@ export default function App() {
     });
   }, []);
 
-  const handleCheckIn = async (gymName: string, time: string) => {
+  const handleCheckIn = async (gymName: string, time: string, audience: 'all' | 'close' = 'all') => {
     if (!user) return;
     const ts = Date.now();
     const optimisticCheckIn: GymCheckIn = {
@@ -1808,7 +1825,7 @@ export default function App() {
     };
     upsertLocalDailyCheckIn(optimisticCheckIn);
     try {
-      const saved = await apiPost<any>('/api/checkins', { gymName, time });
+      const saved = await apiPost<any>('/api/checkins', { gymName, time, audience });
       const savedTs = saved?.timestamp ? new Date(saved.timestamp).getTime() : optimisticCheckIn.timestamp;
       upsertLocalDailyCheckIn({
         id: String(saved?._id || saved?.id || optimisticCheckIn.id),
@@ -1826,10 +1843,10 @@ export default function App() {
     }
   };
 
-  const handleCheckInUpdate = async (checkInId: string, gymName: string, time: string) => {
+  const handleCheckInUpdate = async (checkInId: string, gymName: string, time: string, audience?: 'all' | 'close') => {
     if (!user) return;
     try {
-      const saved = await apiPut<any>(`/api/checkins/${checkInId}`, { gymName, time });
+      const saved = await apiPut<any>(`/api/checkins/${checkInId}`, { gymName, time, ...(audience ? { audience } : {}) });
       const savedTs = saved?.timestamp ? new Date(saved.timestamp).getTime() : Date.now();
       upsertLocalDailyCheckIn({
         id: checkInId,
@@ -2087,7 +2104,13 @@ export default function App() {
 
   const handleCreateRoutine = async (
     routineName: string,
-    opts?: { sameTemplateAllWeeks?: boolean; cycleLength?: number; importAfter?: boolean }
+    opts?: {
+      sameTemplateAllWeeks?: boolean;
+      cycleLength?: number;
+      cycleAnchorISO?: string;
+      weekStartsOn?: number;
+      importAfter?: boolean;
+    }
   ) => {
     const name = routineName?.trim();
     if (!name) return;
@@ -2098,6 +2121,8 @@ export default function App() {
       empty: true,
       sameTemplateAllWeeks,
       cycleLength,
+      cycleAnchorISO: opts?.cycleAnchorISO,
+      weekStartsOn: opts?.weekStartsOn,
     });
     try {
       const w = getWeeksAt(newRoutine, currentWeekOfYear);
@@ -2110,6 +2135,8 @@ export default function App() {
         weekTypeOverrides: newRoutine.weekTypeOverrides || [],
         sameTemplateAllWeeks,
         cycleLength,
+        cycleAnchorISO: opts?.cycleAnchorISO,
+        weekStartsOn: opts?.weekStartsOn ?? 1,
         isActive: true,
       });
       const plan: RoutinePlan = expandRoutineFromApi({
@@ -2119,6 +2146,8 @@ export default function App() {
         sameTemplateAllWeeks: created.sameTemplateAllWeeks,
         hiddenFromSocial: created.hiddenFromSocial,
         cycleLength: created.cycleLength,
+        cycleAnchorISO: created.cycleAnchorISO,
+        weekStartsOn: created.weekStartsOn,
         skippedWeeks: created.skippedWeeks,
         shiftedAtCalendarWeeks: created.shiftedAtCalendarWeeks,
         calendarDayShifts: created.calendarDayShifts,
@@ -2150,7 +2179,10 @@ export default function App() {
   };
 
   const handleSelectRoutine = async (routineId: string) => {
-    if (routineId === activeRoutineId) return;
+    if (routineId === activeRoutineId) {
+      setProgramScreen('plan');
+      return;
+    }
     setRoutineSwitchingId(routineId);
     // Guardar lo pendiente de la rutina que dejamos antes de que el debounce se cancele.
     if (routineSyncRef.current) {
@@ -2236,6 +2268,8 @@ export default function App() {
         sameTemplateAllWeeks: created.sameTemplateAllWeeks,
         hiddenFromSocial: created.hiddenFromSocial,
         cycleLength: created.cycleLength,
+        cycleAnchorISO: created.cycleAnchorISO,
+        weekStartsOn: created.weekStartsOn,
         skippedWeeks: created.skippedWeeks,
         shiftedAtCalendarWeeks: created.shiftedAtCalendarWeeks,
         calendarDayShifts: created.calendarDayShifts,
@@ -2427,12 +2461,15 @@ export default function App() {
         clearUntouchedDays: opts.clearUntouchedDays,
         continuesPreviousPlan: opts.continuesPreviousPlan,
         currentWeekOfYear,
+        week1ISO: opts.week1ISO,
+        weekStartsOn: opts.weekStartsOn,
       })
     );
 
     const importMark: LastCoachImport = {
       startWeekNumber: opts.startWeekNumber,
       weeks: opts.plan.weeks.length,
+      week1ISO: opts.week1ISO,
     };
     setLastCoachImport(importMark);
     try {
@@ -3399,12 +3436,32 @@ export default function App() {
       }
 
       try {
-        const token = localStorage.getItem('auth_token');
+        let token = localStorage.getItem('auth_token');
         if (!token) {
           localStorage.removeItem(AUTH_USER_STORAGE_KEY);
           setUser(null);
           setIsCheckingSession(false);
           return;
+        }
+
+        const renewed = await silentRefreshToken(token);
+        if (renewed) {
+          token = renewed;
+          localStorage.setItem('auth_token', renewed);
+          try {
+            const cached = JSON.parse(localStorage.getItem(AUTH_USER_STORAGE_KEY) || 'null') as User | null;
+            if (cached?.id) {
+              upsertAccount({
+                id: cached.id,
+                token: renewed,
+                email: cached.email,
+                name: cached.name,
+                avatar: cached.avatar,
+              });
+            }
+          } catch {
+            /* la cuenta se actualiza al completar /me */
+          }
         }
         
         const ac = new AbortController();
@@ -3439,9 +3496,37 @@ export default function App() {
             console.error('[SESSION] Error parseando respuesta — sesión local mantenida:', parseError);
           }
         } else if (res.status === 401 || res.status === 403 || res.status === 404) {
-          localStorage.removeItem('auth_token');
-          localStorage.removeItem(AUTH_USER_STORAGE_KEY);
-          setUser(null);
+          let recovered = false;
+          if (res.status === 403 && token) {
+            try {
+              const refreshed = await fetch('/api/auth/refresh', {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                body: '{}',
+              });
+              if (refreshed.ok) {
+                const body = await refreshed.json();
+                if (body?.token) {
+                  localStorage.setItem('auth_token', body.token);
+                  const me2 = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${body.token}` } });
+                  if (me2.ok) {
+                    const data = await me2.json();
+                    const u = mapUserFromMePayload(data);
+                    setUser(u);
+                    localStorage.setItem(AUTH_USER_STORAGE_KEY, JSON.stringify(u));
+                    recovered = true;
+                  }
+                }
+              }
+            } catch {
+              /* se cierra abajo */
+            }
+          }
+          if (!recovered) {
+            localStorage.removeItem('auth_token');
+            localStorage.removeItem(AUTH_USER_STORAGE_KEY);
+            setUser(null);
+          }
         } else {
           console.warn('[SESSION] /api/auth/me respondió', res.status, '— sesión local mantenida');
         }
@@ -3454,6 +3539,28 @@ export default function App() {
     };
     checkSession();
   }, []);
+
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState !== 'visible') return;
+      const token = localStorage.getItem('auth_token');
+      if (!token) return;
+      void silentRefreshToken(token).then((renewed) => {
+        if (!renewed) return;
+        localStorage.setItem('auth_token', renewed);
+        if (!user?.id) return;
+        upsertAccount({
+          id: user.id,
+          token: renewed,
+          email: user.email,
+          name: user.name,
+          avatar: user.avatar,
+        });
+      });
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [user?.id, user?.email, user?.name, user?.avatar]);
 
   useEffect(() => {
     if (!user) {
@@ -3846,6 +3953,8 @@ export default function App() {
                     name: routine.name,
                     isActive: routine.id === activeRoutineId,
                     hiddenFromSocial: !!routine.hiddenFromSocial,
+                    cycleLength: routine.cycleLength ?? 4,
+                    sameTemplateAllWeeks: routine.sameTemplateAllWeeks === true,
                   }))}
                 onActivateRoutine={handleSelectRoutine}
                 onCreateRoutine={handleCreateRoutine}
@@ -3865,6 +3974,8 @@ export default function App() {
                 activeRoutineName={activeRoutine?.name || 'Rutina activa'}
                 sameTemplateAllWeeks={activeRoutine?.sameTemplateAllWeeks === true}
                 cycleLength={activeRoutine?.cycleLength ?? 4}
+                cycleAnchorISO={activeRoutine?.cycleAnchorISO}
+                weekStartsOn={activeRoutine?.weekStartsOn ?? 1}
                 onToggleSameTemplateAllWeeks={handleToggleSameTemplateAllWeeks}
                 trainingMaxes={tms}
                 tmHistory={sortedHistory}

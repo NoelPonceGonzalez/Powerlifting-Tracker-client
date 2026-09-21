@@ -1,5 +1,6 @@
 import { isOfflinePlanPath, offlineGetKey, readOfflineGet, saveOfflineGet } from '@/src/lib/offlineCache';
 import {
+  applyQueuedLogPatches,
   enqueueWrite,
   flushOfflineWrites,
   isNetworkError,
@@ -164,11 +165,11 @@ export async function apiGet<T>(path: string, params?: Record<string, string>): 
     }
     const data = (await res.json()) as T;
     if (cacheKey) void saveOfflineGet(cacheKey, data);
-    return data;
+    return applyQueuedLogPatches(url.pathname, data);
   } catch (err) {
     if (cacheKey) {
       const cached = await readOfflineGet<T>(cacheKey);
-      if (cached !== undefined) return cached;
+      if (cached !== undefined) return applyQueuedLogPatches(url.pathname, cached);
     }
     throw err;
   }
@@ -263,10 +264,12 @@ export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
   return res.json();
 }
 
-/** URL pública de una foto o vídeo del feed a partir de su clave. */
+/** URL de una foto o vídeo. El `<img>` no manda cabecera: el JWT va en `t`. */
 export function mediaUrl(key: string): string {
   const origin = resolveOriginForUrl('/api/media');
-  return `${origin}/api/media/${key}`;
+  const token = typeof localStorage !== 'undefined' ? localStorage.getItem('auth_token') : null;
+  const q = token ? `?t=${encodeURIComponent(token)}` : '';
+  return `${origin}/api/media/${key}${q}`;
 }
 
 export async function apiDelete(path: string, body?: object): Promise<void> {

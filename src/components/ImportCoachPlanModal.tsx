@@ -7,7 +7,16 @@ import { Button } from '@/src/components/ui/Button';
 import { cn } from '@/src/lib/utils';
 import { countPlanExercises, parseCoachPlan, type ParsedPlan } from '@/src/lib/coachPlan/parseCoachPlan';
 import { readPlanFile } from '@/src/lib/coachPlan/readPlanFile';
-import { firstWeekOfYearStartingInMonth, weekStartDateForWeekOfYear } from '@/src/lib/mesocycleWeek';
+import {
+  addDays,
+  formatWeekRangeFromDate,
+  parseISODate,
+  PLACEMENT_WEEK_STARTS_ON,
+  startOfWeek,
+  toISODate,
+  weekOfYearFromDate,
+  weekStartDateForWeekOfYear,
+} from '@/src/lib/mesocycleWeek';
 import { isAndroid, isIOS } from '@/src/pwa/installPrompt';
 
 export interface ImportCoachPlanResult {
@@ -21,12 +30,17 @@ export interface ImportCoachPlanResult {
   importMaxes: boolean;
   /** Es el mismo plan ampliado: las semanas ya vividas se dejan como están. */
   continuesPreviousPlan: boolean;
+  /** Lunes de la semana 1 del archivo (siempre lun–dom). */
+  week1ISO: string;
+  /** Primer día con entreno en el documento. */
+  weekStartsOn: number;
 }
 
 export interface LastCoachImport {
   startWeekNumber: number;
   /** Semanas que traía el documento anterior. */
   weeks: number;
+  week1ISO?: string;
 }
 
 interface ImportCoachPlanModalProps {
@@ -39,6 +53,10 @@ interface ImportCoachPlanModalProps {
   routineName: string;
   /** Ciclo que ya eligió al crear la rutina. El archivo llena huecos; no lo cambia salvo que traiga más semanas. */
   routineCycleLength?: number;
+  weekStartsOn?: number;
+  /** Si viene de crear la rutina: no vuelvas a preguntar cuándo empieza; solo el archivo. */
+  initialWeek1ISO?: string;
+  hidePlacement?: boolean;
   sameTemplateAllWeeks?: boolean;
   onClose: () => void;
   onConfirm: (result: ImportCoachPlanResult) => void | Promise<void>;
@@ -73,23 +91,19 @@ function filePickerAccept(): string {
   return DESKTOP_ACCEPT;
 }
 
-/** «3–9 ago»: las fechas se entienden mejor que el número de semana civil. */
-function formatWeekRange(weekNumber: number, year: number): string {
-  const start = weekStartDateForWeekOfYear(weekNumber, year);
-  const end = new Date(start);
-  end.setDate(start.getDate() + 6);
-  const sameMonth = start.getMonth() === end.getMonth();
-  const startTxt = start.toLocaleDateString('es-ES', sameMonth ? { day: 'numeric' } : { day: 'numeric', month: 'short' });
-  const endTxt = end.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
-  return `${startTxt}–${endTxt}`;
+function mondayOf(d: Date) {
+  return startOfWeek(d, PLACEMENT_WEEK_STARTS_ON);
 }
 
 export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
-  currentWeekNumber,
+  currentWeekNumber: _currentWeekNumber,
   planYear = new Date().getFullYear(),
   lastImport,
   routineName,
   routineCycleLength,
+  weekStartsOn: _weekStartsOn = 1,
+  initialWeek1ISO,
+  hidePlacement = false,
   sameTemplateAllWeeks = false,
   onClose,
   onConfirm,
@@ -99,15 +113,24 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
   const [reading, setReading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [plan, setPlan] = useState<ParsedPlan | null>(null);
-  const [startWeekNumber, setStartWeekNumber] = useState(currentWeekNumber);
-  /** El número de semana solo se enseña si el usuario pide elegirla a mano. */
-  const [customStartWeek, setCustomStartWeek] = useState(false);
-  /** Un ciclo de varias semanas (tipo power) se repite; un doc de 1 semana suele ser “esta semana y ya”. */
+  const thisWeekStart = useMemo(() => mondayOf(new Date()), []);
+  const [week1Start, setWeek1Start] = useState<Date>(() => {
+    const fromCreate = initialWeek1ISO ? parseISODate(initialWeek1ISO) : null;
+    return mondayOf(fromCreate ?? new Date());
+  });
+  const [placement, setPlacement] = useState<'this' | 'prev' | 'next' | 'continue' | 'date'>(() => {
+    if (!initialWeek1ISO) return 'this';
+    const fromCreate = parseISODate(initialWeek1ISO);
+    if (!fromCreate) return 'this';
+    const start = mondayOf(fromCreate);
+    if (toISODate(start) === toISODate(mondayOf(new Date()))) return 'this';
+    if (toISODate(start) === toISODate(addDays(mondayOf(new Date()), -7))) return 'prev';
+    if (toISODate(start) === toISODate(addDays(mondayOf(new Date()), 7))) return 'next';
+    return 'date';
+  });
   const [repeatAfterPlan, setRepeatAfterPlan] = useState(true);
-  /** 0 mientras el usuario borra el campo; al confirmar se usa el ciclo de la rutina o el del documento. */
   const [cycleLength, setCycleLength] = useState(routineCycleLength && routineCycleLength >= 1 ? routineCycleLength : 0);
   const [expandCycle, setExpandCycle] = useState(false);
-  const [useContinue, setUseContinue] = useState(false);
   const [clearUntouchedDays, setClearUntouchedDays] = useState(true);
   const [importMaxes, setImportMaxes] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -116,30 +139,23 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
   const totalExercises = useMemo(() => (plan ? countPlanExercises(plan) : 0), [plan]);
 
   const knownCycle = routineCycleLength && routineCycleLength >= 1 ? routineCycleLength : 0;
-  /** Mismo plan ampliado: se respeta lo ya entrenado y el documento solo manda de esta semana en adelante. */
-  const continuingPlan = useContinue && !!lastImport && startWeekNumber === lastImport.startWeekNumber;
+  const continuingPlan = placement === 'continue' && !!lastImport;
+  const startWeekNumber = weekOfYearFromDate(week1Start, week1Start.getFullYear() || planYear);
 
-  /** Atajos habituales; el número de semana civil no le dice nada a nadie. */
-  const startOptions = useMemo(() => {
-    const monthOfCurrent = weekStartDateForWeekOfYear(currentWeekNumber, planYear).getMonth();
-    const nextMonthWeek =
-      monthOfCurrent < 11 ? firstWeekOfYearStartingInMonth(planYear, monthOfCurrent + 1) : null;
-    const raw = [
-      ...(lastImport
-        ? [{ id: 'continue', label: 'Continuar el plan', week: lastImport.startWeekNumber }]
-        : []),
-      { id: 'prev', label: 'La anterior', week: currentWeekNumber - 1 },
-      { id: 'this', label: 'Esta semana', week: currentWeekNumber },
-      { id: 'next', label: 'La que viene', week: currentWeekNumber + 1 },
-      { id: 'month', label: 'El mes que viene', week: nextMonthWeek },
-    ];
-    const seen = new Set<number>();
-    return raw.filter(o => {
-      if (o.week === null || o.week < 1 || o.week > 52 || seen.has(o.week)) return false;
-      seen.add(o.week);
-      return true;
-    }) as { id: string; label: string; week: number }[];
-  }, [currentWeekNumber, planYear, lastImport]);
+  const applyPlacement = (id: 'this' | 'prev' | 'next' | 'continue' | 'date', date?: Date) => {
+    setPlacement(id);
+    if (id === 'this') setWeek1Start(thisWeekStart);
+    else if (id === 'prev') setWeek1Start(addDays(thisWeekStart, -7));
+    else if (id === 'next') setWeek1Start(addDays(thisWeekStart, 7));
+    else if (id === 'continue' && lastImport?.week1ISO) {
+      const [y, m, d] = lastImport.week1ISO.split('-').map(Number);
+      setWeek1Start(mondayOf(new Date(y, m - 1, d)));
+    } else if (id === 'continue' && lastImport) {
+      setWeek1Start(mondayOf(weekStartDateForWeekOfYear(lastImport.startWeekNumber, planYear)));
+    } else if (id === 'date' && date) {
+      setWeek1Start(mondayOf(date));
+    }
+  };
 
   const resolvedCycle = useMemo(() => {
     if (!plan) return knownCycle || 1;
@@ -156,7 +172,7 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
     if (!repeatAfterPlan) {
       const lastPlanWeek = startWeekNumber + fileWeeks - 1;
       if (lastPlanWeek >= 52) return 'El plan llega hasta el final del año.';
-      const nextStart = weekStartDateForWeekOfYear(lastPlanWeek + 1, planYear);
+      const nextStart = addDays(week1Start, fileWeeks * 7);
       return `Desde el ${nextStart.toLocaleDateString('es-ES', { day: 'numeric', month: 'long' })} los días quedan vacíos hasta el siguiente archivo.`;
     }
     if (n === 1) return 'Se copia esa semana en bucle. Si más adelante importas varias semanas distintas, el ciclo pasará a tener esas.';
@@ -165,22 +181,13 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
     }
     if (fileWeeks === n) return `Llena las ${n} semanas del ciclo. Luego se repetirá hasta que importes otro plan.`;
     return `El archivo trae ${fileWeeks} semanas. ${expandCycle ? `El ciclo pasa a ${fileWeeks} y se repetirá.` : `Solo se usan las primeras ${n} (tu ciclo).`}`;
-  }, [plan, resolvedCycle, startWeekNumber, repeatAfterPlan, planYear, expandCycle]);
+  }, [plan, resolvedCycle, week1Start, repeatAfterPlan, expandCycle]);
 
-  /**
-   * Lo que va a pasar, en frases, para poder confirmar sin abrir ningún ajuste.
-   * Es el mismo estado que manejan los controles de abajo, solo contado.
-   */
   const summary = useMemo(() => {
     if (!plan) return [];
     const when = continuingPlan
-      ? `Continúa el plan que ya tenías, desde el ${formatWeekRange(startWeekNumber, planYear)}`
-      : startWeekNumber === currentWeekNumber
-        ? `Empieza esta semana (${formatWeekRange(startWeekNumber, planYear)})`
-        : startWeekNumber === currentWeekNumber + 1
-          ? `Empieza la semana que viene (${formatWeekRange(startWeekNumber, planYear)})`
-          : `Empieza el ${formatWeekRange(startWeekNumber, planYear)}`;
-
+      ? `Sigue el plan que ya tenías. La semana 1 del archivo es el ${formatWeekRangeFromDate(week1Start)}`
+      : `La semana 1 del archivo es el ${formatWeekRangeFromDate(week1Start)}`;
     const rows = [when, cyclePreview];
     if (importMaxes && plan.maxes.length > 0) {
       rows.push(`Se guardarán los maximales del documento: ${plan.maxes.map(m => `${m.name} ${m.value}`).join(', ')}`);
@@ -189,7 +196,7 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
       rows.push('Se conserva lo que ya tuvieras en los días que el plan no menciona');
     }
     return rows.filter(Boolean);
-  }, [plan, continuingPlan, startWeekNumber, currentWeekNumber, planYear, cyclePreview, importMaxes, clearUntouchedDays]);
+  }, [plan, continuingPlan, week1Start, cyclePreview, importMaxes, clearUntouchedDays]);
 
   const handleFile = useCallback(async (file: File) => {
     setReading(true);
@@ -221,20 +228,26 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
        * Documento con al menos las mismas semanas que el anterior: casi siempre es el mismo plan con
        * semanas nuevas al final, así que se propone continuar donde empezó para no descolocarlo.
        */
-      if (lastImport && parsed.weeks.length >= lastImport.weeks) {
-        setCustomStartWeek(false);
-        setStartWeekNumber(lastImport.startWeekNumber);
-        setUseContinue(true);
+      if (hidePlacement) {
+        /* La fecha ya la eligió al crear la rutina. */
+      } else if (lastImport && parsed.weeks.length >= lastImport.weeks) {
+        setPlacement('continue');
+        if (lastImport.week1ISO) {
+          const [y, m, d] = lastImport.week1ISO.split('-').map(Number);
+          setWeek1Start(mondayOf(new Date(y, m - 1, d)));
+        } else {
+          setWeek1Start(mondayOf(weekStartDateForWeekOfYear(lastImport.startWeekNumber, planYear)));
+        }
       } else {
-        setUseContinue(false);
-        setStartWeekNumber(currentWeekNumber);
+        setPlacement('this');
+        setWeek1Start(thisWeekStart);
       }
     } catch (e: any) {
       setError(e?.message || 'No se ha podido leer el archivo.');
     } finally {
       setReading(false);
     }
-  }, [lastImport, knownCycle, sameTemplateAllWeeks, currentWeekNumber]);
+  }, [lastImport, knownCycle, sameTemplateAllWeeks, planYear, thisWeekStart, hidePlacement]);
 
   const handleConfirm = async () => {
     if (!plan) return;
@@ -248,6 +261,8 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
         clearUntouchedDays,
         importMaxes,
         continuesPreviousPlan: continuingPlan,
+        week1ISO: toISODate(week1Start),
+        weekStartsOn: plan.weekStartsOn,
       });
     } finally {
       setSaving(false);
@@ -276,12 +291,14 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
           <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4 dark:border-slate-700">
             <div className="min-w-0">
               <h2 className="text-lg font-black uppercase tracking-tight text-slate-900 dark:text-slate-100">
-                Importar plan
+                {hidePlacement ? 'Sube el archivo' : 'Importar plan'}
               </h2>
               <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                {knownCycle
-                  ? `Tu ciclo es de ${knownCycle} ${knownCycle === 1 ? 'semana' : 'semanas'}. El archivo llena huecos; no hace falta que traiga el ciclo entero.`
-                  : 'Word, Excel, PDF o texto. En el móvil puedes elegir desde Drive, Descargas o Archivos; se lee en el dispositivo, no se sube.'}
+                {hidePlacement
+                  ? `Semana 1 del archivo: ${formatWeekRangeFromDate(week1Start)}. Lo leo aquí y te digo qué hay.`
+                  : knownCycle
+                    ? `Tu ciclo es de ${knownCycle} ${knownCycle === 1 ? 'semana' : 'semanas'}. El archivo llena huecos; no hace falta que traiga el ciclo entero.`
+                    : 'Word, Excel, PDF o texto. En el móvil puedes elegir desde Drive, Descargas o Archivos; se lee en el dispositivo, no se sube.'}
               </p>
             </div>
             <button
@@ -342,10 +359,90 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
                   <p className="text-sm font-bold text-emerald-800 dark:text-emerald-200">
                     {plan.weeks.length} {plan.weeks.length === 1 ? 'semana' : 'semanas'} · {totalExercises} ejercicios
                     {plan.maxes.length > 0 && ` · ${plan.maxes.length} maximales`}
+                    {plan.weekStartsOn !== 1 && (
+                      <> · empieza el {['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'][plan.weekStartsOn]}</>
+                    )}
                   </p>
                 </div>
 
-                {/* La preview escaneada va primero: es lo que quieres revisar. */}
+                {!hidePlacement && <div className="space-y-2">
+                  <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                    ¿A qué semana corresponde la semana 1 del archivo?
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    {lastImport && (
+                      <button
+                        type="button"
+                        onClick={() => applyPlacement('continue')}
+                        className={cn(
+                          'col-span-2 rounded-2xl px-3.5 py-3 text-left',
+                          placement === 'continue'
+                            ? 'bg-indigo-50 ring-1 ring-indigo-400 dark:bg-indigo-950/40'
+                            : 'bg-white shadow-sm dark:bg-slate-800'
+                        )}
+                      >
+                        <span className="block text-sm font-semibold text-slate-800 dark:text-slate-100">
+                          Es el mismo plan, con más semanas
+                        </span>
+                        <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">
+                          La semana 1 sigue en el {formatWeekRangeFromDate(
+                            lastImport.week1ISO
+                              ? new Date(lastImport.week1ISO + 'T12:00:00')
+                              : weekStartDateForWeekOfYear(lastImport.startWeekNumber, planYear)
+                          )}.
+                          {plan.weeks.length > lastImport.weeks
+                            ? ` Antes tenías ${lastImport.weeks}; ahora trae ${plan.weeks.length}. Se añaden las nuevas y lo ya entrenado no se toca.`
+                            : ' Lo ya entrenado no se toca.'}
+                        </span>
+                      </button>
+                    )}
+                    {([
+                      { id: 'this' as const, label: 'Esta', sub: formatWeekRangeFromDate(thisWeekStart) },
+                      { id: 'prev' as const, label: 'La pasada', sub: formatWeekRangeFromDate(addDays(thisWeekStart, -7)) },
+                      { id: 'next' as const, label: 'La que viene', sub: formatWeekRangeFromDate(addDays(thisWeekStart, 7)) },
+                    ]).map(opt => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => applyPlacement(opt.id)}
+                        className={cn(
+                          'rounded-2xl px-3 py-2.5 text-left',
+                          placement === opt.id
+                            ? 'bg-indigo-50 ring-1 ring-indigo-400 dark:bg-indigo-950/40'
+                            : 'bg-white shadow-sm dark:bg-slate-800'
+                        )}
+                      >
+                        <span className="block text-sm font-semibold text-slate-800 dark:text-slate-100">{opt.label}</span>
+                        <span className="mt-0.5 block text-[11px] text-slate-500">{opt.sub}</span>
+                      </button>
+                    ))}
+                    <label
+                      className={cn(
+                        'rounded-2xl px-3 py-2.5 text-left',
+                        placement === 'date'
+                          ? 'bg-indigo-50 ring-1 ring-indigo-400 dark:bg-indigo-950/40'
+                          : 'bg-white shadow-sm dark:bg-slate-800'
+                      )}
+                    >
+                      <span className="block text-sm font-semibold text-slate-800 dark:text-slate-100">Otra fecha</span>
+                      <input
+                        type="date"
+                        value={toISODate(week1Start)}
+                        onChange={e => {
+                          if (!e.target.value) return;
+                          const [y, m, d] = e.target.value.split('-').map(Number);
+                          applyPlacement('date', new Date(y, m - 1, d));
+                        }}
+                        className="mt-1 w-full bg-transparent text-[11px] text-slate-500 focus:outline-none dark:text-slate-400"
+                      />
+                    </label>
+                  </div>
+                  <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                    Eliges dónde cae la semana 1. Si la semana que viene pasas el mismo archivo con una semana más, marca «mismo plan»: se entiende y no pisa lo que ya entrenaste.
+                  </p>
+                </div>}
+
+                {/* Preview: fechas reales lun–dom, no la ventana desde el 1 de enero. */}
                 <div className="space-y-3">
                   {plan.weeks.map((w, i) => (
                     <div key={`${w.number}-${i}`} className="rounded-xl border border-slate-200 dark:border-slate-700">
@@ -354,7 +451,7 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
                           {w.label}
                         </p>
                         <p className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400">
-                          → {formatWeekRange(startWeekNumber + i, planYear)}
+                          → {formatWeekRangeFromDate(addDays(week1Start, i * 7))}
                         </p>
                       </div>
                       <div className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -453,60 +550,6 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
                     </div>
                   )}
 
-                  <div className="grid grid-cols-1 gap-2">
-                    {lastImport && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setCustomStartWeek(false);
-                          setStartWeekNumber(lastImport.startWeekNumber);
-                          setUseContinue(true);
-                          setRepeatAfterPlan(true);
-                        }}
-                        className={cn(
-                          'rounded-2xl px-3.5 py-3 text-left',
-                          continuingPlan
-                            ? 'bg-indigo-50 ring-1 ring-indigo-400 dark:bg-indigo-950/40'
-                            : 'bg-white shadow-sm dark:bg-slate-800'
-                        )}
-                      >
-                        <span className="block text-sm font-semibold text-slate-800 dark:text-slate-100">
-                          Es el mismo plan, con más semanas
-                        </span>
-                        <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">
-                          La semana 1 sigue en el {formatWeekRange(lastImport.startWeekNumber, planYear)}.
-                          {plan.weeks.length > lastImport.weeks
-                            ? ` Antes tenías ${lastImport.weeks}; ahora trae ${plan.weeks.length}. Se añaden las nuevas. Lo ya entrenado no se toca.`
-                            : ' Actualiza el ciclo. Lo ya entrenado no se toca.'}
-                        </span>
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCustomStartWeek(false);
-                        setStartWeekNumber(currentWeekNumber);
-                        setUseContinue(false);
-                        setRepeatAfterPlan(true);
-                      }}
-                      className={cn(
-                        'rounded-2xl px-3.5 py-3 text-left',
-                        !continuingPlan && startWeekNumber === currentWeekNumber
-                          ? 'bg-indigo-50 ring-1 ring-indigo-400 dark:bg-indigo-950/40'
-                          : 'bg-white shadow-sm dark:bg-slate-800'
-                      )}
-                    >
-                      <span className="block text-sm font-semibold text-slate-800 dark:text-slate-100">
-                        Meterlo desde esta semana
-                      </span>
-                      <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">
-                        La semana 1 del archivo cae en el {formatWeekRange(currentWeekNumber, planYear)}.
-                        {knownCycle > 1 && plan.weeks.length < knownCycle
-                          ? ` Llena ${plan.weeks.length} de ${knownCycle} huecos.`
-                          : ' El ciclo se mantiene y se repetirá.'}
-                      </span>
-                    </button>
-                  </div>
                 </div>
 
                 <div className="rounded-xl border border-slate-200 dark:border-slate-700">
@@ -530,94 +573,14 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
 
                 {showOptions && (
                 <div className="space-y-3 border-t border-slate-100 p-4 dark:border-slate-700">
+                  {continuingPlan && (
+                    <p className="rounded-xl bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200">
+                      Lo que ya entrenaste se queda como está: el documento solo cambia de esta semana
+                      ({formatWeekRangeFromDate(thisWeekStart)}) en adelante.
+                    </p>
+                  )}
+
                   <div className="space-y-2">
-                    <p className="text-sm font-bold text-slate-800 dark:text-slate-100">¿Cuándo empieza el plan?</p>
-                    <div className="grid grid-cols-2 gap-2">
-                      {startOptions.map(opt => {
-                        const active = !customStartWeek && startWeekNumber === opt.week;
-                        return (
-                          <button
-                            key={opt.id}
-                            type="button"
-                            onClick={() => {
-                              setCustomStartWeek(false);
-                              setStartWeekNumber(opt.week);
-                              setUseContinue(opt.id === 'continue');
-                            }}
-                            className={cn(
-                              'rounded-xl border-2 px-3 py-2 text-left transition-colors',
-                              opt.id === 'continue' && 'col-span-2',
-                              active
-                                ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40'
-                                : 'border-slate-200 dark:border-slate-600'
-                            )}
-                          >
-                            <span className={cn(
-                              'block text-xs font-black uppercase tracking-wider',
-                              active ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-600 dark:text-slate-300'
-                            )}>
-                              {opt.label}
-                            </span>
-                            <span className="block text-[11px] font-medium text-slate-400">
-                              {opt.id === 'continue'
-                                ? `Sigue donde estaba: la semana 1 del documento vuelve al ${formatWeekRange(opt.week, planYear)}`
-                                : formatWeekRange(opt.week, planYear)}
-                            </span>
-                          </button>
-                        );
-                      })}
-                      <button
-                        type="button"
-                        onClick={() => setCustomStartWeek(true)}
-                        className={cn(
-                          'rounded-xl border-2 px-3 py-2 text-left transition-colors',
-                          customStartWeek
-                            ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/40'
-                            : 'border-slate-200 dark:border-slate-600'
-                        )}
-                      >
-                        <span className={cn(
-                          'block text-xs font-black uppercase tracking-wider',
-                          customStartWeek ? 'text-indigo-700 dark:text-indigo-300' : 'text-slate-600 dark:text-slate-300'
-                        )}>
-                          Otra semana
-                        </span>
-                        <span className="block text-[11px] font-medium text-slate-400">Elegir a mano</span>
-                      </button>
-                    </div>
-
-                    {customStartWeek && (
-                      <div className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2 dark:bg-slate-800/60">
-                        <span className="text-xs text-slate-600 dark:text-slate-300">
-                          Semana {startWeekNumber || '—'} del año
-                          {startWeekNumber ? ` · ${formatWeekRange(startWeekNumber, planYear)}` : ''}
-                        </span>
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          autoFocus
-                          value={startWeekNumber === 0 ? '' : startWeekNumber}
-                          onChange={e => {
-                            const raw = e.target.value.replace(/\D/g, '');
-                            setStartWeekNumber(raw === '' ? 0 : Math.min(52, parseInt(raw, 10)));
-                          }}
-                          onBlur={() => {
-                            if (!startWeekNumber) setStartWeekNumber(currentWeekNumber);
-                          }}
-                          className="h-10 w-16 shrink-0 rounded-xl border-2 border-slate-200 text-center text-base font-black text-slate-900 focus:border-indigo-500 focus:outline-none dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
-                        />
-                      </div>
-                    )}
-
-                    {continuingPlan && startWeekNumber < currentWeekNumber && (
-                      <p className="rounded-xl bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200">
-                        Lo que ya entrenaste se queda como está: el documento solo cambia de esta semana
-                        ({formatWeekRange(currentWeekNumber, planYear)}) en adelante.
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="space-y-2 border-t border-slate-100 pt-3 dark:border-slate-700">
                     <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Cuando acaban esas semanas</p>
                     <div className="flex gap-2">
                       {([

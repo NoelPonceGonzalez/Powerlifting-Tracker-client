@@ -42,7 +42,7 @@ function rememberDismissal(mode: PromptMode) {
  * consumiría la interacción del usuario y el navegador rechazaría la petición.
  */
 export const InstallPrompt: React.FC = () => {
-  const { isInstalled, canPrompt, needsManualInstructions, isInstallable, install } = useInstallPrompt();
+  const { isInstalled, needsManualInstructions, isInstallable, install } = useInstallPrompt();
   const { permission, isSupported, request: requestNotifications } = useWebNotifications();
 
   const [justInstalled, setJustInstalled] = useState(false);
@@ -58,9 +58,8 @@ export const InstallPrompt: React.FC = () => {
   const canAskNotifications = isSupported && permission === 'default' && !iosNeedsInstall;
 
   let mode: PromptMode | null = null;
-  if (canAskNotifications && !dismissed.notifications) mode = 'notifications';
-  else if (iosNeedsInstall && isInstallable && !dismissed.install) mode = 'install';
-  else if (!isIOS() && isInstallable && !dismissed.install && permission !== 'default') mode = 'install';
+  if (!isInstalled && !justInstalled && isInstallable && !dismissed.install) mode = 'install';
+  else if (canAskNotifications && !dismissed.notifications) mode = 'notifications';
 
   useEffect(() => {
     if (!mode) {

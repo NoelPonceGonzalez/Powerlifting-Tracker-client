@@ -23,9 +23,7 @@ import { Avatar } from '@/src/components/ui/Avatar';
 import { Button } from '@/src/components/ui/Button';
 import { GlassModal } from '@/src/components/ui/GlassModal';
 import { HistoryEntry, LogEntry, RMData, TrainingMax, TrainingWeek, Challenge, GymCheckIn, User, RoutineProgressKind } from '@/src/types';
-import { StrengthInsights } from '@/src/components/StrengthInsights';
 import { ProgressMiniProfile } from '@/src/components/social/ProgressMiniProfile';
-import { computeSessionStats } from '@/src/lib/sessionStats';
 import { entryDateISO } from '@/src/lib/calendarWeekDate';
 import { cn } from '@/src/lib/utils';
 import {
@@ -589,11 +587,6 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
   const mountedAt = useMemo(() => new Date(), []);
   const currentYear = mountedAt.getFullYear();
   const currentMonth = mountedAt.getMonth();
-
-  const sessionStats = useMemo(
-    () => computeSessionStats(routineWeeks, routineLogs, currentYear),
-    [routineWeeks, routineLogs, currentYear]
-  );
 
   /** Replay suave al volver a Progreso. No se parte de opacity 0: si no, los RM nuevos se quedan invisibles. */
   const enterControls = useAnimationControls();
@@ -1410,11 +1403,6 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
         </motion.button>
       )}
 
-      {sessionStats.totalSets > 0 && (
-      <motion.div variants={ENTER_ITEM} initial={false} className="mb-6 max-[400px]:mb-5 sm:mb-8 md:mb-10">
-        <StrengthInsights stats={sessionStats} isDark={isDarkTheme} enterKey={chartEnterKey} />
-      </motion.div>
-      )}
       </>
       )}
 

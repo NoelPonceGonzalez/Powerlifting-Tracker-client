@@ -1,3 +1,5 @@
+import { offlineLegacyTokenScope, offlineUserScope } from '@/src/lib/offlineQueue';
+
 /** Última respuesta buena de los GET del plan. Así la pestaña Rutina abre sin red. */
 
 const DB_NAME = 'pl-offline';
@@ -5,12 +7,7 @@ const STORE = 'gets';
 const LS_PREFIX = 'pl-offline-get:';
 
 function tokenScope(): string {
-  try {
-    const token = localStorage.getItem('auth_token') || '';
-    return token.slice(-16) || 'anon';
-  } catch {
-    return 'anon';
-  }
+  return offlineUserScope();
 }
 
 export function offlineGetKey(path: string, search = ''): string {
@@ -21,8 +18,9 @@ export function offlineGetKey(path: string, search = ''): string {
 /** Solo datos del plan/entrenamiento. Nunca login ni social. */
 export function isOfflinePlanPath(path: string): boolean {
   const p = path.split('?')[0];
+  if (p.includes('/athlete/')) return false;
+  if (p === '/api/routines' || /^\/api\/routines\/[^/]+$/.test(p)) return true;
   return (
-    p === '/api/routines' ||
     p === '/api/training-maxes' ||
     p === '/api/training-maxes/history' ||
     p === '/api/internal-exercise-maxes'
@@ -77,7 +75,7 @@ export async function saveOfflineGet(key: string, value: unknown): Promise<void>
   }
 }
 
-export async function readOfflineGet<T>(key: string): Promise<T | undefined> {
+async function readOfflineGetExact<T>(key: string): Promise<T | undefined> {
   if (typeof indexedDB !== 'undefined') {
     try {
       const db = await openDb();
@@ -94,4 +92,16 @@ export async function readOfflineGet<T>(key: string): Promise<T | undefined> {
     }
   }
   return readLocal<T>(key);
+}
+
+export async function readOfflineGet<T>(key: string): Promise<T | undefined> {
+  const found = await readOfflineGetExact<T>(key);
+  if (found !== undefined) return found;
+  const uid = offlineUserScope();
+  const legacy = offlineLegacyTokenScope();
+  if (!uid || !legacy || uid === legacy || !key.startsWith(`${uid}::`)) return undefined;
+  const oldKey = `${legacy}::${key.slice(uid.length + 2)}`;
+  const old = await readOfflineGetExact<T>(oldKey);
+  if (old !== undefined) void saveOfflineGet(key, old);
+  return old;
 }

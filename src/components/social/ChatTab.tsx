@@ -15,6 +15,7 @@ import type { Friend, FriendRequest, UserSearchResult } from '@/src/types';
 import { StoryCamera } from '@/src/components/social/StoryCamera';
 import { FILE_INPUT_VISUAL, GALLERY_MEDIA_ACCEPT } from '@/src/pwa/mediaAccess';
 import { AddFriendsModal } from '@/src/components/social/AddFriendsModal';
+import { fetchFollowSuggestions, flattenFollowSuggestions } from '@/src/lib/followSuggestions';
 import { ChatPeoplePanel } from '@/src/components/social/ChatPeoplePanel';
 import { StoriesRail } from '@/src/components/social/StoriesRail';
 import { StoryReplyCard } from '@/src/components/social/StoryReplyCard';
@@ -281,9 +282,12 @@ function InboxRow({
             )}>
               {preview}
             </span>
-            {unread && (
-              <span className="ml-auto flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-indigo-600 px-1.5 text-[10px] font-bold text-white">
-                {row.unread}
+            {row.unread > 0 && (
+              <span className={cn(
+                'ml-auto flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full px-1.5 text-[11px] font-bold text-white',
+                row.muted ? 'bg-slate-400 dark:bg-slate-600' : 'bg-indigo-600'
+              )}>
+                {row.unread > 99 ? '99+' : row.unread}
               </span>
             )}
           </span>
@@ -441,6 +445,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   const [peoplePage, setPeoplePage] = useState<'activity' | 'requests' | 'friends'>('activity');
   const [friendsFilter, setFriendsFilter] = useState<'all' | 'following' | 'followers'>('all');
   const [addFriendsOpen, setAddFriendsOpen] = useState(false);
+  const [emptySuggest, setEmptySuggest] = useState<UserSearchResult[]>([]);
   const heartBadge = Math.max(acceptCount ?? 0, pending.length);
   const goPeople = useCallback((page: 'activity' | 'requests' | 'friends') => {
     setPeoplePage(page);
@@ -617,6 +622,21 @@ export const ChatTab: React.FC<ChatTabProps> = ({
     if (!pageActive) return;
     void loadInbox();
   }, [loadInbox, pageActive]);
+
+  useEffect(() => {
+    if (!pageActive || threads.length > 0) return;
+    let live = true;
+    void fetchFollowSuggestions()
+      .then(pack => {
+        if (live) setEmptySuggest(flattenFollowSuggestions(pack).slice(0, 4));
+      })
+      .catch(() => {
+        if (live) setEmptySuggest([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, [pageActive, threads.length]);
 
   useEffect(() => {
     if (!pageActive) return;
@@ -860,6 +880,22 @@ export const ChatTab: React.FC<ChatTabProps> = ({
     }
   }, [draft, attach, open, sending, incomingPeer, loadInbox]);
 
+  const resendLine = async (line: ChatLine) => {
+    if (!open || !line.mine || !line.text?.trim()) return;
+    if (!window.confirm('¿Reenviar este mensaje?')) return;
+    try {
+      if (open.kind === 'dm') {
+        const created = await sendChatMessage(open.peer.id, line.text.trim());
+        if (created?.id) setMessages(prev => [...prev, created]);
+      } else {
+        const created = await sendGroupMessage(open.group.id, line.text.trim());
+        if (created?.id) setMessages(prev => [...prev, created]);
+      }
+    } catch (e) {
+      showAppError('No se ha podido reenviar.', e);
+    }
+  };
+
   const answerIncoming = useCallback(async (decision: 'accept' | 'reject') => {
     if (!incomingRequestId || incomingBusy) return;
     setIncomingBusy(true);
@@ -942,11 +978,11 @@ export const ChatTab: React.FC<ChatTabProps> = ({
     }
   };
 
-  const confirmDelete = async () => {
+  const confirmDelete = async (forEveryone = false) => {
     if (!pendingDelete || deleting) return;
     setDeleting(true);
     try {
-      if (pendingDelete.kind === 'dm') await deleteChat(pendingDelete.peerId);
+      if (pendingDelete.kind === 'dm') await deleteChat(pendingDelete.peerId, forEveryone);
       else await deleteGroupChat(pendingDelete.groupId);
       const closed =
         (open?.kind === 'dm' && pendingDelete.kind === 'dm' && open.peer.id === pendingDelete.peerId) ||
@@ -1011,11 +1047,21 @@ export const ChatTab: React.FC<ChatTabProps> = ({
             variant="danger"
             className="flex-1 rounded-xl"
             disabled={deleting}
-            onClick={() => void confirmDelete()}
+            onClick={() => void confirmDelete(false)}
           >
             {deleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
-            {deleting ? 'Eliminando…' : 'Eliminar'}
+            {deleting ? 'Eliminando…' : pendingDelete?.kind === 'dm' ? 'Solo yo' : 'Eliminar'}
           </Button>
+          {pendingDelete?.kind === 'dm' && (
+            <Button
+              variant="danger"
+              className="flex-1 rounded-xl"
+              disabled={deleting}
+              onClick={() => void confirmDelete(true)}
+            >
+              Los dos
+            </Button>
+          )}
         </div>
       }
     >
@@ -1024,7 +1070,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
           ? pendingDelete.team
             ? 'Sales del equipo y desaparece de tu lista. Los demás siguen.'
             : 'Sales del grupo y desaparece de tu lista. Los demás siguen.'
-          : 'Se quita de tu lista. El otro no lo nota. Si te escribe, vuelve a salir.'}
+          : 'Solo yo: se quita de tu lista. Los dos: se borra el chat para ambos.'}
       </p>
     </GlassModal>
   );
@@ -1272,6 +1318,14 @@ export const ChatTab: React.FC<ChatTabProps> = ({
             ) : (
             <div key={line.id} className={cn('flex', line.mine ? 'justify-end' : 'justify-start')}>
               <div
+                onContextMenu={e => {
+                  if (!line.mine || !line.text) return;
+                  e.preventDefault();
+                  void resendLine(line);
+                }}
+                onClick={() => {
+                  /* hold-friendly: double tap not needed */
+                }}
                 className={cn(
                   'max-w-[80%] rounded-2xl px-3.5 py-2 text-sm leading-relaxed shadow-sm',
                   line.mine
@@ -1542,22 +1596,47 @@ export const ChatTab: React.FC<ChatTabProps> = ({
       ) : (
       <>
       {rows.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-5 py-14 text-center dark:border-slate-700 dark:bg-slate-900">
-          <MessageCircle size={26} className="mx-auto mb-3 text-slate-300" />
-          <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
-            Aún no hay chats
-          </p>
-          <p className="mt-1 text-xs text-slate-400">
-            El + de amigos está arriba, junto al corazón.
-          </p>
-          <button
-            type="button"
-            onClick={() => setAddFriendsOpen(true)}
-            className="mx-auto mt-4 inline-flex items-center gap-2 rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white dark:bg-white dark:text-slate-900"
-          >
-            <UserPlus size={16} />
-            Añadir amigos
-          </button>
+        <div className="space-y-3">
+          <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-5 py-10 text-center dark:border-slate-700 dark:bg-slate-900">
+            <MessageCircle size={26} className="mx-auto mb-3 text-slate-300" />
+            <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+              Aún no hay chats
+            </p>
+            <p className="mt-1 text-xs text-slate-400">
+              Sigue a alguien o escribe el primero. El + de amigos está arriba, junto al corazón.
+            </p>
+            <button
+              type="button"
+              onClick={() => setAddFriendsOpen(true)}
+              className="mx-auto mt-4 inline-flex min-h-11 items-center gap-2 rounded-full bg-slate-900 px-4 text-sm font-semibold text-white dark:bg-white dark:text-slate-900"
+            >
+              <UserPlus size={16} />
+              Añadir amigos
+            </button>
+          </div>
+          {emptySuggest.length > 0 && (
+            <div className="rounded-3xl bg-white p-3 shadow-sm dark:bg-slate-900">
+              <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                Gente para seguir
+              </p>
+              {emptySuggest.map(person => (
+                <button
+                  key={person.id}
+                  type="button"
+                  onClick={() => setAddFriendsOpen(true)}
+                  className="flex min-h-12 w-full items-center gap-3 rounded-2xl px-1 py-2 text-left"
+                >
+                  <Face name={person.name} avatar={person.avatar ?? null} size={44} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[15px] font-semibold text-slate-900 dark:text-slate-100">
+                      {person.name}
+                    </span>
+                    <span className="text-[12px] text-slate-400">Toca para ver sugerencias</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       ) : (
         <div className="rounded-3xl bg-white shadow-sm dark:bg-slate-900">

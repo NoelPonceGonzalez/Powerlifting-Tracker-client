@@ -17,6 +17,8 @@ export interface RoutinePlanPatchInput {
   sameTemplateAllWeeks?: boolean;
   hiddenFromSocial?: boolean;
   cycleLength?: number;
+  cycleAnchorISO?: string;
+  weekStartsOn?: number;
 }
 
 export function buildPlanPatchPayload(r: RoutinePlanPatchInput) {
@@ -58,5 +60,7 @@ export function buildPlanPatchPayload(r: RoutinePlanPatchInput) {
     sameTemplateAllWeeks: r.sameTemplateAllWeeks,
     hiddenFromSocial: r.hiddenFromSocial,
     cycleLength: cl,
+    ...(r.cycleAnchorISO ? { cycleAnchorISO: r.cycleAnchorISO } : {}),
+    ...(r.weekStartsOn !== undefined ? { weekStartsOn: r.weekStartsOn } : {}),
   };
 }

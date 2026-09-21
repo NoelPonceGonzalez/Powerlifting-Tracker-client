@@ -59,6 +59,11 @@ export interface ParsedPlan {
   maxes: ParsedMax[];
   /** Tipo de cada día detectado en la tabla de organización semanal. */
   dayTypes: Record<number, 'workout' | 'rest'>;
+  /**
+   * Primer día con entreno en el archivo (0 = domingo … 6 = sábado),
+   * el mismo criterio que `Date.getDay`. Si no hay, lunes.
+   */
+  weekStartsOn: number;
   warnings: string[];
   /** Líneas que parecían ejercicio pero no se pudieron interpretar. */
   unparsedLines: string[];
@@ -797,7 +802,16 @@ export function parseCoachPlan(rawText: string): ParsedPlan {
     warnings.push('No se encontró ninguna semana. Comprueba que el documento use "Semana 1", "Semana 2"…');
   }
 
-  return { weeks, maxes, dayTypes, warnings, unparsedLines };
+  return { weeks, maxes, dayTypes, weekStartsOn: weekStartsOnFromDays(weeks), warnings, unparsedLines };
+}
+
+/** Primer día con ejercicios → 0=dom … 6=sáb. El archivo manda; no se elige a mano. */
+export function weekStartsOnFromDays(weeks: ParsedWeek[]): number {
+  for (let dayIndex = 0; dayIndex < 7; dayIndex++) {
+    const hasWork = weeks.some((w) => w.days.some((d) => d.dayIndex === dayIndex && d.exercises.length > 0));
+    if (hasWork) return (dayIndex + 1) % 7;
+  }
+  return 1;
 }
 
 export function countPlanExercises(plan: ParsedPlan): number {

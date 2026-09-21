@@ -192,12 +192,18 @@ export interface CoachImportMergeInput {
   clearUntouchedDays: boolean;
   continuesPreviousPlan: boolean;
   currentWeekOfYear: number;
+  /** Primer día de la semana 1 del archivo. Si no continúa un plan, se guarda como ancla del ciclo. */
+  week1ISO?: string;
+  /** Lo saca el archivo (primer día con entreno). No mueve las fechas lun–dom. */
+  weekStartsOn?: number;
 }
 
 export interface CoachImportRoutineSlice {
   weeks: TrainingWeek[];
   baseTemplate?: TrainingWeek[];
   cycleLength?: number;
+  cycleAnchorISO?: string;
+  weekStartsOn?: number;
   sameTemplateAllWeeks?: boolean;
   versions?: RoutineVersion[];
   weekTypeOverrides?: Array<{ weekType: number; week: TrainingWeek }>;
@@ -248,6 +254,12 @@ export function mergeCoachImportIntoRoutine<T extends CoachImportRoutineSlice>(
   return {
     ...r,
     cycleLength,
+    cycleAnchorISO: opts.continuesPreviousPlan
+      ? (r.cycleAnchorISO || opts.week1ISO || r.cycleAnchorISO)
+      : (opts.week1ISO || r.cycleAnchorISO),
+    weekStartsOn: opts.continuesPreviousPlan
+      ? (r.weekStartsOn ?? opts.weekStartsOn ?? 1)
+      : (opts.weekStartsOn ?? r.weekStartsOn ?? 1),
     sameTemplateAllWeeks: cycleLength === 1,
     weeks: materialize52WeeksFromFourTemplateWeeks(baseTemplate, cycleLength),
     baseTemplate,

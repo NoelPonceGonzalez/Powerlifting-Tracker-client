@@ -14,6 +14,9 @@ export interface User {
   mbMode?: boolean;
   /** `month` = vista por semanas en Progreso; `year` = por meses. La forma exacta del gráfico depende de la rutina (bloque vs mes civil). */
   progressMode?: 'month' | 'year';
+  workoutReminderOn?: boolean;
+  workoutReminderTime?: string;
+  timezone?: string;
 }
 
 export type ChallengeType = 'max_reps' | 'weight' | 'seconds';
@@ -29,6 +32,7 @@ export interface Challenge {
   exercise: string;
   exercises?: string[];
   isPrivate?: boolean;
+  closeFriendsOnly?: boolean;
   /** true: IPF GL (kg) y puntos por peso/género (reps/seg). false: gana quien tenga mejor marca bruta. */
   usePointsSystem?: boolean;
   /** Solo afecta al cálculo de puntos en reps y segundos. */
@@ -247,4 +251,5 @@ export interface UserSearchResult {
   canSendRequest?: boolean;
   /** Por qué sale en sugerencias: te sigue, lo siguen tus amigos, o gente nueva. */
   reason?: 'followback' | 'friends' | 'discover';
+  blocked?: 'you' | 'them' | null;
 }

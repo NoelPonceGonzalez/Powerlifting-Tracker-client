@@ -21,18 +21,22 @@ export default defineConfig(() => {
       // `strictPort` evita que arranque en otro sin avisar y acabes mirando otra app.
       port: 5180,
       strictPort: true,
-      // La UI corre en :5180 y la API en :3000; sin proxy el login pega a /health aquí y devuelve 404.
+      // La UI corre en :5180. Por defecto la API es local (:3000). POWER_API_PROXY=http://IP:3000
+      // engancha el cliente local al EC2 sin CORS (mismo origen).
       // SSE no puede tener timeout: si el proxy cierra el stream, Vite llena la consola de ECONNRESET.
-      proxy: {
-        '/api/sse': {
-          target: 'http://127.0.0.1:3000',
-          changeOrigin: true,
-          timeout: 0,
-          proxyTimeout: 0,
-        },
-        '/api': { target: 'http://127.0.0.1:3000', changeOrigin: true, timeout: 0, proxyTimeout: 0 },
-        '/health': { target: 'http://127.0.0.1:3000', changeOrigin: true },
-      },
+      proxy: (() => {
+        const target = process.env.POWER_API_PROXY || 'http://127.0.0.1:3000';
+        return {
+          '/api/sse': {
+            target,
+            changeOrigin: true,
+            timeout: 0,
+            proxyTimeout: 0,
+          },
+          '/api': { target, changeOrigin: true, timeout: 0, proxyTimeout: 0 },
+          '/health': { target, changeOrigin: true },
+        };
+      })(),
     },
     preview: {
       host: true,

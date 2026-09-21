@@ -4,7 +4,13 @@ import { Card } from '@/src/components/ui/Card';
 import { Button } from '@/src/components/ui/Button';
 import { isAndroid, isIOS, useInstallPrompt } from '@/src/pwa/installPrompt';
 import { useWebNotifications } from '@/src/pwa/notifications';
-import { cameraBlockedHint, useMediaAccess } from '@/src/pwa/mediaAccess';
+import {
+  cameraBlockedHint,
+  cameraFallbackHint,
+  cameraOsHint,
+  cameraPromptIsLastChance,
+  useMediaAccess,
+} from '@/src/pwa/mediaAccess';
 import { cn } from '@/src/lib/utils';
 import { showAppError, showAppOk } from '@/src/lib/appNotice';
 
@@ -25,10 +31,18 @@ const StatusChip: React.FC<{ tone: 'ok' | 'warn'; children: React.ReactNode }> =
 export const PwaSettingsSection: React.FC = () => {
   const { isInstalled, needsManualInstructions, install } = useInstallPrompt();
   const { permission, isSupported, isBlocked, requesting, request, sendTestNotification } = useWebNotifications();
-  const { camera, galleryReady, requestingCamera, requestCamera, enableGallery } = useMediaAccess();
+  const {
+    camera,
+    cameraDenial,
+    galleryReady,
+    requestingCamera,
+    requestCamera,
+    recheckCamera,
+    enableGallery,
+  } = useMediaAccess();
   const [showIosSteps, setShowIosSteps] = useState(false);
   const [askedCamera, setAskedCamera] = useState(false);
-  const [camHelp, setCamHelp] = useState(false);
+  const [recheckingCam, setRecheckingCam] = useState(false);
   const [testingPush, setTestingPush] = useState(false);
   const [testPushMsg, setTestPushMsg] = useState('');
 
@@ -237,9 +251,15 @@ export const PwaSettingsSection: React.FC = () => {
                   ? 'Lista. Las historias y la foto de perfil se hacen dentro de la app.'
                   : camera === 'unsupported'
                     ? 'Aquí no se puede abrir dentro de la app, pero puedes usar la cámara del móvil o la galería sin activar nada.'
-                    : camera === 'denied'
-                      ? 'Ahora mismo no se abre dentro de la app. Prueba a activarla; si no, la cámara del móvil y la galería siguen funcionando.'
-                      : 'Pulsa Activar y acepta. Así la cámara se abre dentro de la app, sin salir a la del móvil.'}
+                    : cameraDenial === 'silent'
+                      ? 'El navegador ya no pregunta: tiene el permiso guardado en No. Hay que cambiarlo una vez en los ajustes del sitio, aquí abajo te digo dónde.'
+                      : cameraDenial === 'os'
+                        ? 'La cámara no se ha podido abrir. Suele ser que la esté usando otra app, o que el navegador no tenga permiso de cámara en el móvil.'
+                        : cameraPromptIsLastChance()
+                          ? 'Ojo: el aviso se ha cerrado ya dos veces. Si vuelves a cerrarlo sin darle a Permitir, el navegador dejará de preguntar durante una semana.'
+                          : cameraDenial === 'user'
+                            ? 'Se ha cerrado sin aceptar. Pulsa Reintentar y dale a Permitir cuando salga el aviso.'
+                            : 'Pulsa Activar y acepta. Así la cámara se abre dentro de la app, sin salir a la del móvil.'}
               </p>
             </div>
           </div>
@@ -247,6 +267,26 @@ export const PwaSettingsSection: React.FC = () => {
             <StatusChip tone="ok">
               <Check size={14} /> Activa
             </StatusChip>
+          ) : cameraDenial === 'silent' ? (
+            /* Insistir aquí no sirve: el diálogo no va a salir y cada intento lo empeora. */
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={recheckingCam}
+              onClick={() => {
+                setRecheckingCam(true);
+                void recheckCamera()
+                  .then(state => {
+                    if (state === 'granted') showAppOk('Cámara activada.');
+                    else showAppError('Sigue bloqueada. Cámbiala en los ajustes del sitio.');
+                  })
+                  .finally(() => setRecheckingCam(false));
+              }}
+              className="w-full shrink-0 uppercase tracking-widest min-[360px]:w-auto"
+            >
+              {recheckingCam ? 'Comprobando…' : 'Ya está, comprobar'}
+            </Button>
           ) : (
             <Button
               type="button"
@@ -255,13 +295,8 @@ export const PwaSettingsSection: React.FC = () => {
               disabled={camera === 'unsupported' || requestingCamera}
               onClick={() => {
                 setAskedCamera(true);
-                void requestCamera().then(state => {
-                  if (state === 'granted') {
-                    setCamHelp(false);
-                    showAppOk('Cámara activada.');
-                  } else {
-                    setCamHelp(true);
-                  }
+                void requestCamera().then(attempt => {
+                  if (attempt.state === 'granted') showAppOk('Cámara activada.');
                 });
               }}
               className="w-full shrink-0 uppercase tracking-widest min-[360px]:w-auto"
@@ -271,18 +306,42 @@ export const PwaSettingsSection: React.FC = () => {
           )}
         </div>
 
-        {/* Solo si al pulsar Activar el navegador ya no pregunta: ahí sí hay que tocar ajustes. */}
-        {camera === 'denied' && askedCamera && camHelp && (
+        {/* Solo cuando el navegador ya no pregunta: ahí sí hay que tocar ajustes del sitio. */}
+        {cameraDenial === 'silent' && (
           <div className="space-y-2 rounded-2xl bg-slate-50 p-4 dark:bg-slate-900/70">
             <p className="text-xs font-bold text-slate-700 dark:text-slate-200">
-              El navegador ya no vuelve a preguntar
+              Cómo desbloquearla
             </p>
             <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">{cameraBlockedHint()}</p>
+            {cameraFallbackHint() && (
+              <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">{cameraFallbackHint()}</p>
+            )}
+            {cameraOsHint() && (
+              <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">{cameraOsHint()}</p>
+            )}
+            <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+              Cuando lo hayas puesto en Permitir, vuelve aquí y pulsa
+              <strong className="font-bold"> Ya está, comprobar</strong>.
+            </p>
             <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
               Si prefieres no tocar nada: al hacer una historia o cambiar tu foto tienes
               <strong className="font-bold"> Hacer una foto </strong>
               y <strong className="font-bold">Galería</strong>, que funcionan igual sin este permiso.
             </p>
+          </div>
+        )}
+
+        {cameraDenial === 'os' && (
+          <div className="space-y-2 rounded-2xl bg-slate-50 p-4 dark:bg-slate-900/70">
+            <p className="text-xs font-bold text-slate-700 dark:text-slate-200">
+              La cámara está ocupada o sin permiso del móvil
+            </p>
+            <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">
+              Cierra la app de Cámara o la videollamada que la esté usando y vuelve a pulsar Reintentar.
+            </p>
+            {cameraOsHint() && (
+              <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">{cameraOsHint()}</p>
+            )}
           </div>
         )}
 

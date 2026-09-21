@@ -43,6 +43,83 @@ export function weekStartDateForWeekOfYear(weekOfYear: number, year: number): Da
 }
 
 /**
+ * Las semanas de “esta / la pasada / la que viene” son siempre lunes–domingo.
+ * El día en que el usuario entrena primero no mueve esa ventana.
+ */
+export const PLACEMENT_WEEK_STARTS_ON = 1;
+
+/** 0 = domingo … 6 = sábado. Por defecto la semana de gym empieza el lunes. */
+export function startOfWeek(d: Date, weekStartsOn = PLACEMENT_WEEK_STARTS_ON): Date {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diff = (x.getDay() - weekStartsOn + 7) % 7;
+  x.setDate(x.getDate() - diff);
+  return x;
+}
+
+export function addDays(d: Date, n: number): Date {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  x.setDate(x.getDate() + n);
+  return x;
+}
+
+export function toISODate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+export function parseISODate(iso: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
+/** «21–27 sept»: lunes a domingo (o el día que empiece la rutina), no la ventana desde el 1 de enero. */
+export function formatWeekRangeFromDate(d: Date, weekStartsOn = 1): string {
+  const start = startOfWeek(d, weekStartsOn);
+  const end = addDays(start, 6);
+  const sameMonth = start.getMonth() === end.getMonth();
+  const startTxt = start.toLocaleDateString('es-ES', sameMonth ? { day: 'numeric' } : { day: 'numeric', month: 'short' });
+  const endTxt = end.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+  return `${startTxt}–${endTxt}`;
+}
+
+/** Semana 1–N del ciclo contando desde el ancla (cuando empezó la semana 1), no desde el 1 de enero. */
+export function cycleIndexFromAnchor(
+  date: Date,
+  anchorISO: string,
+  cycleLength: number,
+  weekStartsOn = 1
+): number {
+  const cl = Math.max(1, cycleLength);
+  const todayStart = startOfWeek(date, weekStartsOn);
+  const parsed = parseISODate(anchorISO);
+  if (!parsed) return getMesocycleWeekIndex(weekOfYearFromDate(date, date.getFullYear()), cl);
+  const anchorStart = startOfWeek(parsed, weekStartsOn);
+  const weeks = Math.round((todayStart.getTime() - anchorStart.getTime()) / 86400000 / 7);
+  return ((weeks % cl) + cl) % cl + 1;
+}
+
+/**
+ * Misma idea, pero sobre el índice civil 1–52 que usa el plan guardado.
+ * Así «semana 1 del archivo = esta» es semana 1 del ciclo, no la que toque por el 1 de enero.
+ */
+export function cycleIndexFromCivilWeek(
+  civilWeek: number,
+  anchorISO: string | undefined,
+  cycleLength: number,
+  year = new Date().getFullYear()
+): number {
+  const cl = Math.max(1, cycleLength);
+  if (!anchorISO) return getMesocycleWeekIndex(civilWeek, cl);
+  const parsed = parseISODate(anchorISO);
+  if (!parsed) return getMesocycleWeekIndex(civilWeek, cl);
+  const anchorCivil = weekOfYearFromDate(parsed, parsed.getFullYear() || year);
+  return ((civilWeek - anchorCivil) % cl + cl) % cl + 1;
+}
+
+/**
  * Posición 1–N dentro del mes natural (reinicia cada mes).
  * Bloques: días 1–7 → 1, 8–14 → 2, 15–21 → 3, 22–fin → 4, etc.
  */

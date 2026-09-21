@@ -133,6 +133,8 @@ export function expandRoutineFromApi(raw: {
   sameTemplateAllWeeks?: boolean;
   hiddenFromSocial?: boolean;
   cycleLength?: number;
+  cycleAnchorISO?: string;
+  weekStartsOn?: number;
   skippedWeeks?: number[];
   shiftedAtCalendarWeeks?: number[];
   calendarDayShifts?: { year: number; week: number; skippedDays: number[] }[];
@@ -151,6 +153,8 @@ export function expandRoutineFromApi(raw: {
   sameTemplateAllWeeks: boolean;
   hiddenFromSocial: boolean;
   cycleLength: number;
+  cycleAnchorISO?: string;
+  weekStartsOn?: number;
   /** En rutina lineal: semanas civiles 1–53. En rutina por bloque: posición en el ciclo 1…cycleLength. */
   skippedWeeks: number[];
   /** Semanas civiles donde «Saltar la semana» desplazó el ciclo (solo block mode). */
@@ -257,6 +261,10 @@ export function expandRoutineFromApi(raw: {
     sameTemplateAllWeeks,
     hiddenFromSocial: !!raw.hiddenFromSocial,
     cycleLength,
+    cycleAnchorISO: typeof raw.cycleAnchorISO === 'string' && /^\d{4}-\d{2}-\d{2}/.test(raw.cycleAnchorISO)
+      ? raw.cycleAnchorISO.slice(0, 10)
+      : undefined,
+    weekStartsOn: Number.isFinite(raw.weekStartsOn) ? Math.max(0, Math.min(6, Math.round(Number(raw.weekStartsOn)))) : 1,
     skippedWeeks,
     shiftedAtCalendarWeeks: Array.isArray(raw.shiftedAtCalendarWeeks) ? raw.shiftedAtCalendarWeeks.filter(Number.isFinite) : [],
     calendarDayShifts: Array.isArray(raw.calendarDayShifts)

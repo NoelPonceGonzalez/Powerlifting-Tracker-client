@@ -72,6 +72,7 @@ function writeFlag(key: string, on: boolean): void {
 
 export function markCameraGranted(): void {
   writeFlag(CAMERA_OK_KEY, true);
+  resetCameraPrompts();
 }
 
 export function isCameraMarkedGranted(): boolean {
@@ -87,6 +88,10 @@ export function isNativeShell(): boolean {
 /**
  * Solo se enseña si el usuario abre «no me deja». Los permisos de una PWA instalada los
  * sigue gestionando el navegador que la instaló (WebAPK en Android), no el sistema.
+ *
+ * Android instalada: el permiso NO está en «Información de la app → Permisos» (el WebAPK
+ * no declara Cámara). Al pulsar largo el icono, junto a «Información de la app» aparece
+ * «Configuración del sitio», que es la que lo gestiona.
  */
 export function cameraBlockedHint(): string {
   if (isNativeShell()) {
@@ -99,10 +104,33 @@ export function cameraBlockedHint(): string {
   }
   if (isAndroid()) {
     return isStandalone()
-      ? 'Mantén pulsado el icono de la app → Información de la app → Permisos → Cámara → Permitir. Si no aparece, ábrela en Chrome, toca el candado de la barra y pon Cámara en Permitir.'
-      : 'Toca el candado junto a la dirección → Permisos → Cámara → Permitir (o Restablecer permisos) y recarga.';
+      ? 'Mantén pulsado el icono de la app y entra en «Configuración del sitio» (o «Site settings»), NO en «Información de la app»: ahí tienes Cámara → Permitir. En «Información de la app» no aparece Cámara porque el permiso lo guarda Chrome, no el sistema.'
+      : 'Toca el candado junto a la dirección → Permisos → Cámara → Permitir. Si ahí no sale, Chrome → ⋮ → Configuración → Configuración de sitios web → Cámara, busca esta web en «Bloqueados» y ponla en Permitir.';
   }
   return 'Toca el candado junto a la dirección del navegador, pon Cámara en Permitir y recarga.';
+}
+
+/**
+ * Segunda vía para la app instalada: no todos los launchers traen «Configuración del
+ * sitio» en el menú del icono. El permiso es del origen y lo comparten la app instalada
+ * y el navegador, así que permitirlo en Chrome lo arregla también aquí dentro.
+ */
+export function cameraFallbackHint(): string | null {
+  if (isNativeShell() || isIOS() || !isStandalone()) return null;
+  const host = typeof window !== 'undefined' ? window.location.hostname : '';
+  return `Si ese menú no te aparece: abre ${host || 'esta misma web'} en Chrome, toca el candado de la barra → Permisos → Cámara → Permitir. Es el mismo permiso para la web y para la app instalada, así que con eso ya funciona aquí dentro.`;
+}
+
+/**
+ * El navegador también necesita el permiso de cámara del sistema. Si Chrome no lo tiene,
+ * ninguna web puede abrirla y el diálogo de la web no sirve de nada.
+ */
+export function cameraOsHint(): string | null {
+  if (isNativeShell() || isIOS()) return null;
+  if (isAndroid()) {
+    return 'Comprueba también: Ajustes de Android → Aplicaciones → Chrome → Permisos → Cámara → Permitir.';
+  }
+  return null;
 }
 
 /** En iPhone instalado la cámara nativa (capture) suele ir mejor que la vista en vivo. */
@@ -169,9 +197,70 @@ export function queryMicrophonePermission(): Promise<MediaPermissionState> {
   return queryName('microphone' as PermissionName);
 }
 
+function isDenied(err: unknown): boolean {
+  const name = err instanceof DOMException ? err.name : '';
+  return name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError';
+}
+
+/** Si falla antes de esto, el diálogo no se ha mostrado: nadie decide tan rápido. */
+const PROMPT_MIN_MS = 250;
+
+/**
+ * Chrome mete el origen en cuarentena al tercer descarte, y entonces no hay vuelta atrás
+ * desde la web. Llevamos la cuenta nosotros y dejamos de pedir antes de llegar, así que
+ * el bloqueo de una semana no se puede provocar desde la app.
+ */
+const CAMERA_LOST_KEY = 'power_camera_lost';
+const MAX_LOST_PROMPTS = 2;
+
+function readCount(key: string): number {
+  try {
+    if (typeof localStorage === 'undefined') return 0;
+    const raw = Number(localStorage.getItem(key));
+    return Number.isFinite(raw) && raw > 0 ? raw : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function noteCameraPromptLost(): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(CAMERA_LOST_KEY, String(readCount(CAMERA_LOST_KEY) + 1));
+  } catch {
+    /* quota / private */
+  }
+}
+
+function resetCameraPrompts(): void {
+  try {
+    localStorage?.removeItem(CAMERA_LOST_KEY);
+  } catch {
+    /* quota / private */
+  }
+}
+
+/** true = no volvemos a pedir solos: un descarte más y Chrome lo bloquearía. */
+export function cameraPromptExhausted(): boolean {
+  return readCount(CAMERA_LOST_KEY) >= MAX_LOST_PROMPTS;
+}
+
+/** Queda un intento antes del bloqueo: hay que avisarlo antes de pedirlo. */
+export function cameraPromptIsLastChance(): boolean {
+  return readCount(CAMERA_LOST_KEY) === MAX_LOST_PROMPTS - 1;
+}
+
 /**
  * MDN / WebKit: facingMode como string (ideal). Sin width/height: iOS falla el prompt.
  * No uses `exact`: si no hay esa cámara, ni siquiera pregunta.
+ *
+ * Los reintentos son SOLO para cuando la cámara pedida no encaja (iOS, tablets con una
+ * sola cámara). Si el fallo es de permiso hay que parar en seco: cada getUserMedia
+ * rechazado cuenta como descarte y a los 3 Chrome mete el origen en cuarentena una
+ * semana, y entonces ya no vuelve a preguntar ni pulsando Activar.
+ *
+ * Único punto por el que pasan todas las peticiones de cámara, así que la cuenta de
+ * descartes se lleva aquí y vale para Ajustes y para la pantalla de historias.
  */
 export async function getCameraStream(facing: 'user' | 'environment' = 'environment'): Promise<MediaStream> {
   const devices = ensureMediaDevices();
@@ -184,38 +273,68 @@ export async function getCameraStream(facing: 'user' | 'environment' = 'environm
     { audio: false, video: true },
   ];
   let last: unknown;
+  const startedAt = Date.now();
   for (const cons of tries) {
     try {
-      return await devices.getUserMedia(cons);
+      const stream = await devices.getUserMedia(cons);
+      resetCameraPrompts();
+      return stream;
     } catch (err) {
       last = err;
+      if (isDenied(err)) {
+        // Solo cuenta si el diálogo estuvo delante: lo que Chrome suma son descartes.
+        if (Date.now() - startedAt >= PROMPT_MIN_MS) noteCameraPromptLost();
+        break;
+      }
     }
   }
   throw last instanceof Error ? last : new DOMException('No se ha podido abrir la cámara.', 'NotAllowedError');
 }
 
-function isDenied(err: unknown): boolean {
-  const name = err instanceof DOMException ? err.name : '';
-  return name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError';
+/**
+ * Por qué no hay cámara:
+ * - `user`: ha dicho No o ha cerrado el diálogo. Se puede volver a pedir.
+ * - `silent`: el diálogo no llegó a salir (bloqueo recordado o cuarentena de Chrome).
+ *   Desde la web no hay forma de reabrirlo: solo ajustes del sitio.
+ * - `os`: la cámara no se puede abrir (el navegador no tiene permiso del sistema,
+ *   o la está usando otra app).
+ */
+export type CameraDenialKind = 'none' | 'user' | 'silent' | 'os';
+
+export interface CameraAttempt {
+  state: MediaPermissionState;
+  denial: CameraDenialKind;
 }
 
 /**
  * Pide cámara desde un clic. Eso es lo que hace salir el diálogo «Permitir».
+ * Una sola petición por pulsación: insistir es lo que provoca el bloqueo permanente.
  */
-export async function requestCameraAccess(): Promise<MediaPermissionState> {
-  if (!isCameraSupported()) return 'unsupported';
+export async function requestCameraAccess(): Promise<CameraAttempt> {
+  if (!isCameraSupported()) return { state: 'unsupported', denial: 'none' };
+  const startedAt = Date.now();
   try {
     const stream = await getCameraStream('environment');
     stream.getTracks().forEach(t => t.stop());
     markCameraGranted();
-    return 'granted';
+    return { state: 'granted', denial: 'none' };
   } catch (err) {
     const name = err instanceof DOMException ? err.name : '';
-    if (name === 'NotFoundError' || name === 'OverconstrainedError') return 'unsupported';
+    const elapsed = Date.now() - startedAt;
+    if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+      return { state: 'unsupported', denial: 'none' };
+    }
+    // La cámara existe pero el sistema no la suelta: permiso del navegador u otra app.
+    if (name === 'NotReadableError' || name === 'TrackStartError' || name === 'AbortError') {
+      return { state: 'denied', denial: 'os' };
+    }
     // Cerrar el diálogo sin decidir no es un bloqueo: manda el estado real, no el error.
     const state = await readCameraPermission();
-    if (state === 'granted' || state === 'denied') return state;
-    return isDenied(err) ? 'denied' : 'prompt';
+    if (state === 'granted') return { state, denial: 'none' };
+    if (!isDenied(err)) return { state, denial: 'none' };
+    // Sin diálogo visible el permiso ya estaba decidido antes de pulsar.
+    if (elapsed < PROMPT_MIN_MS) return { state: 'denied', denial: 'silent' };
+    return { state, denial: 'user' };
   }
 }
 
@@ -244,9 +363,13 @@ export function openGalleryPicker(accept = GALLERY_MEDIA_ACCEPT): Promise<File |
 
 export interface UseMediaAccessResult {
   camera: MediaPermissionState;
+  /** Por qué no hay cámara, para no mandar a ajustes a quien solo cerró el diálogo. */
+  cameraDenial: CameraDenialKind;
   galleryReady: boolean;
   requestingCamera: boolean;
-  requestCamera: () => Promise<MediaPermissionState>;
+  requestCamera: () => Promise<CameraAttempt>;
+  /** Relee el permiso sin tocar la cámara (tras cambiarlo en ajustes del sitio). */
+  recheckCamera: () => Promise<MediaPermissionState>;
   enableGallery: () => void;
 }
 
@@ -254,11 +377,15 @@ export function useMediaAccess(): UseMediaAccessResult {
   const [camera, setCamera] = useState<MediaPermissionState>(() =>
     isCameraSupported() ? 'prompt' : 'unsupported'
   );
+  const [cameraDenial, setCameraDenial] = useState<CameraDenialKind>('none');
   const [galleryReady, setGalleryReady] = useState(() => isGalleryMarkedReady());
   const [requestingCamera, setRequestingCamera] = useState(false);
 
   const refreshCamera = useCallback(() => {
-    void queryCameraPermission().then(setCamera);
+    void queryCameraPermission().then(next => {
+      setCamera(next);
+      if (next === 'granted') setCameraDenial('none');
+    });
   }, []);
 
   useEffect(() => {
@@ -282,7 +409,10 @@ export function useMediaAccess(): UseMediaAccessResult {
       .then(s => {
         status = s;
         const apply = () => {
-          if (s.state === 'granted') markCameraGranted();
+          if (s.state === 'granted') {
+            markCameraGranted();
+            setCameraDenial('none');
+          }
           setCamera(s.state === 'granted' || s.state === 'denied' || s.state === 'prompt' ? s.state : 'prompt');
         };
         apply();
@@ -298,12 +428,20 @@ export function useMediaAccess(): UseMediaAccessResult {
   const requestCamera = useCallback(async () => {
     setRequestingCamera(true);
     try {
-      const next = await requestCameraAccess();
-      setCamera(next);
-      return next;
+      const attempt = await requestCameraAccess();
+      setCamera(attempt.state);
+      setCameraDenial(attempt.denial);
+      return attempt;
     } finally {
       setRequestingCamera(false);
     }
+  }, []);
+
+  const recheckCamera = useCallback(async () => {
+    const next = await queryCameraPermission();
+    setCamera(next);
+    if (next !== 'denied') setCameraDenial('none');
+    return next;
   }, []);
 
   const enableGallery = useCallback(() => {
@@ -313,9 +451,11 @@ export function useMediaAccess(): UseMediaAccessResult {
 
   return {
     camera,
+    cameraDenial,
     galleryReady,
     requestingCamera,
     requestCamera,
+    recheckCamera,
     enableGallery,
   };
 }

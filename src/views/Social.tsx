@@ -46,6 +46,8 @@ import { useLongPress } from '@/src/lib/useLongPress';
 import { usePageEnter } from '@/src/lib/usePageEnter';
 import { equitySummary, suggestBodyWeightScoring } from '@/src/lib/challengeEquity';
 import { GlassModal } from '@/src/components/ui/GlassModal';
+import { AudienceToggle } from '@/src/components/social/AudienceToggle';
+import type { Audience } from '@/src/lib/privacyApi';
 import { SlimeScroll } from '@/src/components/ui/SlimeScroll';
 import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
@@ -112,6 +114,7 @@ interface SocialViewProps {
     usePointsSystem?: boolean;
     bodyWeightScoring?: BodyWeightScoringMode;
     isPrivate?: boolean;
+    closeFriendsOnly?: boolean;
     password?: string;
   }) => Promise<void> | void;
   onJoinChallenge: (
@@ -119,8 +122,8 @@ interface SocialViewProps {
     payload: { value?: number; lifts?: { exercise: string; value: number }[]; password?: string }
   ) => Promise<void> | void;
   onDeleteChallenge?: (id: string) => Promise<void> | void;
-  onCheckIn: (gymName: string, time: string) => void;
-  onCheckInUpdate?: (checkInId: string, gymName: string, time: string) => void;
+  onCheckIn: (gymName: string, time: string, audience?: Audience) => void;
+  onCheckInUpdate?: (checkInId: string, gymName: string, time: string, audience?: Audience) => void;
   onCheckInDelete?: (checkInId: string) => void;
   onRefreshChallenges?: () => void;
   onCopyFriendRoutine?: (payload: {
@@ -818,6 +821,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [createExerciseDraft, setCreateExerciseDraft] = useState('');
   const [createExercises, setCreateExercises] = useState<string[]>([]);
   const [createPrivate, setCreatePrivate] = useState(false);
+  const [createCloseOnly, setCreateCloseOnly] = useState(false);
+  const [gymAudience, setGymAudience] = useState<Audience>('all');
   const [createPassword, setCreatePassword] = useState('');
   const [createError, setCreateError] = useState('');
   const [createEndDate, setCreateEndDate] = useState('');
@@ -999,6 +1004,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
     } else {
       setGymTime('');
     }
+    setGymAudience('all');
     setShowCheckInModal(true);
   });
 
@@ -1006,6 +1012,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
     setCreateStep(0);
     setCreateError('');
     setCreateCalOpen(false);
+    setCreateCloseOnly(false);
     setShowCreateChallengeModal(true);
   }, []);
 
@@ -1290,6 +1297,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
         usePointsSystem: createUsePointsSystem,
         bodyWeightScoring: createBodyWeightScoring,
         isPrivate: createPrivate,
+        closeFriendsOnly: createCloseOnly,
         password: createPrivate ? createPassword.trim() : undefined,
       });
       setShowCreateChallengeModal(false);
@@ -1298,6 +1306,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
       setCreateExercises([]);
       setCreateExerciseDraft('');
       setCreatePrivate(false);
+      setCreateCloseOnly(false);
       setCreatePassword('');
       setCreateEndDate('');
       setCreateUsePointsSystem(true);
@@ -2091,6 +2100,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                           setGymName('');
                           setGymTime('');
                           setLocalCheckInIntent('later');
+                          setGymAudience('all');
                           setShowCheckInModal(true);
                         }}
                         className="group inline-flex items-center gap-1.5 rounded-lg border border-indigo-200/90 bg-white px-3 py-2 text-[11px] font-bold uppercase tracking-wide text-indigo-700 shadow-sm transition-all hover:border-indigo-300 hover:bg-indigo-50 active:scale-[0.98] dark:border-indigo-500/35 dark:bg-indigo-950/35 dark:text-indigo-200 dark:hover:border-indigo-400/50 dark:hover:bg-indigo-900/40"
@@ -2181,10 +2191,10 @@ export const SocialView: React.FC<SocialViewProps> = ({
                 setCheckInSaving(true);
                 try {
                   if (editingCheckIn && onCheckInUpdate) {
-                    await onCheckInUpdate(editingCheckIn.id, gymName.trim(), gymTime);
+                    await onCheckInUpdate(editingCheckIn.id, gymName.trim(), gymTime, gymAudience);
                     setEditingCheckIn(null);
                   } else {
-                    await onCheckIn(gymName.trim(), gymTime);
+                    await onCheckIn(gymName.trim(), gymTime, gymAudience);
                     setShowCheckInModal(false);
                   }
                   setGymName('');
@@ -2200,6 +2210,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
         }
       >
         <div className="space-y-3">
+          <AudienceToggle value={gymAudience} onChange={setGymAudience} />
           <div>
             <label className="mb-1 block text-[11px] text-slate-400">Gimnasio</label>
             <Input placeholder="Basic Fit, McFit…" value={gymName} onChange={(e) => setGymName(e.target.value)} />
@@ -2557,6 +2568,13 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   )}
                 </div>
 
+                <div className="rounded-2xl border border-white/50 bg-white/60 px-3 py-2.5 dark:border-white/10 dark:bg-slate-800/50">
+                  <AudienceToggle
+                    value={createCloseOnly ? 'close' : 'all'}
+                    onChange={next => setCreateCloseOnly(next === 'close')}
+                  />
+                </div>
+
                 <section>
                   <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-black uppercase tracking-widest text-slate-400">
                     <Calendar size={12} />
@@ -2638,9 +2656,11 @@ export const SocialView: React.FC<SocialViewProps> = ({
                           {createEndDate ? new Date(`${createEndDate}T12:00:00`).toLocaleDateString('es-ES') : 'Sin fecha'}
                         </p>
                         <p className="mt-0.5 flex items-center gap-1 text-[11px] text-slate-500">
-                          {createPrivate
-                            ? <><Lock size={11} /> Privado con contraseña</>
-                            : <><Users size={11} /> Abierto a tus amigos</>}
+                          {createCloseOnly
+                            ? 'Solo mejores amigos'
+                            : createPrivate
+                              ? <><Lock size={11} /> Privado con contraseña</>
+                              : <><Users size={11} /> Abierto a tus amigos</>}
                         </p>
                       </div>
                     </div>
@@ -2868,7 +2888,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
               onOpenProfile={id => setViewingProfileId(id)}
               onOpenRoutine={() => {
                 const friend = friendsList.find(f => f.id === viewingProfileId);
-                if (friend) openFriendModal(friend);
+                void openFriendModal(friend || { id: viewingProfileId, name: 'Atleta', avatar: '' });
               }}
               onSendFriendRequest={
                 onSendFriendRequest ? async () => { await onSendFriendRequest(viewingProfileId); } : undefined

@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { Image as ImageIcon, Loader2, RefreshCw, RotateCw, X } from 'lucide-react';
+import { AudienceToggle } from '@/src/components/social/AudienceToggle';
+import type { Audience } from '@/src/lib/privacyApi';
 import { SLIME_FULLSCREEN_IN, SLIME_FULLSCREEN_OUT, SLIME_FULLSCREEN_SHOW, STICKY } from '@/src/lib/motionPresets';
 import { publishMedia, type FeedPost } from '@/src/lib/feedApi';
 import {
@@ -28,7 +30,10 @@ import {
   markCameraGranted,
   markGalleryReady,
   cameraBlockedHint,
+  cameraFallbackHint,
   cameraNeedsUserGesture,
+  cameraOsHint,
+  cameraPromptExhausted,
   isSecureCameraContext,
   readCameraPermission,
 } from '@/src/pwa/mediaAccess';
@@ -178,6 +183,8 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
   /** Sin vista en vivo: se ofrece la cámara del móvil, que no pide permiso web. */
   const [chooser, setChooser] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  /** 'still' = ha vuelto de ajustes y el permiso sigue en No. */
+  const [recheck, setRecheck] = useState<'idle' | 'still'>('idle');
   const [recording, setRecording] = useState(false);
   const [recMs, setRecMs] = useState(0);
   const [file, setFile] = useState<File | null>(null);
@@ -193,6 +200,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
   const [probing, setProbing] = useState(false);
   const [sessionCount, setSessionCount] = useState(0);
   const [justPublished, setJustPublished] = useState(false);
+  const [audience, setAudience] = useState<Audience>('all');
   const [frame, setFrame] = useState<FrameXform>(EMPTY_FRAME);
   const [boxSize, setBoxSize] = useState({ w: 0, h: 0 });
   frameRef.current = frame;
@@ -292,6 +300,21 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     }
   }, []);
 
+  /**
+   * Tras tocar los ajustes del sitio: releer el permiso y abrir solo si ya se puede.
+   * Con el permiso en No, volver a llamar a getUserMedia no saca ningún diálogo y
+   * cuenta como otro descarte, que es lo que acaba bloqueando el origen.
+   */
+  const recheckAndStart = useCallback(async () => {
+    const state = await readCameraPermission();
+    if (state === 'denied' || state === 'unsupported') {
+      setRecheck('still');
+      return;
+    }
+    setRecheck('idle');
+    await startStream(facing);
+  }, [facing, startStream]);
+
   useEffect(() => {
     if (!open) return;
     const prev = document.body.style.overflow;
@@ -303,6 +326,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
 
   useEffect(() => {
     if (open && avatarOnly) setFacing('user');
+    if (open) setAudience('all');
   }, [open, avatarOnly]);
 
   useLayoutEffect(() => {
@@ -330,7 +354,8 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
         return;
       }
       // Safari exige que getUserMedia salga de un toque; Chrome puede preguntar ya.
-      if (cameraNeedsUserGesture()) setNeedTap(true);
+      // Si ya se han perdido dos avisos, no pedimos solos: el tercero lo bloquearía.
+      if (cameraNeedsUserGesture() || cameraPromptExhausted()) setNeedTap(true);
       else void startStream(facing);
     });
     return () => {
@@ -378,6 +403,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     setNeedTap(false);
     setChooser(false);
     setShowHelp(false);
+    setRecheck('idle');
   }, [open]);
 
   useEffect(() => {
@@ -764,7 +790,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
         onClose();
         return;
       }
-      const post = await publishMedia(toSend, { kind: 'story' });
+      const post = await publishMedia(toSend, { kind: 'story', audience });
       onPublished?.(post);
       setSessionCount(n => n + 1);
       setJustPublished(true);
@@ -1054,7 +1080,9 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
                 {avatarOnly ? 'Tu foto de perfil' : chatMode ? 'Enviar foto o vídeo' : 'Tu historia'}
               </p>
               <p className="max-w-xs text-sm leading-relaxed text-white/70">
-                Se abre aquí dentro, sin salir de la app. El móvil te pedirá permiso una sola vez.
+                {cameraPromptExhausted()
+                  ? 'El aviso de permiso se ha cerrado ya dos veces. Si lo cierras otra vez sin darle a Permitir, el navegador dejará de preguntar durante una semana, así que solo se pide cuando tú lo digas.'
+                  : 'Se abre aquí dentro, sin salir de la app. El móvil te pedirá permiso una sola vez.'}
               </p>
               <button
                 type="button"
@@ -1115,12 +1143,18 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
               {showHelp && (
                 <div className="max-w-xs space-y-2.5">
                   <p className="text-xs leading-relaxed text-white/60">{cameraBlockedHint()}</p>
+                  {cameraFallbackHint() && (
+                    <p className="text-xs leading-relaxed text-white/50">{cameraFallbackHint()}</p>
+                  )}
+                  {cameraOsHint() && (
+                    <p className="text-xs leading-relaxed text-white/50">{cameraOsHint()}</p>
+                  )}
                   <button
                     type="button"
-                    onClick={() => void startStream(facing)}
+                    onClick={() => void recheckAndStart()}
                     className="rounded-full bg-white/15 px-4 py-2 text-xs font-semibold text-white ring-1 ring-white/30"
                   >
-                    Ya está, reintentar
+                    {recheck === 'still' ? 'Sigue bloqueada, comprobar otra vez' : 'Ya está, comprobar'}
                   </button>
                 </div>
               )}
@@ -1272,6 +1306,9 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
                 sizeLabel={formatStoryBytes(clipEstimate)}
                 onChange={onTrimChange}
               />
+            )}
+            {!avatarOnly && !chatMode && (
+              <AudienceToggle value={audience} onChange={setAudience} tone="dark" />
             )}
             <div className="flex items-center gap-2">
               <button

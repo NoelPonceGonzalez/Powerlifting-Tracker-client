@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Check, ChevronRight, Clock, Dumbbell, Heart, Loader2, MapPin, MessageCircle, Search, Trophy, UserCheck, UserPlus, X } from 'lucide-react';
+import { CloseFriendButton } from '@/src/components/social/CloseFriendButton';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { Button } from '@/src/components/ui/Button';
 import { SlimeScroll } from '@/src/components/ui/SlimeScroll';
@@ -60,7 +61,7 @@ function activityIcon(type: string) {
   if (type === 'challenge_invite' || type === 'challenge_join' || type === 'challenge_winner') {
     return <Trophy size={12} className="text-amber-600" />;
   }
-  if (type === 'gym_checkin') return <MapPin size={12} className="text-emerald-600" />;
+  if (type === 'gym_checkin' || type === 'workout_reminder') return <MapPin size={12} className="text-emerald-600" />;
   return <Heart size={12} className="text-slate-400" />;
 }
 
@@ -85,6 +86,7 @@ function activityText(note: AppNotification): string {
   if (note.type === 'challenge_join') return note.message || `${name} se ha unido a tu torneo`;
   if (note.type === 'challenge_winner') return note.message || note.title || 'Torneo finalizado';
   if (note.type === 'new_rm') return note.message || `${name} ha batido su RM`;
+  if (note.type === 'workout_reminder') return note.message || note.title || 'Hoy toca entrenar';
   if (note.type === 'gym_checkin') {
     const extra = note.message ? ` · ${note.message}` : '';
     return `${note.title || `${name} va a entrenar`}${extra}`;
@@ -309,7 +311,9 @@ export function ChatPeoplePanel({
                         <Clock size={12} />
                         Enviada
                       </span>
-                    ) : null}
+                    ) : (
+                      <CloseFriendButton userId={person.id} />
+                    )}
                   </div>
                 );
               })}
@@ -318,18 +322,23 @@ export function ChatPeoplePanel({
           <div className="flex flex-wrap gap-x-3 gap-y-4 px-0.5">
             {shown.map(person => (
               <div key={person.id} className="w-[4.6rem] text-center">
-                <HoldPerson
-                  person={{ id: person.id, name: person.name, avatar: person.avatar }}
-                  onHold={onHoldPerson}
-                  onClick={() => onOpenPerson?.({ id: person.id, name: person.name, avatar: person.avatar })}
-                  className="mx-auto block h-[4.1rem] w-[4.1rem]"
-                  aria-label={person.name}
-                >
-                  <span className="flex h-full w-full items-center justify-center rounded-full ring-2 ring-slate-200 dark:ring-slate-700">
-                    <Avatar src={person.avatar} name={person.name} className="h-full w-full rounded-full" />
+                <div className="relative mx-auto h-[4.1rem] w-[4.1rem]">
+                  <HoldPerson
+                    person={{ id: person.id, name: person.name, avatar: person.avatar }}
+                    onHold={onHoldPerson}
+                    onClick={() => onOpenPerson?.({ id: person.id, name: person.name, avatar: person.avatar })}
+                    className="block h-full w-full"
+                    aria-label={person.name}
+                  >
+                    <span className="flex h-full w-full items-center justify-center rounded-full ring-2 ring-slate-200 dark:ring-slate-700">
+                      <Avatar src={person.avatar} name={person.name} className="h-full w-full rounded-full" />
+                    </span>
+                  </HoldPerson>
+                  <span className="absolute -bottom-1 -right-1">
+                    <CloseFriendButton userId={person.id} className="bg-white shadow-sm dark:bg-slate-900" />
                   </span>
-                </HoldPerson>
-                <span className="mt-1.5 block truncate text-[11px] font-medium leading-tight text-slate-700 dark:text-slate-300">
+                </div>
+                <span className="mt-2.5 block truncate text-[11px] font-medium leading-tight text-slate-700 dark:text-slate-300">
                   {person.name.split(' ')[0]}
                 </span>
               </div>

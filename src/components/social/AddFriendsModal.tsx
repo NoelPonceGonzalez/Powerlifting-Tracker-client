@@ -311,7 +311,11 @@ function PeopleList({
               }
               onHold={onHold}
             />
-            {kind === 'follow' ? (
+            {u.blocked === 'them' ? (
+              <span className="shrink-0 text-[11px] font-medium text-white/45">Te ha bloqueado</span>
+            ) : u.blocked === 'you' ? (
+              <span className="shrink-0 text-[11px] font-medium text-white/45">Bloqueado</span>
+            ) : kind === 'follow' ? (
               <Button
                 variant="primary"
                 size="sm"

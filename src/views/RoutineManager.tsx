@@ -8,12 +8,12 @@ import {
   FileUp,
   Layers,
   Loader2,
+  ChevronRight,
   Pencil,
   Plus,
   Repeat,
   Trash2,
 } from 'lucide-react';
-import { Card } from '@/src/components/ui/Card';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { cn } from '@/src/lib/utils';
@@ -21,6 +21,13 @@ import { PAGE_ENTER_ITEM, PAGE_ENTER_ROOT, SCREEN_TRANSITION, SLIME_SHEET_IN, SL
 import { usePageEnter } from '@/src/lib/usePageEnter';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
+import {
+  addDays,
+  formatWeekRangeFromDate,
+  PLACEMENT_WEEK_STARTS_ON,
+  startOfWeek,
+  toISODate,
+} from '@/src/lib/mesocycleWeek';
 
 /** Al crear: una semana que se copia, o un ciclo de N semanas distintas. */
 type PlanShape = 'repeat' | 'cycle';
@@ -30,6 +37,8 @@ interface RoutineSummary {
   name: string;
   isActive: boolean;
   hiddenFromSocial?: boolean;
+  cycleLength?: number;
+  sameTemplateAllWeeks?: boolean;
 }
 
 interface RoutineManagerViewProps {
@@ -37,7 +46,13 @@ interface RoutineManagerViewProps {
   onActivateRoutine: (routineId: string) => void;
   onCreateRoutine: (
     name: string,
-    options?: { sameTemplateAllWeeks: boolean; cycleLength?: number; importAfter?: boolean }
+    options?: {
+      sameTemplateAllWeeks: boolean;
+      cycleLength?: number;
+      importAfter?: boolean;
+      cycleAnchorISO?: string;
+      weekStartsOn?: number;
+    }
   ) => void | Promise<void>;
   createRoutineLoading?: boolean;
   /** Rutina que se está eliminando en servidor (overlay en la tarjeta). */
@@ -71,13 +86,31 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
   const [planShape, setPlanShape] = useState<PlanShape>('cycle');
   const [cycleWeeks, setCycleWeeks] = useState<number | ''>(4);
   const [importAfter, setImportAfter] = useState(false);
+  const [createStep, setCreateStep] = useState<1 | 2>(1);
+  const [startPlacement, setStartPlacement] = useState<'this' | 'prev' | 'date'>('this');
+  const [customStartISO, setCustomStartISO] = useState(() => toISODate(startOfWeek(new Date(), PLACEMENT_WEEK_STARTS_ON)));
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState('');
 
-  useIncrementSignal('routine-create', openCreateSignal, () => {
+  const thisWeekStart = startOfWeek(new Date(), PLACEMENT_WEEK_STARTS_ON);
+  const week1Start =
+    startPlacement === 'prev'
+      ? addDays(thisWeekStart, -7)
+      : startPlacement === 'date'
+        ? startOfWeek(new Date(`${customStartISO}T12:00:00`), PLACEMENT_WEEK_STARTS_ON)
+        : thisWeekStart;
+
+  const resetCreateFields = () => {
     setPlanShape('cycle');
     setCycleWeeks(4);
     setImportAfter(false);
+    setCreateStep(1);
+    setStartPlacement('this');
+    setCustomStartISO(toISODate(startOfWeek(new Date(), 1)));
+  };
+
+  useIncrementSignal('routine-create', openCreateSignal, () => {
+    resetCreateFields();
     setShowCreateModal(true);
   });
 
@@ -106,12 +139,12 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
           sameTemplateAllWeeks,
           cycleLength: resolvedCycleLength,
           importAfter,
+          cycleAnchorISO: toISODate(week1Start),
+          weekStartsOn: PLACEMENT_WEEK_STARTS_ON,
         })
       );
       setNewRoutineName('');
-      setPlanShape('cycle');
-      setCycleWeeks(4);
-      setImportAfter(false);
+      resetCreateFields();
       setShowCreateModal(false);
     } catch {
       /* Error: feedback en App; modal abierto */
@@ -122,16 +155,12 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
     if (createRoutineLoading) return;
     setShowCreateModal(false);
     setNewRoutineName('');
-    setPlanShape('cycle');
-    setCycleWeeks(4);
-    setImportAfter(false);
+    resetCreateFields();
   };
   useEscapeClose(showCreateModal && !createRoutineLoading, closeCreateModal);
 
   const openCreate = () => {
-    setPlanShape('cycle');
-    setCycleWeeks(4);
-    setImportAfter(false);
+    resetCreateFields();
     setShowCreateModal(true);
   };
 
@@ -142,16 +171,23 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
       animate={pageEnter}
       className="app-page mx-auto max-w-5xl"
     >
-      <motion.header variants={PAGE_ENTER_ITEM} initial={false} className="mb-6 flex items-center gap-3 sm:mb-8">
-        <div className="min-w-0 flex-1">
-          <h1 className="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">Rutinas</h1>
+      <motion.header variants={PAGE_ENTER_ITEM} initial={false} className="mb-5 flex items-end justify-between gap-3 sm:mb-7">
+        <div className="min-w-0">
+          <p className="text-[11px] font-medium text-slate-400">
+            {routines.length === 0
+              ? 'Aún no hay ninguna'
+              : routines.length === 1
+                ? '1 rutina'
+                : `${routines.length} rutinas`}
+          </p>
+          <h1 className="text-[22px] font-black tracking-tight text-slate-900 dark:text-slate-100">Rutinas</h1>
         </div>
         {routines.length > 0 && (
           <button
             type="button"
             onClick={openCreate}
             disabled={createRoutineLoading || deleteInFlight}
-            className="inline-flex h-10 items-center gap-1.5 rounded-full bg-indigo-600 px-3.5 text-sm font-semibold text-white disabled:opacity-40"
+            className="inline-flex h-10 items-center gap-1.5 rounded-full bg-indigo-600 px-3.5 text-sm font-semibold text-white shadow-lg shadow-indigo-500/25 disabled:opacity-40"
           >
             {createRoutineLoading ? <Loader2 size={14} className="animate-spin" /> : <Plus size={16} />}
             Nueva
@@ -251,137 +287,218 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                   </div>
                 </div>
               )}
-              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-1">Nueva rutina</h3>
-              <p className="mb-4 text-sm leading-relaxed text-slate-500 dark:text-slate-400">
-                Primero decides cuánto dura el ciclo. Luego lo rellenas: a mano basta con una semana si se copia sola; si usas archivos, cada uno va llenando semanas.
-              </p>
-              <Input
-                value={newRoutineName}
-                onChange={(e) => setNewRoutineName(e.target.value)}
-                placeholder="Nombre (ej. Mesociclo 1, Fuerza)"
-                className="mb-4"
-                disabled={createRoutineLoading}
-                onKeyDown={(e) => e.key === 'Enter' && !createRoutineLoading && void handleCreate()}
-              />
-              <p className="mb-2 text-xs font-medium text-slate-400">¿Cómo dura el plan?</p>
-              <div className={cn('mb-3 space-y-2', createRoutineLoading && 'pointer-events-none opacity-60')}>
-                <button
-                  type="button"
-                  onClick={() => setPlanShape('repeat')}
-                  disabled={createRoutineLoading}
-                  className={cn(
-                    'flex w-full items-start gap-3 rounded-2xl px-3.5 py-3 text-left shadow-sm transition-colors',
-                    planShape === 'repeat'
-                      ? 'bg-indigo-50 ring-1 ring-indigo-400 dark:bg-indigo-950/40'
-                      : 'bg-slate-50 dark:bg-slate-800'
-                  )}
-                >
-                  <Repeat className="mt-0.5 size-5 shrink-0 text-indigo-600 dark:text-indigo-300" />
-                  <span>
-                    <span className="block text-sm font-semibold text-slate-900 dark:text-slate-100">La misma semana, en bucle</span>
-                    <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">
-                      Escribes o importas 1 semana. Se copia todas las demás. Si cambias un ejercicio, cambia en todas.
-                    </span>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPlanShape('cycle')}
-                  disabled={createRoutineLoading}
-                  className={cn(
-                    'flex w-full items-start gap-3 rounded-2xl px-3.5 py-3 text-left shadow-sm transition-colors',
-                    planShape === 'cycle'
-                      ? 'bg-indigo-50 ring-1 ring-indigo-400 dark:bg-indigo-950/40'
-                      : 'bg-slate-50 dark:bg-slate-800'
-                  )}
-                >
-                  <Layers className="mt-0.5 size-5 shrink-0 text-indigo-600 dark:text-indigo-300" />
-                  <span>
-                    <span className="block text-sm font-semibold text-slate-900 dark:text-slate-100">Un ciclo de varias semanas</span>
-                    <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">
-                      Cada semana puede ser distinta (kilos, RPE o ejercicios). Al acabar, vuelve a la 1 hasta que pongas otro plan.
-                    </span>
-                  </span>
-                </button>
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+                  {createStep === 1 ? 'Nueva rutina' : 'El ciclo'}
+                </h3>
+                <p className="text-[11px] font-semibold text-slate-400">
+                  {createStep} de {importAfter ? 3 : 2}
+                </p>
               </div>
-              {planShape === 'cycle' && (
-                <div className="mb-4">
-                  <label className="mb-1 block text-xs font-medium text-slate-400">
-                    Semanas del ciclo
-                  </label>
-                  <Input
-                    type="text"
-                    inputMode="numeric"
-                    value={cycleWeeks}
-                    disabled={createRoutineLoading}
-                    onChange={(e) => {
-                      const raw = e.target.value.replace(/\D/g, '');
-                      if (raw === '') { setCycleWeeks(''); return; }
-                      setCycleWeeks(Math.min(12, parseInt(raw, 10)));
-                    }}
-                    className="text-center font-semibold"
-                  />
-                  <p className="mt-1.5 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
-                    {typeof cycleWeeks === 'number' && cycleWeeks >= 2
-                      ? `Quedan ${cycleWeeks} huecos. Un archivo con 1 semana llena la 1; otro con 2 llena la 1 y la 2 (pisa lo que ya hubiera en esas). Si te pasan las ${cycleWeeks} de golpe, se llena el ciclo entero.`
-                      : 'Normalmente 4. Puede ser 3, 5… según el plan.'}
+
+              {createStep === 1 && (
+                <>
+                  <p className="mb-4 text-sm leading-relaxed text-slate-500 dark:text-slate-400">
+                    Nombre, cuánto dura y si traes un archivo.
                   </p>
-                </div>
+                  <Input
+                    value={newRoutineName}
+                    onChange={(e) => setNewRoutineName(e.target.value)}
+                    placeholder="Nombre (ej. Mesociclo 1, Fuerza)"
+                    className="mb-4"
+                    disabled={createRoutineLoading}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && newRoutineName.trim() && !createRoutineLoading) setCreateStep(2);
+                    }}
+                  />
+                    <p className="mb-2 text-xs font-medium text-slate-400">¿Cuánto dura el plan?</p>
+                  <div className={cn('mb-3 space-y-2', createRoutineLoading && 'pointer-events-none opacity-60')}>
+                    <button
+                      type="button"
+                      onClick={() => setPlanShape('repeat')}
+                      disabled={createRoutineLoading}
+                      className={cn(
+                        'flex w-full items-start gap-3 rounded-2xl px-3.5 py-3 text-left shadow-sm transition-colors',
+                        planShape === 'repeat'
+                          ? 'bg-indigo-50 ring-1 ring-indigo-400 dark:bg-indigo-950/40'
+                          : 'bg-slate-50 dark:bg-slate-800'
+                      )}
+                    >
+                      <Repeat className="mt-0.5 size-5 shrink-0 text-indigo-600 dark:text-indigo-300" />
+                      <span>
+                        <span className="block text-sm font-semibold text-slate-900 dark:text-slate-100">La misma semana, en bucle</span>
+                        <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">
+                          Escribes o importas 1 semana. Se copia todas las demás.
+                        </span>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPlanShape('cycle')}
+                      disabled={createRoutineLoading}
+                      className={cn(
+                        'flex w-full items-start gap-3 rounded-2xl px-3.5 py-3 text-left shadow-sm transition-colors',
+                        planShape === 'cycle'
+                          ? 'bg-indigo-50 ring-1 ring-indigo-400 dark:bg-indigo-950/40'
+                          : 'bg-slate-50 dark:bg-slate-800'
+                      )}
+                    >
+                      <Layers className="mt-0.5 size-5 shrink-0 text-indigo-600 dark:text-indigo-300" />
+                      <span>
+                        <span className="block text-sm font-semibold text-slate-900 dark:text-slate-100">Un ciclo de varias semanas</span>
+                        <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">
+                          Cada semana puede ser distinta. Al acabar, vuelve a la 1.
+                        </span>
+                      </span>
+                    </button>
+                  </div>
+                  <label
+                    className={cn(
+                      'mb-4 flex cursor-pointer items-start gap-3 rounded-2xl bg-slate-50 px-3.5 py-3 dark:bg-slate-800',
+                      createRoutineLoading && 'pointer-events-none opacity-60'
+                    )}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={importAfter}
+                      disabled={createRoutineLoading}
+                      onChange={(e) => setImportAfter(e.target.checked)}
+                      className="mt-0.5 h-5 w-5 shrink-0 accent-indigo-600"
+                    />
+                    <span className="min-w-0">
+                      <span className="flex items-center gap-1.5 text-sm font-semibold text-slate-800 dark:text-slate-100">
+                        <FileUp size={14} className="shrink-0" />
+                        Tengo un Word o PDF
+                      </span>
+                      <span className="mt-0.5 block text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                        Lo subes al final. Te digo qué hay y lo aplico.
+                      </span>
+                    </span>
+                  </label>
+                  <div className="flex gap-2">
+                    <Button variant="outline" className="flex-1" onClick={closeCreateModal} disabled={createRoutineLoading}>
+                      Cancelar
+                    </Button>
+                    <Button
+                      variant="primary"
+                      className="flex-1"
+                      onClick={() => setCreateStep(2)}
+                      disabled={createRoutineLoading || !newRoutineName.trim()}
+                    >
+                      Siguiente
+                    </Button>
+                  </div>
+                </>
               )}
-              <label
-                className={cn(
-                  'mb-4 flex cursor-pointer items-start gap-3 rounded-2xl bg-slate-50 px-3.5 py-3 dark:bg-slate-800',
-                  createRoutineLoading && 'pointer-events-none opacity-60'
-                )}
-              >
-                <input
-                  type="checkbox"
-                  checked={importAfter}
-                  disabled={createRoutineLoading}
-                  onChange={(e) => setImportAfter(e.target.checked)}
-                  className="mt-0.5 h-5 w-5 shrink-0 accent-indigo-600"
-                />
-                <span className="min-w-0">
-                  <span className="flex items-center gap-1.5 text-sm font-semibold text-slate-800 dark:text-slate-100">
-                    <FileUp size={14} className="shrink-0" />
-                    Tengo un Word o PDF
-                  </span>
-                  <span className="mt-0.5 block text-xs leading-relaxed text-slate-500 dark:text-slate-400">
-                    Se abre el importador. Si el archivo trae menos semanas que el ciclo, solo llena esas; el resto las puedes añadir después, a mano o con otro archivo.
-                  </span>
-                </span>
-              </label>
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  className="flex-1"
-                  onClick={closeCreateModal}
-                  disabled={createRoutineLoading}
-                >
-                  Cancelar
-                </Button>
-                <Button
-                  variant="primary"
-                  className="flex-1"
-                  onClick={() => void handleCreate()}
-                  disabled={
-                    createRoutineLoading ||
-                    !newRoutineName.trim() ||
-                    (planShape !== 'repeat' && (cycleWeeks === '' || Number(cycleWeeks) < 2))
-                  }
-                >
-                  {createRoutineLoading ? (
-                    <>
-                      <Loader2 size={14} className="animate-spin shrink-0" />
-                      Creando…
-                    </>
-                  ) : importAfter ? (
-                    'Crear e importar'
-                  ) : (
-                    'Crear vacía'
+
+              {createStep === 2 && (
+                <>
+                  <p className="mb-4 text-sm leading-relaxed text-slate-500 dark:text-slate-400">
+                    {planShape === 'cycle' ? 'Cuántas semanas tiene el ciclo y cuándo empieza la 1.' : 'Cuándo empieza la semana 1.'}
+                  </p>
+                  {planShape === 'cycle' && (
+                    <div className="mb-4">
+                      <label className="mb-1 block text-xs font-medium text-slate-400">
+                        Semanas del ciclo
+                      </label>
+                      <Input
+                        type="text"
+                        inputMode="numeric"
+                        value={cycleWeeks}
+                        disabled={createRoutineLoading}
+                        onChange={(e) => {
+                          const raw = e.target.value.replace(/\D/g, '');
+                          if (raw === '') { setCycleWeeks(''); return; }
+                          setCycleWeeks(Math.min(12, parseInt(raw, 10)));
+                        }}
+                        className="text-center font-semibold"
+                      />
+                      <p className="mt-1.5 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                        {typeof cycleWeeks === 'number' && cycleWeeks >= 2
+                          ? `Quedan ${cycleWeeks} huecos. Un archivo de 2 semanas llena la 1 y la 2; el resto se puede añadir después.`
+                          : 'Normalmente 4. Puede ser 3, 5… según el plan.'}
+                      </p>
+                    </div>
                   )}
-                </Button>
-              </div>
+                  <div className={cn('mb-4 space-y-3', createRoutineLoading && 'pointer-events-none opacity-60')}>
+                    <div>
+                      <p className="mb-2 text-xs font-medium text-slate-400">¿Cuándo empieza la semana 1?</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        {([
+                          { id: 'this' as const, label: 'Esta', sub: formatWeekRangeFromDate(thisWeekStart) },
+                          { id: 'prev' as const, label: 'La pasada', sub: formatWeekRangeFromDate(addDays(thisWeekStart, -7)) },
+                        ]).map(opt => (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => setStartPlacement(opt.id)}
+                            className={cn(
+                              'rounded-2xl px-3 py-2.5 text-left',
+                              startPlacement === opt.id
+                                ? 'bg-indigo-50 ring-1 ring-indigo-400 dark:bg-indigo-950/40'
+                                : 'bg-slate-50 dark:bg-slate-800'
+                            )}
+                          >
+                            <span className="block text-sm font-semibold text-slate-900 dark:text-slate-100">{opt.label}</span>
+                            <span className="mt-0.5 block text-[11px] text-slate-500">{opt.sub}</span>
+                          </button>
+                        ))}
+                        <label
+                          className={cn(
+                            'col-span-2 rounded-2xl px-3 py-2.5 text-left',
+                            startPlacement === 'date'
+                              ? 'bg-indigo-50 ring-1 ring-indigo-400 dark:bg-indigo-950/40'
+                              : 'bg-slate-50 dark:bg-slate-800'
+                          )}
+                        >
+                          <span className="block text-sm font-semibold text-slate-900 dark:text-slate-100">Otra fecha</span>
+                          <input
+                            type="date"
+                            value={customStartISO}
+                            onChange={e => {
+                              if (!e.target.value) return;
+                              setCustomStartISO(e.target.value);
+                              setStartPlacement('date');
+                            }}
+                            className="mt-1 w-full bg-transparent text-[11px] text-slate-500 focus:outline-none dark:text-slate-400"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      className="flex-1"
+                      onClick={() => setCreateStep(1)}
+                      disabled={createRoutineLoading}
+                    >
+                      Atrás
+                    </Button>
+                    <Button
+                      variant="primary"
+                      className="flex-1"
+                      onClick={() => void handleCreate()}
+                      disabled={
+                        createRoutineLoading ||
+                        !newRoutineName.trim() ||
+                        (planShape !== 'repeat' && (cycleWeeks === '' || Number(cycleWeeks) < 2))
+                      }
+                    >
+                      {createRoutineLoading ? (
+                        <>
+                          <Loader2 size={14} className="animate-spin shrink-0" />
+                          Creando…
+                        </>
+                      ) : importAfter ? (
+                        'Siguiente'
+                      ) : (
+                        'Crear'
+                      )}
+                    </Button>
+                  </div>
+                </>
+              )}
             </motion.div>
           </div>
         </AnimatePresence>,
@@ -389,37 +506,45 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
       )}
 
       {routines.length > 0 && (
-      <motion.section variants={PAGE_ENTER_ITEM} initial={false} className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        {routines.map((routine) => (
-          <Card
+      <motion.section variants={PAGE_ENTER_ITEM} initial={false} className="flex flex-col gap-3">
+        {routines.map((routine) => {
+          const cycleLabel = routine.sameTemplateAllWeeks
+            ? 'Misma semana, en bucle'
+            : `Ciclo de ${routine.cycleLength ?? 4} semanas`;
+          return (
+          <div
             key={routine.id}
-            padding="md"
-            rounded="2xl"
             className={cn(
-              'relative overflow-hidden border transition-all',
+              'relative overflow-hidden rounded-[28px] border transition-transform',
               deleteRoutineLoadingId === routine.id
                 ? 'cursor-wait'
                 : 'cursor-pointer active:scale-[0.99]',
               routine.isActive
-                ? 'border-indigo-200 bg-indigo-50/90 shadow-sm dark:border-indigo-800 dark:bg-indigo-950/40'
-                : 'border-slate-200/80 bg-white/90 hover:border-indigo-200 dark:border-slate-700 dark:bg-slate-800/70 dark:hover:border-indigo-700'
+                ? 'border-white/50 bg-white/75 shadow-xl shadow-slate-900/10 backdrop-blur-2xl dark:border-white/10 dark:bg-slate-900/70'
+                : 'border-slate-200/70 bg-white/90 dark:border-slate-700 dark:bg-slate-800/70'
             )}
             onClick={(e) => {
               if (deleteInFlight || activateRoutineLoadingId != null) return;
-              if (editingId !== routine.id && !(e.target as HTMLElement).closest('button')) {
+              if (editingId !== routine.id && !(e.target as HTMLElement).closest('button, input')) {
                 onActivateRoutine(routine.id);
               }
             }}
           >
+            {routine.isActive && (
+              <>
+                <div className="pointer-events-none absolute -left-16 -top-16 h-40 w-40 rounded-full bg-indigo-400/25 blur-3xl" />
+                <div className="pointer-events-none absolute -bottom-20 -right-10 h-44 w-44 rounded-full bg-violet-400/20 blur-3xl" />
+              </>
+            )}
             {activateRoutineLoadingId === routine.id && (
-              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 rounded-xl bg-indigo-900/40 dark:bg-indigo-950/50 backdrop-blur-sm" role="status">
+              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-indigo-900/40 backdrop-blur-sm dark:bg-indigo-950/50" role="status">
                 <Loader2 size={28} className="animate-spin text-white" />
-                <span className="text-xs font-black text-white uppercase tracking-wider">Activando…</span>
+                <span className="text-xs font-black uppercase tracking-wider text-white">Activando…</span>
               </div>
             )}
             {deleteRoutineLoadingId === routine.id && (
               <div
-                className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 rounded-xl bg-slate-900/55 dark:bg-slate-950/70 backdrop-blur-sm"
+                className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-slate-900/55 backdrop-blur-sm dark:bg-slate-950/70"
                 role="status"
                 aria-live="polite"
                 aria-busy="true"
@@ -437,60 +562,89 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                 </p>
               </div>
             )}
-            <div className="mb-4 flex items-start justify-between gap-3">
+
+            <div className="relative flex items-start gap-3.5 p-4 sm:p-5">
+              <span
+                className={cn(
+                  'flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-white shadow-md',
+                  routine.isActive
+                    ? 'bg-gradient-to-br from-indigo-500 to-violet-600 shadow-indigo-500/30'
+                    : 'bg-slate-200 text-slate-500 shadow-none dark:bg-slate-700 dark:text-slate-300'
+                )}
+              >
+                <Dumbbell size={22} />
+              </span>
               <div className="min-w-0 flex-1">
-                <span className={cn(
-                  'text-[11px] font-medium',
-                  routine.isActive ? 'text-indigo-600 dark:text-indigo-300' : 'text-slate-400 dark:text-slate-500'
-                )}>
-                  {routine.isActive ? 'Activa' : 'Rutina'}
-                </span>
+                <div className="flex items-center gap-2">
+                  {routine.isActive && (
+                    <span className="rounded-full bg-indigo-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-white">
+                      Activa
+                    </span>
+                  )}
+                  {routine.hiddenFromSocial && (
+                    <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+                      Oculta
+                    </span>
+                  )}
+                </div>
                 {editingId === routine.id ? (
                   <Input
                     value={editingName}
                     onChange={(e) => setEditingName(e.target.value)}
                     onClick={(e) => e.stopPropagation()}
-                    className="mt-1 bg-white text-slate-900 dark:bg-slate-700 dark:text-slate-100"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        const trimmed = editingName.trim();
+                        if (!trimmed) return;
+                        onRenameRoutine(routine.id, trimmed);
+                        setEditingId(null);
+                        setEditingName('');
+                      }
+                    }}
+                    className="mt-1.5 bg-white text-slate-900 dark:bg-slate-700 dark:text-slate-100"
+                    autoFocus
                   />
                 ) : (
-                  <h3 className="mt-0.5 truncate text-lg font-semibold text-slate-900 dark:text-slate-100">{routine.name}</h3>
+                  <h3 className="mt-1 truncate text-[19px] font-black tracking-tight text-slate-900 dark:text-slate-100">
+                    {routine.name}
+                  </h3>
                 )}
+                <p className="mt-0.5 flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
+                  {routine.sameTemplateAllWeeks
+                    ? <Repeat size={12} className="shrink-0" />
+                    : <Layers size={12} className="shrink-0" />}
+                  {cycleLabel}
+                </p>
               </div>
+              {routine.isActive && editingId !== routine.id && (
+                <ChevronRight size={18} className="mt-3 shrink-0 text-slate-300 dark:text-slate-600" />
+              )}
             </div>
 
-            <div className="flex flex-wrap gap-2" onClick={(e) => e.stopPropagation()}>
+            <div
+              className="relative flex items-center gap-1 border-t border-slate-100/80 px-3 py-2 dark:border-white/5"
+              onClick={(e) => e.stopPropagation()}
+            >
               {onToggleHiddenRoutine && (
                 <button
+                  type="button"
                   onClick={() => onToggleHiddenRoutine(routine.id)}
                   disabled={deleteInFlight}
                   className={cn(
-                    'inline-flex items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-medium ring-1 transition-colors',
+                    'inline-flex h-9 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium',
                     routine.hiddenFromSocial
-                      ? 'bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:ring-amber-800'
-                      : 'bg-white text-slate-500 ring-slate-200 hover:text-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-600'
+                      ? 'text-amber-700 dark:text-amber-300'
+                      : 'text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200'
                   )}
-                  title={routine.hiddenFromSocial ? "Ocultar en perfil social (activado)" : "Mostrar en perfil social"}
+                  title={routine.hiddenFromSocial ? 'Oculta en el perfil' : 'Visible en el perfil'}
                 >
-                  {routine.hiddenFromSocial ? <EyeOff size={12} /> : <Eye size={12} />}
-                  {routine.hiddenFromSocial ? "Oculta" : "Visible"}
+                  {routine.hiddenFromSocial ? <EyeOff size={14} /> : <Eye size={14} />}
+                  {routine.hiddenFromSocial ? 'Oculta' : 'Visible'}
                 </button>
               )}
-              {!routine.isActive && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => onActivateRoutine(routine.id)}
-                  disabled={deleteInFlight || activateRoutineLoadingId != null}
-                  className="rounded-full"
-                >
-                  {activateRoutineLoadingId === routine.id ? <><Loader2 size={14} className="animate-spin mr-1" /> Activando…</> : 'Activar'}
-                </Button>
-              )}
-
               {editingId === routine.id ? (
-                <Button
-                  variant="outline"
-                  size="sm"
+                <button
+                  type="button"
                   onClick={() => {
                     const trimmed = editingName.trim();
                     if (!trimmed) return;
@@ -499,43 +653,41 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                     setEditingName('');
                   }}
                   disabled={deleteInFlight}
-                  className="rounded-full"
+                  className="inline-flex h-9 items-center rounded-full px-2.5 text-xs font-semibold text-indigo-600 dark:text-indigo-300"
                 >
                   Guardar
-                </Button>
+                </button>
               ) : (
-                <Button
-                  variant="outline"
-                  size="sm"
+                <button
+                  type="button"
                   onClick={() => {
                     setEditingId(routine.id);
                     setEditingName(routine.name);
                   }}
                   disabled={deleteInFlight}
-                  className="rounded-full"
+                  className="inline-flex h-9 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
                 >
-                  <Pencil size={12} className="mr-1" />
+                  <Pencil size={14} />
                   Renombrar
-                </Button>
+                </button>
               )}
-
-              <Button
-                variant="ghost"
-                size="sm"
+              <button
+                type="button"
                 onClick={() => void onDeleteRoutine(routine.id)}
                 disabled={deleteInFlight}
-                className="rounded-full text-rose-500 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-900/30"
+                className="ml-auto inline-flex h-9 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium text-rose-500 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-900/30"
               >
                 {deleteRoutineLoadingId === routine.id ? (
-                  <Loader2 size={12} className="mr-1 animate-spin shrink-0" />
+                  <Loader2 size={14} className="animate-spin shrink-0" />
                 ) : (
-                  <Trash2 size={12} className="mr-1" />
+                  <Trash2 size={14} />
                 )}
                 Borrar
-              </Button>
+              </button>
             </div>
-          </Card>
-        ))}
+          </div>
+          );
+        })}
       </motion.section>
       )}
     </motion.div>

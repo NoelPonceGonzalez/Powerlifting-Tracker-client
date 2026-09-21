@@ -1,6 +1,9 @@
 import React, { useState, useRef } from 'react';
 import { motion } from 'motion/react';
-import { User as UserIcon, Camera, Image as ImageIcon, Weight, Moon, Sun, LogOut, Users, Plus, Check, X, Crop, Sparkles } from 'lucide-react';
+import { User as UserIcon, Camera, Image as ImageIcon, Weight, Moon, Sun, LogOut, Users, Plus, Check, X, Crop, Sparkles, Handshake, Ban, ChevronRight, Bell, Smartphone } from 'lucide-react';
+import { apiPost } from '@/src/lib/api';
+import { CloseFriendsModal } from '@/src/components/social/CloseFriendsModal';
+import { BlockedUsersModal } from '@/src/components/social/BlockedUsersModal';
 import { Card } from '@/src/components/ui/Card';
 import { PwaSettingsSection } from '@/src/components/PwaSettingsSection';
 import { Avatar } from '@/src/components/ui/Avatar';
@@ -53,6 +56,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const [cropImage, setCropImage] = useState<string | null>(null);
   const [photoError, setPhotoError] = useState('');
+  const [closeFriendsOpen, setCloseFriendsOpen] = useState(false);
+  const [blockedOpen, setBlockedOpen] = useState(false);
+  const [closingSessions, setClosingSessions] = useState(false);
+  const reminderOn = user.workoutReminderOn !== false;
+  const reminderTime = user.workoutReminderTime || '10:00';
+
+  React.useEffect(() => {
+    try {
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (tz && tz !== user.timezone) onUpdateUser({ timezone: tz });
+    } catch {
+      /* ignore */
+    }
+    // solo al abrir ajustes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const originalImageRef = useRef<string | null>(null);
 
   const handleAvatarFile = async (file?: File) => {
@@ -361,6 +380,108 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </Card>
         </section>
 
+        <section>
+          <div className="flex items-center gap-3 mb-6">
+            <div className="bg-emerald-500 p-2 rounded-xl">
+              <Handshake className="text-white" size={20} />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100">Privacidad</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Mejores amigos y bloqueos</p>
+            </div>
+          </div>
+          <Card padding="none" rounded="2xl" className="overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setCloseFriendsOpen(true)}
+              className="flex min-h-14 w-full items-center gap-3 px-4 py-3 text-left"
+            >
+              <Handshake size={18} className="text-emerald-500" />
+              <span className="min-w-0 flex-1">
+                <span className="block font-semibold text-slate-900 dark:text-slate-100">Mejores amigos</span>
+                <span className="block text-xs text-slate-400">Quién ve historias, gym y torneos privados</span>
+              </span>
+              <ChevronRight size={16} className="text-slate-300" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setBlockedOpen(true)}
+              className="flex min-h-14 w-full items-center gap-3 border-t border-slate-100 px-4 py-3 text-left dark:border-slate-700"
+            >
+              <Ban size={18} className="text-rose-500" />
+              <span className="min-w-0 flex-1">
+                <span className="block font-semibold text-slate-900 dark:text-slate-100">Bloqueados</span>
+                <span className="block text-xs text-slate-400">Desbloquear a alguien</span>
+              </span>
+              <ChevronRight size={16} className="text-slate-300" />
+            </button>
+          </Card>
+        </section>
+
+        <section>
+          <div className="flex items-center gap-3 mb-6">
+            <div className="bg-indigo-500 p-2 rounded-xl">
+              <Bell className="text-white" size={20} />
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100">Avisos</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400">Recordatorio de entreno y sesiones</p>
+            </div>
+          </div>
+          <Card padding="lg" rounded="2xl" className="space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="font-semibold text-slate-900 dark:text-slate-100">Recordatorio de entreno</p>
+                <p className="text-xs text-slate-400">Si hoy toca, te avisamos a esta hora</p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={reminderOn}
+                onClick={() => onUpdateUser({ workoutReminderOn: !reminderOn })}
+                className={cn(
+                  'relative h-8 w-14 shrink-0 rounded-full p-1',
+                  reminderOn ? 'bg-indigo-600' : 'bg-slate-200 dark:bg-slate-600'
+                )}
+              >
+                <span className={cn('block h-6 w-6 rounded-full bg-white transition-transform', reminderOn ? 'translate-x-6' : 'translate-x-0')} />
+              </button>
+            </div>
+            {reminderOn && (
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-400">Hora</span>
+                <input
+                  type="time"
+                  value={reminderTime}
+                  onChange={e => onUpdateUser({ workoutReminderTime: e.target.value || '10:00' })}
+                  className="h-11 w-full rounded-2xl border border-slate-200 bg-white px-3 text-sm dark:border-slate-600 dark:bg-slate-800"
+                />
+              </label>
+            )}
+            <button
+              type="button"
+              disabled={closingSessions}
+              onClick={async () => {
+                if (!window.confirm('Se cierra la sesión en los demás móviles. Este se queda abierto.')) return;
+                setClosingSessions(true);
+                try {
+                  const res = await apiPost<{ token: string }>('/api/auth/logout-others', {});
+                  if (res?.token) localStorage.setItem('auth_token', res.token);
+                  window.alert('Listo. Los otros dispositivos tendrán que entrar de nuevo.');
+                } catch (e: any) {
+                  window.alert(e?.message || 'No se ha podido hacer');
+                } finally {
+                  setClosingSessions(false);
+                }
+              }}
+              className="flex min-h-11 w-full items-center gap-2 rounded-2xl bg-slate-50 px-3 text-left text-sm font-semibold text-slate-800 dark:bg-slate-800 dark:text-slate-100"
+            >
+              <Smartphone size={16} />
+              {closingSessions ? 'Cerrando…' : 'Cerrar otras sesiones'}
+            </button>
+          </Card>
+        </section>
+
         {/* Appearance */}
         <section>
           <div className="flex items-center gap-3 mb-6">
@@ -453,6 +574,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       {photoError && (
         <p className="mt-3 text-center text-xs font-semibold text-rose-500">{photoError}</p>
       )}
+
+      <CloseFriendsModal open={closeFriendsOpen} onClose={() => setCloseFriendsOpen(false)} />
+      <BlockedUsersModal open={blockedOpen} onClose={() => setBlockedOpen(false)} />
 
       <AvatarCropModal
         image={cropImage}

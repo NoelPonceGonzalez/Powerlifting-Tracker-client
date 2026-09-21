@@ -12,12 +12,39 @@ export type QueuedWrite = {
   createdAt: number;
 };
 
-function tokenScope(): string {
+function decodeUserIdFromToken(token: string): string {
   try {
-    return (localStorage.getItem('auth_token') || '').slice(-16) || 'anon';
+    const part = token.split('.')[1];
+    if (!part) return '';
+    const b64 = part.replace(/-/g, '+').replace(/_/g, '/');
+    const json = atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4));
+    const payload = JSON.parse(json) as { userId?: string };
+    return payload?.userId ? String(payload.userId) : '';
+  } catch {
+    return '';
+  }
+}
+
+/** Estable entre renovaciones de JWT. El sufijo del token cambiaba y huérfana la cola. */
+export function offlineUserScope(): string {
+  try {
+    const token = localStorage.getItem('auth_token') || '';
+    return decodeUserIdFromToken(token) || token.slice(-16) || 'anon';
   } catch {
     return 'anon';
   }
+}
+
+export function offlineLegacyTokenScope(): string {
+  try {
+    return (localStorage.getItem('auth_token') || '').slice(-16) || '';
+  } catch {
+    return '';
+  }
+}
+
+function tokenScope(): string {
+  return offlineUserScope();
 }
 
 function loadAll(): Record<string, QueuedWrite[]> {
@@ -25,7 +52,15 @@ function loadAll(): Record<string, QueuedWrite[]> {
     const raw = localStorage.getItem(LS_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as Record<string, QueuedWrite[]>;
-    return parsed && typeof parsed === 'object' ? parsed : {};
+    if (!parsed || typeof parsed !== 'object') return {};
+    const uid = offlineUserScope();
+    const legacy = offlineLegacyTokenScope();
+    if (uid && legacy && uid !== legacy && Array.isArray(parsed[legacy]) && parsed[legacy].length) {
+      parsed[uid] = [...(parsed[uid] || []), ...parsed[legacy]];
+      delete parsed[legacy];
+      saveAll(parsed);
+    }
+    return parsed;
   } catch {
     return {};
   }
@@ -55,6 +90,19 @@ export function isNetworkError(err: unknown): boolean {
   return /failed to fetch|networkerror|load failed|network request failed|Failed to fetch/i.test(msg);
 }
 
+const PENDING_EVENT = 'pl-offline-writes';
+
+function notifyPending() {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new Event(PENDING_EVENT));
+}
+
+export function subscribePendingWrites(listener: () => void): () => void {
+  if (typeof window === 'undefined') return () => {};
+  window.addEventListener(PENDING_EVENT, listener);
+  return () => window.removeEventListener(PENDING_EVENT, listener);
+}
+
 export function enqueueWrite(item: Omit<QueuedWrite, 'id' | 'createdAt'>): void {
   const all = loadAll();
   const scope = tokenScope();
@@ -66,6 +114,46 @@ export function enqueueWrite(item: Omit<QueuedWrite, 'id' | 'createdAt'>): void 
   });
   all[scope] = list.slice(-40);
   saveAll(all);
+  notifyPending();
+}
+
+/** Parches de series que aún no han salido: se aplican encima del plan cacheado. */
+export function queuedLogPatches(): Array<{ routineId: string; logs: Record<string, unknown> }> {
+  const list = loadAll()[tokenScope()] || [];
+  const out: Array<{ routineId: string; logs: Record<string, unknown> }> = [];
+  for (const item of list) {
+    const m = item.path.split('?')[0].match(/^\/api\/routines\/([^/]+)\/logs$/);
+    if (!m || item.method !== 'PATCH') continue;
+    const body = item.body as { logs?: Record<string, unknown> };
+    if (body?.logs && typeof body.logs === 'object') {
+      out.push({ routineId: m[1], logs: body.logs });
+    }
+  }
+  return out;
+}
+
+export function applyQueuedLogPatches<T>(path: string, data: T): T {
+  const p = path.split('?')[0];
+  const patches = queuedLogPatches();
+  if (!patches.length) return data;
+
+  const mergeOne = (r: any) => {
+    if (!r || typeof r !== 'object') return r;
+    const id = String(r._id || r.id || '');
+    const extra = patches.filter((x) => x.routineId === id);
+    if (!extra.length) return r;
+    let logs = { ...(r.logs || {}) };
+    for (const x of extra) logs = { ...logs, ...x.logs };
+    return { ...r, logs };
+  };
+
+  if (p === '/api/routines' && Array.isArray(data)) {
+    return data.map(mergeOne) as T;
+  }
+  if (/^\/api\/routines\/[^/]+$/.test(p) && data && typeof data === 'object') {
+    return mergeOne(data) as T;
+  }
+  return data;
 }
 
 export function pendingWriteCount(): number {
@@ -98,9 +186,12 @@ export async function flushOfflineWrites(
         showAppError('No se ha podido sincronizar un cambio guardado sin red.', err);
       }
     }
+    const startedIds = new Set(list.map((item) => item.id));
     const next = loadAll();
-    next[scope] = left;
+    const arrivedDuringFlush = (next[scope] || []).filter((item) => !startedIds.has(item.id));
+    next[scope] = [...left, ...arrivedDuringFlush];
     saveAll(next);
+    notifyPending();
   } finally {
     flushing = false;
   }

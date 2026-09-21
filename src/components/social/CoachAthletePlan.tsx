@@ -224,6 +224,8 @@ export const CoachAthletePlan: React.FC<CoachAthletePlanProps> = ({ athleteId, a
       name: raw.name,
       sameTemplateAllWeeks: raw.sameTemplateAllWeeks,
       cycleLength: raw.cycleLength,
+      cycleAnchorISO: raw.cycleAnchorISO,
+      weekStartsOn: raw.weekStartsOn,
       weeks: raw.weeks,
       versions: raw.versions,
       baseTemplate: raw.baseTemplate,
@@ -240,6 +242,8 @@ export const CoachAthletePlan: React.FC<CoachAthletePlanProps> = ({ athleteId, a
       clearUntouchedDays: opts.clearUntouchedDays,
       continuesPreviousPlan: opts.continuesPreviousPlan,
       currentWeekOfYear: weekOfYearFromDate(new Date(), year),
+      week1ISO: opts.week1ISO,
+      weekStartsOn: opts.weekStartsOn,
     });
     await apiPatch(`/api/routines/${routineId}/plan`, buildPlanPatchPayload(merged));
     if (opts.importMaxes) {

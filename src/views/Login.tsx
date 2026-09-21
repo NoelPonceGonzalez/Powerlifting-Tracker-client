@@ -9,6 +9,7 @@ import { AvatarCropModal } from '@/src/components/AvatarCropModal';
 import { User as AppUser } from '@/src/types';
 import { getApiBaseUrl, isLocalDevApiBase } from '@/src/lib/api';
 import { downscaleForCrop } from '@/src/lib/avatarCrop';
+import { SocialOnboarding } from '@/src/components/social/SocialOnboarding';
 
 /** Mensaje de conexión: en local menciona puerto 3000; en AWS/producción no. */
 function serverUnreachableHint(): string {
@@ -106,8 +107,9 @@ interface LoginProps {
 
 export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', onCancel }) => {
   const [mode, setMode] = useState<
-    'login' | 'register' | 'complete' | 'forgot-email' | 'forgot-code' | 'forgot-password'
+    'login' | 'register' | 'complete' | 'follow' | 'forgot-email' | 'forgot-code' | 'forgot-password'
   >('login');
+  const [sessionReady, setSessionReady] = useState<{ token: string; user: any } | null>(null);
   const [resetCode, setResetCode] = useState('');
   const [resetEmail, setResetEmail] = useState('');
   const [registerStep, setRegisterStep] = useState<'email' | 'code'>('email');
@@ -193,6 +195,9 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
             ? 'month'
             : undefined,
       mbMode: !!data.user.mbMode,
+      workoutReminderOn: data.user.workoutReminderOn !== false,
+      workoutReminderTime: data.user.workoutReminderTime || '10:00',
+      timezone: data.user.timezone,
     });
   };
 
@@ -564,7 +569,10 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
           savedAvatar = data.user.avatar || '';
         }
       }
-      enterSession({ token: data.token, user: { ...data.user, avatar: savedAvatar } });
+      const ready = { token: data.token, user: { ...data.user, avatar: savedAvatar } };
+      localStorage.setItem('auth_token', ready.token);
+      setSessionReady(ready);
+      setMode('follow');
     } catch (err: any) {
       const msg = err?.message || 'Error al completar el registro';
       setError(msg);
@@ -627,7 +635,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
 
         <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
           <Card padding="xl" rounded="2xl" className="shadow-sm bg-white dark:bg-slate-950 border border-slate-100 dark:border-slate-800">
-            {mode !== 'complete' && !mode.startsWith('forgot') && (
+            {mode !== 'complete' && mode !== 'follow' && !mode.startsWith('forgot') && (
               <div className="flex bg-slate-100 dark:bg-slate-800 p-1 rounded-xl mb-6">
                 <button
                   type="button"
@@ -661,7 +669,12 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
               </div>
             )}
 
-            {mode === 'login' ? (
+            {mode === 'follow' && sessionReady ? (
+              <SocialOnboarding
+                myId={String(sessionReady.user.id)}
+                onDone={() => enterSession(sessionReady)}
+              />
+            ) : mode === 'login' ? (
               <form onSubmit={handleStandardLogin} className="space-y-5">
                 <Input
                   label="Usuario o correo"
