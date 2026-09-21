@@ -1,9 +1,18 @@
 import React from 'react';
+import { Check, CheckCheck } from 'lucide-react';
 import { mediaUrl } from '@/src/lib/api';
 import { timeAgo, type ChatLine } from '@/src/lib/feedApi';
 import { cn } from '@/src/lib/utils';
 
-export function StoryReplyCard({ line, authorName }: { line: ChatLine; authorName?: string }) {
+export function StoryReplyCard({
+  line,
+  authorName,
+  lastMine,
+}: {
+  line: ChatLine;
+  authorName?: string;
+  lastMine?: boolean;
+}) {
   const reply = line.storyReply;
   if (!reply) return null;
 
@@ -59,7 +68,19 @@ export function StoryReplyCard({ line, authorName }: { line: ChatLine; authorNam
           </div>
         )}
 
-        <span className="mt-1 px-1 text-[10px] text-slate-400">{timeAgo(line.createdAt)}</span>
+        <span className="mt-1 flex items-center gap-1 px-1 text-[10px] text-slate-400">
+          {timeAgo(line.createdAt)}
+          {line.mine && (
+            <>
+              {line.readAt ? (
+                <CheckCheck size={12} strokeWidth={2.4} className="text-sky-500" />
+              ) : (
+                <Check size={12} strokeWidth={2.4} className="text-slate-400" />
+              )}
+              {lastMine && <span className={line.readAt ? 'text-sky-500' : 'text-slate-400'}>{line.readAt ? 'Visto' : 'Enviado'}</span>}
+            </>
+          )}
+        </span>
       </div>
     </div>
   );

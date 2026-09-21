@@ -30,9 +30,10 @@ import { Input } from '@/src/components/ui/Input';
 import { LogEntry, TrainingMax, TrainingWeek, TrainingDay, PlannedExercise, ExerciseMode, DayType, SetLog, InternalExerciseMax, getInternalValueForMode, HistoryEntry } from '@/src/types';
 import { cn } from '@/src/lib/utils';
 import { mediaUrl } from '@/src/lib/api';
-import { EASE_OUT, PAGE_ENTER_ITEM, PAGE_ENTER_ROOT, SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
+import { EASE_OUT, MODAL_RISE, PAGE_ENTER_ITEM, PAGE_ENTER_ROOT, SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
 import { usePageEnter } from '@/src/lib/usePageEnter';
 import { GlassModal } from '@/src/components/ui/GlassModal';
+import { LoadingBlock } from '@/src/components/ui/Spinner';
 import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 import { applyDaySkips, shiftsForCalendarWeek, type CalendarDayShift } from '@/src/lib/calendarDayShift';
@@ -1309,7 +1310,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
         <AnimatePresence mode="wait">
           {!currentWeek || !currentDay ? (
             <motion.div key="empty-plan" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="py-12 text-center text-slate-500 dark:text-slate-400">
-              {weeks.length === 0 ? 'No hay semanas en esta rutina.' : 'Cargando...'}
+              {weeks.length === 0 ? 'No hay semanas en esta rutina.' : <LoadingBlock className="py-4" label="Cargando el plan" />}
             </motion.div>
           ) : viewMode === 'daily' ? (
             <motion.div
@@ -2693,7 +2694,12 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     <X size={18} />
                   </button>
                 </div>
-                <div className="px-3 py-2">
+                <motion.div
+                  initial={MODAL_RISE.initial}
+                  animate={MODAL_RISE.animate}
+                  transition={MODAL_RISE.transition}
+                  className="px-3 py-2"
+                >
                   {(!isCurrentWeekLive && tmDisplayIsHistorical) && (
                     <p className="mb-2 rounded-xl bg-amber-50/80 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
                       Valores de {viewDateLabel}. Al volver a hoy verás los actuales.
@@ -2758,7 +2764,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                       Añadir RM
                     </button>
                   )}
-                </div>
+                </motion.div>
               </motion.div>
             </motion.div>
           )}
@@ -2792,7 +2798,12 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
               onClick={(e) => e.stopPropagation()}
               className="relative z-10 w-full max-w-sm max-h-[88vh] overflow-y-auto rounded-3xl border border-white/50 bg-white/75 shadow-2xl shadow-slate-900/10 backdrop-blur-2xl dark:border-white/10 dark:bg-slate-900/70"
             >
-              <div className="p-4 sm:p-5">
+              <motion.div
+                initial={MODAL_RISE.initial}
+                animate={MODAL_RISE.animate}
+                transition={MODAL_RISE.transition}
+                className="p-4 sm:p-5"
+              >
                 <div className="mb-4 flex items-center justify-between">
                   <div>
                     <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
@@ -2945,7 +2956,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     </Button>
                   ) : null}
                 </div>
-              </div>
+              </motion.div>
             </motion.div>
           </motion.div>
           )}
@@ -2976,7 +2987,10 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 onClick={(e) => e.stopPropagation()}
                 className="relative z-10 w-full max-w-md max-h-[min(88dvh,90vh)] overflow-y-auto bg-white dark:bg-slate-900 rounded-2xl sm:rounded-3xl shadow-2xl border border-slate-100 dark:border-slate-700"
               >
-              <form
+              <motion.form
+                initial={MODAL_RISE.initial}
+                animate={MODAL_RISE.animate}
+                transition={MODAL_RISE.transition}
                 className="p-4 sm:p-6 dark:bg-slate-900"
                 onSubmit={(e) => {
                   e.preventDefault();
@@ -3232,7 +3246,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                 >
                   Añadir
                 </Button>
-              </form>
+              </motion.form>
             </motion.div>
           </div>
         )}

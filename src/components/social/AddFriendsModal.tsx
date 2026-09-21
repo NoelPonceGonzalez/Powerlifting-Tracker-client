@@ -4,6 +4,7 @@ import { Check, Clock, Loader2, RefreshCw, Search, UserPlus } from 'lucide-react
 import { Avatar } from '@/src/components/social/MediaPost';
 import { Button } from '@/src/components/ui/Button';
 import { GlassModal } from '@/src/components/ui/GlassModal';
+import { LoadingBlock } from '@/src/components/ui/Spinner';
 import { apiGet } from '@/src/lib/api';
 import {
   fetchFollowSuggestions,
@@ -186,7 +187,7 @@ export function AddFriendsModal({
           />
         )
       ) : suggesting && !hasSuggest ? (
-        <p className="py-10 text-center text-sm text-white/55">Cargando sugerencias…</p>
+        <LoadingBlock className="py-10" />
       ) : suggestError ? (
         <div className="py-10 text-center">
           <p className="text-sm text-white/55">No se pudieron cargar sugerencias.</p>

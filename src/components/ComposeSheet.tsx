@@ -2,7 +2,7 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { Camera, Clock, MapPin, X } from 'lucide-react';
-import { SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, SLIME_TAP, STICKY } from '@/src/lib/motionPresets';
+import { MODAL_RISE, SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, SLIME_TAP, STICKY } from '@/src/lib/motionPresets';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 
 interface ComposeSheetProps {
@@ -55,7 +55,12 @@ export function ComposeSheet({ open, onClose, onPublish, onGymNow, onGymLater }:
           </button>
         </div>
 
-        <div className="space-y-2 p-4">
+        <motion.div
+          initial={MODAL_RISE.initial}
+          animate={MODAL_RISE.animate}
+          transition={MODAL_RISE.transition}
+          className="space-y-2 p-4"
+        >
           <motion.button
             type="button"
             onClick={onPublish}
@@ -100,7 +105,7 @@ export function ComposeSheet({ open, onClose, onPublish, onGymNow, onGymLater }:
               <span className="mt-0.5 block text-[11px] text-slate-500">Gym y hora</span>
             </motion.button>
           </div>
-        </div>
+        </motion.div>
       </motion.div>
     </motion.div>
       )}

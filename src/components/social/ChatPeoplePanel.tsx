@@ -13,6 +13,7 @@ import { useLongPress } from '@/src/lib/useLongPress';
 import { cn } from '@/src/lib/utils';
 import type { ConnectionPerson, Friend, FriendRequest, FriendsFilter, UserSearchResult } from '@/src/types';
 import type { AppNotification } from '@/src/components/social/HomeActivitySheet';
+import { ListSkeleton, LoadingBlock } from '@/src/components/ui/Spinner';
 
 interface ChatPeoplePanelProps {
   myId: string;
@@ -118,6 +119,7 @@ export function ChatPeoplePanel({
   const [sendingId, setSendingId] = useState<string | null>(null);
   const [notes, setNotes] = useState<AppNotification[]>([]);
   const [loadingNotes, setLoadingNotes] = useState(true);
+  const [loadingConnections, setLoadingConnections] = useState(true);
   const [connections, setConnections] = useState<{
     following: ConnectionPerson[];
     followers: ConnectionPerson[];
@@ -125,10 +127,16 @@ export function ChatPeoplePanel({
     sent: ConnectionPerson[];
   }>({ following: [], followers: [], all: [], sent: [] });
   const sentIds = useMemo(() => new Set(connections.sent.map(p => p.id)), [connections.sent]);
+  const followingIds = useMemo(() => new Set(connections.following.map(p => p.id)), [connections.following]);
+  const visibleSuggestions = useMemo(
+    () => suggestions.filter(u => u.id !== myId && !sentIds.has(u.id) && !followingIds.has(u.id)),
+    [suggestions, myId, sentIds, followingIds]
+  );
   const inbox = useMemo(() => pending.filter(r => !r.needsFollowBack), [pending]);
 
   useEffect(() => {
     setLoadingNotes(true);
+    setLoadingConnections(true);
     apiGet<AppNotification[]>('/api/notifications', { limit: '40' })
       .then(list => setNotes(Array.isArray(list) ? list : []))
       .catch(() => setNotes([]))
@@ -150,7 +158,8 @@ export function ChatPeoplePanel({
           });
         }
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setLoadingConnections(false));
   }, [refreshTick, pending.length]);
 
   useEffect(() => {
@@ -241,7 +250,9 @@ export function ChatPeoplePanel({
           />
         </div>
 
-        {shown.length === 0 ? (
+        {loadingConnections ? (
+          <ListSkeleton rows={7} />
+        ) : shown.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-5 py-14 text-center dark:border-slate-700 dark:bg-slate-900">
             <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
               {needle ? 'Nadie con ese nombre' : isFollowers ? 'Aún no tienes seguidores' : 'Aún no sigues a nadie'}
@@ -280,7 +291,7 @@ export function ChatPeoplePanel({
                                   : 'ring-2 ring-slate-200 dark:ring-slate-700'
                             )}
                           >
-                            <Avatar src={person.avatar} name={person.name} className="h-full w-full rounded-full" />
+                            <Avatar src={person.avatar} userId={person.id} name={person.name} className="h-full w-full rounded-full" />
                           </span>
                           {canAsk && (
                             <span className="pointer-events-none absolute -bottom-0.5 -right-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-indigo-600 text-white shadow ring-2 ring-white dark:ring-slate-900">
@@ -331,7 +342,7 @@ export function ChatPeoplePanel({
                     aria-label={person.name}
                   >
                     <span className="flex h-full w-full items-center justify-center rounded-full ring-2 ring-slate-200 dark:ring-slate-700">
-                      <Avatar src={person.avatar} name={person.name} className="h-full w-full rounded-full" />
+                      <Avatar src={person.avatar} userId={person.id} name={person.name} className="h-full w-full rounded-full" />
                     </span>
                   </HoldPerson>
                   <span className="absolute -bottom-1 -right-1">
@@ -403,16 +414,14 @@ export function ChatPeoplePanel({
                 Para ti
               </p>
               {loadingSuggestions ? (
-                <p className="rounded-2xl bg-white px-5 py-8 text-center text-sm text-slate-500 dark:bg-slate-900">
-                  Cargando sugerencias…
-                </p>
-              ) : suggestions.length === 0 ? (
+                <ListSkeleton rows={4} />
+              ) : visibleSuggestions.length === 0 ? (
                 <p className="rounded-2xl border border-dashed border-slate-200 bg-white px-5 py-8 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-900">
                   Busca arriba para seguir a alguien.
                 </p>
               ) : (
                 <div className="rounded-3xl bg-white shadow-sm dark:bg-slate-900">
-                  {suggestions.map((u, i) => {
+                  {visibleSuggestions.map((u, i) => {
                     const pendingOut =
                       sentIds.has(u.id) ||
                       (u.friendshipStatus === 'pending' && u.friendshipDirection === 'outgoing');
@@ -433,7 +442,7 @@ export function ChatPeoplePanel({
                           className="min-w-0 flex-1 text-left"
                         >
                           <span className="flex items-center gap-3">
-                            <Avatar src={u.avatar} name={u.name} className="h-11 w-11 rounded-full" />
+                            <Avatar src={u.avatar} userId={u.id} name={u.name} className="h-11 w-11 rounded-full" />
                             <span className="min-w-0">
                               <span className="block truncate text-[15px] font-semibold text-slate-900 dark:text-slate-100">
                                 {u.name}
@@ -486,7 +495,7 @@ export function ChatPeoplePanel({
                     className="min-w-0 flex-1 text-left"
                   >
                     <span className="flex items-center gap-3">
-                      <Avatar src={req.avatar} name={req.name} className="h-11 w-11 rounded-full" />
+                      <Avatar src={req.avatar} userId={req.userId || req.id} name={req.name} className="h-11 w-11 rounded-full" />
                       <span className="min-w-0">
                         <span className="block truncate text-[15px] font-semibold text-slate-900 dark:text-slate-100">{req.name}</span>
                         <span className="text-[12px] text-slate-400">
@@ -512,7 +521,7 @@ export function ChatPeoplePanel({
                 </div>
               ))}
             </section>
-          ) : !searchingPeople && suggestions.length > 0 ? null : (
+          ) : !searchingPeople && visibleSuggestions.length > 0 ? null : (
             <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-5 py-14 text-center dark:border-slate-700 dark:bg-slate-900">
               <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">No tienes solicitudes</p>
               <p className="mt-1 text-xs text-slate-400">Usa las sugerencias de arriba o busca por nombre.</p>
@@ -534,7 +543,7 @@ export function ChatPeoplePanel({
                       ? 'flex w-full items-center gap-3 border-t border-slate-100 px-3.5 py-3 text-left dark:border-slate-800'
                       : 'flex w-full items-center gap-3 px-3.5 py-3 text-left'}
                   >
-                    <Avatar src={person.avatar} name={person.name} className="h-11 w-11 rounded-full" />
+                    <Avatar src={person.avatar} userId={person.id} name={person.name} className="h-11 w-11 rounded-full" />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[15px] font-semibold text-slate-900 dark:text-slate-100">{person.name}</span>
                       <span className="text-[12px] text-slate-400">Solicitud enviada · aún no ha aceptado</span>
@@ -591,7 +600,7 @@ export function ChatPeoplePanel({
                         className="min-w-0 flex-1 text-left"
                       >
                         <span className="flex items-center gap-3">
-                          <Avatar src={u.avatar} name={u.name} className="h-11 w-11 rounded-full" />
+                          <Avatar src={u.avatar} userId={u.id} name={u.name} className="h-11 w-11 rounded-full" />
                           <span className="min-w-0">
                             <span className="block truncate text-[15px] font-semibold text-slate-900 dark:text-slate-100">{u.name}</span>
                             <span className="text-[12px] text-slate-400">
@@ -662,7 +671,7 @@ export function ChatPeoplePanel({
       >
         <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-slate-100 dark:bg-slate-800">
           {inbox[0] ? (
-            <Avatar src={inbox[0].avatar} name={inbox[0].name} className="h-11 w-11 rounded-full" />
+            <Avatar src={inbox[0].avatar} userId={inbox[0].id} name={inbox[0].name} className="h-11 w-11 rounded-full" />
           ) : (
             <Heart size={18} className="text-slate-900 dark:text-slate-100" />
           )}
@@ -693,9 +702,7 @@ export function ChatPeoplePanel({
           <p className="text-[11px] text-slate-400">Se borra a los 7 días</p>
         </div>
         {loadingNotes ? (
-          <div className="flex justify-center py-10 text-slate-400">
-            <Loader2 size={20} className="animate-spin" />
-          </div>
+          <LoadingBlock className="py-10" />
         ) : recent.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-200/80 bg-transparent px-5 py-10 text-center">
             <p className="text-sm font-medium text-slate-500 dark:text-slate-400">Sin avisos esta semana</p>
@@ -727,7 +734,7 @@ export function ChatPeoplePanel({
                   >
                     <span className="relative mt-0.5 h-10 w-10 shrink-0">
                       {note.relatedUser ? (
-                        <Avatar src={note.relatedUser.avatar} name={note.relatedUser.name} className="h-10 w-10 rounded-full" />
+                        <Avatar src={note.relatedUser.avatar} userId={note.relatedUserId || note.relatedUser?.id} name={note.relatedUser.name} className="h-10 w-10 rounded-full" />
                       ) : (
                         <span className="flex h-10 w-10 items-center justify-center rounded-full bg-white dark:bg-slate-900">
                           {activityIcon(note.type)}

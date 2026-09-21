@@ -9,12 +9,14 @@ import {
   Flag,
   GraduationCap,
   Handshake,
-  Loader2,
+  MapPin,
   MessageCircle,
   MoreHorizontal,
   Pencil,
+  Trophy,
   UserPlus,
 } from 'lucide-react';
+import { CoverSkeleton, LoadingBlock } from '@/src/components/ui/Spinner';
 import { cn } from '@/src/lib/utils';
 import { apiGet, apiPatch, apiPost } from '@/src/lib/api';
 import { Avatar } from '@/src/components/social/MediaPost';
@@ -26,6 +28,7 @@ import {
   type PublicProfile,
 } from '@/src/lib/feedApi';
 import { TmHistoryModal } from '@/src/components/social/TmHistoryModal';
+import { InstagramCover } from '@/src/components/social/ProgressMiniProfile';
 import { CloseFriendButton } from '@/src/components/social/CloseFriendButton';
 import { CloseFriendsModal } from '@/src/components/social/CloseFriendsModal';
 import { GlassModal } from '@/src/components/ui/GlassModal';
@@ -82,7 +85,6 @@ function Stat({
 export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   userId,
   onBack,
-  onOpenRoutine,
   onSendFriendRequest,
   onAcceptFriend,
   onRejectFriend,
@@ -248,8 +250,19 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
   if (loading) {
     return (
-      <div className="flex justify-center py-16 text-slate-400">
-        <Loader2 size={24} className="animate-spin" />
+      <div className="space-y-5">
+        {onBack ? (
+          <button
+            type="button"
+            onClick={onBack}
+            className="inline-flex min-h-12 items-center gap-2 text-xs font-black uppercase tracking-wider text-slate-500 hover:text-indigo-600 dark:text-slate-400"
+          >
+            <ArrowLeft size={16} />
+            Volver
+          </button>
+        ) : null}
+        <CoverSkeleton />
+        <LoadingBlock className="py-10" label="Cargando perfil" />
       </div>
     );
   }
@@ -303,9 +316,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         )}
         {!profile.isSelf && (
           <div className="flex items-center gap-1">
-            {(profile.isFriend || profile.friendshipStatus === 'following') && (
-              <CloseFriendButton userId={userId} />
-            )}
             <div className="relative">
               <button
                 type="button"
@@ -350,19 +360,20 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         )}
       </div>
 
-      {/* Portada: avatar grande y contadores, como en cualquier red */}
       <motion.div
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ type: 'spring', stiffness: 260, damping: 26 }}
-        className="rounded-3xl border border-slate-100 bg-white p-5 dark:border-slate-700/60 dark:bg-slate-900"
+        className={profile.isSelf ? 'rounded-3xl border border-slate-100 bg-white p-5 dark:border-slate-700/60 dark:bg-slate-900' : ''}
       >
+        {profile.isSelf ? (
         <div className="flex items-center gap-5">
           <span className="rounded-full bg-gradient-to-tr from-indigo-500 to-violet-500 p-[3px]">
             <span className="block rounded-full border-[3px] border-white dark:border-slate-900">
               <Avatar
                 name={profile.name}
-                avatar={profile.isSelf && liveAvatar != null && liveAvatar !== '' ? liveAvatar : profile.avatar}
+                avatar={liveAvatar != null && liveAvatar !== '' ? liveAvatar : profile.avatar}
+                userId={profile.id}
                 size={82}
               />
             </span>
@@ -373,12 +384,26 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             <Stat value={profile.followingCount} label="Siguiendo" onClick={() => onOpenFriends?.('following')} />
           </div>
         </div>
+        ) : (
+          <InstagramCover
+            name={profile.name}
+            username={profile.username}
+            userId={profile.id}
+            avatar={profile.avatar}
+            marcas={profile.trainingMaxes?.length ?? 0}
+            followers={profile.followerCount}
+            following={profile.followingCount}
+            bio={profile.bio || ''}
+            onFollowersClick={() => onOpenFriends?.('followers')}
+            onFollowingClick={() => onOpenFriends?.('following')}
+          />
+        )}
 
-        <div className="mt-4">
+        <div className={profile.isSelf ? 'mt-4' : 'mt-3'}>
+          {profile.isSelf ? (
+            <>
           <p className="text-lg font-semibold leading-tight text-slate-900 dark:text-slate-100">{profile.name}</p>
           {profile.username && <p className="text-xs font-bold text-indigo-600 dark:text-indigo-400">@{profile.username}</p>}
-
-          {profile.isSelf && (
             <button
               type="button"
               onClick={() => setCloseOpen(true)}
@@ -387,7 +412,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               <Handshake size={16} className="text-emerald-500" />
               <span className="flex-1 text-sm font-semibold text-slate-800 dark:text-slate-100">Mejores amigos</span>
             </button>
-          )}
+            </>
+          ) : null}
 
           {profile.isSelf && editingBio ? (
             <div className="mt-2 flex items-start gap-2">
@@ -415,10 +441,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               </span>
               <Pencil size={13} className="mt-1 shrink-0 text-slate-400" />
             </button>
-          ) : (
-            profile.bio && <p className="mt-1.5 text-sm text-slate-600 dark:text-slate-300">{profile.bio}</p>
-          )}
+          ) : null}
 
+          {profile.isSelf && (
           <div className="mt-3 flex flex-wrap gap-2">
             {profile.coach && (
               <button
@@ -443,6 +468,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               </span>
             )}
           </div>
+          )}
         </div>
 
         <div className="mt-4 flex flex-wrap gap-2">
@@ -463,6 +489,15 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             )
           ) : (
             <>
+              {(profile.isFriend || profile.friendshipStatus === 'following') && (
+                <CloseFriendButton
+                  labeled
+                  userId={userId}
+                  name={profile.name}
+                  avatar={profile.avatar}
+                  className="!w-auto flex-1 justify-center"
+                />
+              )}
               {onOpenChat && (
                 <button
                   type="button"
@@ -471,15 +506,6 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 >
                   <MessageCircle size={15} />
                   Chat
-                </button>
-              )}
-              {onOpenRoutine && (
-                <button
-                  type="button"
-                  onClick={onOpenRoutine}
-                  className="flex-1 rounded-xl border-2 border-indigo-200 py-2.5 text-xs font-black uppercase tracking-wider text-indigo-600 dark:border-indigo-800 dark:text-indigo-300"
-                >
-                  Ver su rutina
                 </button>
               )}
               {profile.isFriend ? (
@@ -566,70 +592,29 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 )
               )}
 
-              {profile.isFriend && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => void askCoachLink('ask')}
-                    disabled={savingCoach || profile.coachRequestStatus === 'pending' || profile.coachRequestStatus === 'accepted'}
-                    title="Le llegará una solicitud y tendrá que aceptarla"
-                    className={cn(
-                      'flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-xs font-black uppercase tracking-wider transition-colors disabled:opacity-70',
-                      profile.coachRequestStatus === 'accepted'
-                        ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
-                        : profile.coachRequestStatus === 'pending'
-                          ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
-                          : 'border-2 border-indigo-200 text-indigo-600 hover:bg-indigo-50 dark:border-indigo-800 dark:text-indigo-300'
-                    )}
-                  >
-                    <GraduationCap size={15} />
-                    {profile.coachRequestStatus === 'accepted'
-                      ? 'Es tu entrenador'
-                      : profile.coachRequestStatus === 'pending'
-                        ? 'Pendiente'
-                        : 'Que me entrene'}
-                  </button>
-                  {profile.iAmTheirCoach ? (
-                    <span className="flex items-center justify-center gap-1.5 rounded-xl bg-emerald-100 px-4 py-2.5 text-xs font-black uppercase tracking-wider text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
-                      <Dumbbell size={15} />
-                      Le entrenas
-                    </span>
-                  ) : !profile.coach ? (
-                    <button
-                      type="button"
-                      onClick={() => void askCoachLink('invite')}
-                      disabled={savingCoach || profile.athleteInviteStatus === 'pending' || profile.athleteInviteStatus === 'accepted'}
-                      title="Le llegará una invitación y tendrá que aceptarte"
-                      className={cn(
-                        'flex items-center justify-center gap-1.5 rounded-xl px-4 py-2.5 text-xs font-black uppercase tracking-wider transition-colors disabled:opacity-70',
-                        profile.athleteInviteStatus === 'pending'
-                          ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
-                          : 'border-2 border-amber-200 text-amber-700 hover:bg-amber-50 dark:border-amber-800 dark:text-amber-300'
-                      )}
-                    >
-                      <Dumbbell size={15} />
-                      {profile.athleteInviteStatus === 'pending' ? 'Pendiente' : 'Entrenarle'}
-                    </button>
-                  ) : null}
-                </>
-              )}
             </>
           )}
         </div>
 
         {/* Las marcas viven en la propia ficha: son la carta de presentación, no una pestaña */}
         {profile.trainingMaxes.length > 0 && (
-          <div className="mt-4 border-t border-slate-200/70 pt-4 dark:border-slate-700/70">
+          <div className={profile.isSelf ? 'mt-4 border-t border-slate-200/70 pt-4 dark:border-slate-700/70' : 'mt-4'}>
+            {profile.isSelf && (
             <p className="mb-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
               Marcas · toca una para ver cómo ha subido
             </p>
-            <div className="flex flex-wrap gap-2">
+            )}
+            <div className={profile.isSelf ? 'flex flex-wrap gap-2' : 'grid grid-cols-3 gap-2'}>
               {profile.trainingMaxes.map((tm, i) => (
                 <button
                   key={tm.id || i}
                   type="button"
                   onClick={() => setOpenTm(tm)}
-                  className="inline-flex items-baseline gap-1.5 rounded-xl bg-white px-3 py-2 shadow-sm transition-transform hover:-translate-y-0.5 dark:bg-slate-800"
+                  className={
+                    profile.isSelf
+                      ? 'inline-flex items-baseline gap-1.5 rounded-xl bg-white px-3 py-2 shadow-sm transition-transform hover:-translate-y-0.5 dark:bg-slate-800'
+                      : 'rounded-2xl bg-white px-2.5 pb-2.5 pt-3 text-left shadow-sm ring-1 ring-black/[0.04] dark:bg-slate-900 dark:ring-white/[0.06]'
+                  }
                 >
                   <span className="text-[10px] font-black uppercase tracking-wide text-slate-400">{tm.name}</span>
                   <span className="text-sm font-black text-slate-900 dark:text-slate-100">
@@ -645,19 +630,66 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         )}
       </motion.div>
 
-      {profile.trainingMaxes.length === 0 ? (
+      {!profile.isSelf && (profile.liveChallenge || profile.liveGym) && (
+        <div className="grid grid-cols-2 gap-2 max-[360px]:gap-1.5">
+          {profile.liveChallenge ? (
+            <div
+              aria-hidden
+              className="pointer-events-none select-none overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/[0.04] dark:bg-slate-900 dark:ring-white/[0.06]"
+            >
+              <div className="flex items-center gap-2 border-b border-slate-100 px-2.5 py-2 dark:border-slate-800 sm:px-3">
+                <Trophy size={14} className="shrink-0 text-amber-500" />
+                <span className="truncate text-[12px] font-semibold text-slate-800 dark:text-slate-100">Torneos</span>
+              </div>
+              <div className="flex items-center gap-2 px-2.5 py-2.5 sm:px-3">
+                <Trophy size={15} className="shrink-0 text-amber-500" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[12px] font-semibold text-slate-800 dark:text-slate-100">
+                    {profile.liveChallenge.title}
+                  </span>
+                  <span className="block truncate text-[10px] text-slate-400">{profile.liveChallenge.exercise}</span>
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div />
+          )}
+          {profile.liveGym ? (
+            <div
+              aria-hidden
+              className="pointer-events-none select-none overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/[0.04] dark:bg-slate-900 dark:ring-white/[0.06]"
+            >
+              <div className="flex items-center gap-2 border-b border-slate-100 px-2.5 py-2 dark:border-slate-800 sm:px-3">
+                <MapPin size={14} className="shrink-0 text-emerald-500" />
+                <span className="truncate text-[12px] font-semibold text-slate-800 dark:text-slate-100">Avisar que voy</span>
+              </div>
+              <div className="flex items-center gap-2 px-2.5 py-2.5 sm:px-3">
+                <MapPin size={15} className="shrink-0 text-emerald-500" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[12px] font-semibold text-slate-800 dark:text-slate-100">
+                    {profile.liveGym.gymName}
+                  </span>
+                  <span className="block truncate text-[10px] text-slate-400">{profile.liveGym.time}</span>
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div />
+          )}
+        </div>
+      )}
+
+      {profile.isSelf && profile.trainingMaxes.length === 0 ? (
         <div className="flex w-full items-center gap-4 rounded-2xl border border-slate-200/80 bg-white p-4 dark:border-slate-700 dark:bg-slate-900">
           <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300">
             <Dumbbell size={20} />
           </span>
           <span className="min-w-0 flex-1">
             <span className="block text-sm font-black text-slate-900 dark:text-slate-100">
-              {profile.isSelf ? 'Enseña tus marcas' : 'Sin marcas compartidas'}
+              Enseña tus marcas
             </span>
             <span className="block text-xs text-slate-500 dark:text-slate-400">
-              {profile.isSelf
-                ? 'En Rutina, comparte los RM que quieras que vean tus amigos.'
-                : 'Todavía no comparte ningún RM.'}
+              En Rutina, comparte los RM que quieras que vean tus amigos.
             </span>
           </span>
         </div>

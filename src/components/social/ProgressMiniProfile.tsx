@@ -10,12 +10,19 @@ export function ProfileStat({
   value,
   label,
   onClick,
+  loading,
 }: {
   value: number;
   label: string;
   onClick?: () => void;
+  loading?: boolean;
 }) {
-  const body = (
+  const body = loading ? (
+    <>
+      <span className="mx-auto block h-4 w-7 animate-pulse rounded bg-slate-200 dark:bg-slate-700" />
+      <p className="mt-1 truncate text-[11px] text-slate-500">{label}</p>
+    </>
+  ) : (
     <>
       <p className="text-[16px] font-semibold leading-none text-slate-900 dark:text-slate-100">{value}</p>
       <p className="mt-1 truncate text-[11px] text-slate-500">{label}</p>
@@ -34,6 +41,7 @@ export function ProfileStat({
 interface InstagramCoverProps {
   name: string;
   username?: string | null;
+  userId?: string | null;
   avatar?: string | null;
   marcas: number;
   followers: number;
@@ -49,6 +57,7 @@ interface InstagramCoverProps {
 export function InstagramCover({
   name,
   username,
+  userId,
   avatar,
   marcas,
   followers,
@@ -62,7 +71,7 @@ export function InstagramCover({
 }: InstagramCoverProps) {
   const photo = (
     <span className="relative block">
-      <Avatar src={avatar} name={name} className="h-16 w-16 rounded-full max-[360px]:h-14 max-[360px]:w-14 sm:h-[84px] sm:w-[84px]" />
+      <Avatar src={avatar} userId={userId} name={name} className="h-16 w-16 rounded-full max-[360px]:h-14 max-[360px]:w-14 sm:h-[84px] sm:w-[84px]" />
       {avatarHint && (
         <span className="absolute bottom-0 right-0 flex h-6 w-6 items-center justify-center rounded-full bg-indigo-600 text-white shadow ring-2 ring-slate-50 dark:ring-slate-950">
           <Camera size={12} strokeWidth={2.4} />
@@ -136,6 +145,7 @@ export function ProgressMiniProfile({
   }, [user.avatar]);
   const [following, setFollowing] = useState(friendCount);
   const [followers, setFollowers] = useState(friendCount);
+  const [statsReady, setStatsReady] = useState(false);
   const [bio, setBio] = useState('');
   const [savedBio, setSavedBio] = useState('');
   const [editing, setEditing] = useState(false);
@@ -143,6 +153,7 @@ export function ProgressMiniProfile({
 
   useEffect(() => {
     let live = true;
+    setStatsReady(false);
     fetchProfile(user.id)
       .then(p => {
         if (!live) return;
@@ -155,8 +166,11 @@ export function ProgressMiniProfile({
           setFace(p.avatar || '');
           if (p.avatar && p.avatar !== user.avatar) onUpdateUser?.({ avatar: p.avatar });
         }
+        setStatsReady(true);
       })
-      .catch(() => {});
+      .catch(() => {
+        setStatsReady(true);
+      });
     return () => {
       live = false;
     };
@@ -212,6 +226,7 @@ export function ProgressMiniProfile({
           >
             <Avatar
               src={face || user.avatar}
+              userId={user.id}
               name={user.name}
               className="h-16 w-16 rounded-full ring-2 ring-slate-200/80 dark:ring-slate-700 max-[360px]:h-14 max-[360px]:w-14 sm:h-[84px] sm:w-[84px]"
             />
@@ -221,9 +236,9 @@ export function ProgressMiniProfile({
           </button>
         </div>
         <div className="flex min-w-0 flex-1 justify-around">
-          <ProfileStat value={marcas} label="marcas" />
-          <ProfileStat value={followers} label="seguidores" onClick={onOpenFollowers ?? onOpenFriends} />
-          <ProfileStat value={following} label="seguidos" onClick={onOpenFollowing ?? onOpenFriends} />
+          <ProfileStat value={marcas} label="marcas" loading={!statsReady} />
+          <ProfileStat value={followers} label="seguidores" loading={!statsReady} onClick={onOpenFollowers ?? onOpenFriends} />
+          <ProfileStat value={following} label="seguidos" loading={!statsReady} onClick={onOpenFollowing ?? onOpenFriends} />
         </div>
       </div>
 

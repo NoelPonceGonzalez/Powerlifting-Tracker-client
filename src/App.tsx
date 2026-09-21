@@ -46,6 +46,7 @@ import {
   DayType
 } from '@/src/types';
 import { apiGet, apiPost, apiPut, apiPatch, apiDelete, apiUpload, getApiBaseUrl } from '@/src/lib/api';
+import { LoadingBlock, Spinner } from '@/src/components/ui/Spinner';
 import { cn } from '@/src/lib/utils';
 import { normalizeExerciseNameKey } from '@/src/lib/normalizeExerciseName';
 import { computeRoutineProgressTotal } from '@/src/lib/routineProgressTotal';
@@ -697,6 +698,7 @@ export default function App() {
   const [socialBackTo, setSocialBackTo] = useState<'profile' | 'dashboard' | 'chat'>('dashboard');
   const [socialNavTick, setSocialNavTick] = useState(0);
   const [chatConversationOpen, setChatConversationOpen] = useState(false);
+  const [profileSheetOpen, setProfileSheetOpen] = useState(false);
 
   useEffect(() => {
     if (view !== 'social') setChatConversationOpen(false);
@@ -3700,8 +3702,8 @@ export default function App() {
 
   if (isCheckingSession) {
     return (
-      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center">
-        <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+        <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center">
+        <Spinner size={28} />
       </div>
     );
   }
@@ -3718,9 +3720,8 @@ export default function App() {
   if (isLoadingData && routines.length === 0) {
     return (
       <>
-        <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col items-center justify-center gap-4">
-          <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
-          <p className="text-sm font-bold text-slate-500 dark:text-slate-400 animate-pulse">Cargando tus datos…</p>
+        <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center">
+          <LoadingBlock label="Cargando tus datos…" />
         </div>
         <AppNoticeHost />
       </>
@@ -3901,7 +3902,7 @@ export default function App() {
     <div className="relative h-dvh max-h-dvh overflow-hidden bg-[var(--app-bg)] font-sans selection:bg-indigo-100 selection:text-indigo-900 dark:selection:bg-indigo-950/80 dark:selection:text-indigo-200">
       {isSwitchingAccount && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/50 backdrop-blur-sm">
-          <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+          <Spinner size={36} />
         </div>
       )}
       <div className="relative h-full bg-[var(--app-bg)]">
@@ -3935,6 +3936,8 @@ export default function App() {
               onOpenProgram={openProgramPlan}
               onCreateRoutine={openCreateRoutine}
               onOpenSocial={goToSocial}
+              onSendFriendRequest={handleSendFriendRequest}
+              onConnectionsOpenChange={setProfileSheetOpen}
               onJoinFriendCheckIn={handleJoinFriendCheckIn}
               onOpenSettings={() => setView('settings')}
             />
@@ -4089,7 +4092,7 @@ export default function App() {
         )}
       </div>
       
-      {!chatConversationOpen && <nav
+      {!chatConversationOpen && !profileSheetOpen && <nav
         className="app-tabbar fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] left-2 right-2 z-50 mx-auto flex max-w-lg items-center gap-0.5 px-1 py-1 max-[360px]:left-1.5 max-[360px]:right-1.5 sm:bottom-6 sm:left-3 sm:right-3 sm:px-1.5"
         style={{ WebkitTapHighlightColor: 'transparent' }}
       >

@@ -17,7 +17,7 @@ import {
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { cn } from '@/src/lib/utils';
-import { PAGE_ENTER_ITEM, PAGE_ENTER_ROOT, SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
+import { MODAL_RISE, PAGE_ENTER_ITEM, PAGE_ENTER_ROOT, SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
 import { usePageEnter } from '@/src/lib/usePageEnter';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
@@ -287,6 +287,11 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                   </div>
                 </div>
               )}
+              <motion.div
+                initial={MODAL_RISE.initial}
+                animate={MODAL_RISE.animate}
+                transition={MODAL_RISE.transition}
+              >
               <div className="mb-4 flex items-center justify-between gap-3">
                 <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
                   {createStep === 1 ? 'Nueva rutina' : 'El ciclo'}
@@ -499,6 +504,7 @@ export const RoutineManagerView: React.FC<RoutineManagerViewProps> = ({
                   </div>
                 </>
               )}
+              </motion.div>
             </motion.div>
           </div>
         </AnimatePresence>,

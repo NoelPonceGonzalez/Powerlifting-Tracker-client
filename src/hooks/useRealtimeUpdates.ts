@@ -9,7 +9,8 @@ export type SseEventType =
   | 'challenge_update'
   | 'routine_update'
   | 'chat_message'
-  | 'chat_typing';
+  | 'chat_typing'
+  | 'chat_read';
 
 interface UseRealtimeUpdatesOptions {
   onSocialUpdate?: () => void;
@@ -139,6 +140,9 @@ export function useRealtimeUpdates(
           case 'chat_typing':
             emitChatRealtime(data as ChatRealtimeEvent);
             break;
+          case 'chat_read':
+            emitChatRealtime(data as ChatRealtimeEvent);
+            break;
         }
       } catch {
         /* ignore parse errors */
@@ -151,6 +155,7 @@ export function useRealtimeUpdates(
     es.addEventListener('routine_update', handleEvent);
     es.addEventListener('chat_message', handleEvent);
     es.addEventListener('chat_typing', handleEvent);
+    es.addEventListener('chat_read', handleEvent);
 
     es.onerror = () => {
       if (esRef.current !== es) return;

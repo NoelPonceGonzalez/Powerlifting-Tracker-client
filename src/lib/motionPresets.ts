@@ -31,6 +31,13 @@ export const PAGE_ENTER_ITEM: Variants = {
 /** Overlay / velo. Las hojas usan STICKY. */
 export const SCREEN_TRANSITION = { duration: 0.16, ease: EASE_OUT };
 
+/** Cuerpo del modal de RM: el número y la gráfica suben un instante después de la hoja. */
+export const MODAL_RISE = {
+  initial: { opacity: 0, y: 14 },
+  animate: { opacity: 1, y: 0 },
+  transition: { duration: 0.32, ease: EASE_OUT, delay: 0.1 },
+};
+
 /** Interruptor / like: muelle corto. */
 export const SPRING_SNAP = { type: 'spring' as const, stiffness: 480, damping: 34, mass: 0.65 };
 

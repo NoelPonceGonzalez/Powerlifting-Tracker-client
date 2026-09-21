@@ -28,7 +28,7 @@ const StatusChip: React.FC<{ tone: 'ok' | 'warn'; children: React.ReactNode }> =
 );
 
 /** Instalación de la app (PWA) y permiso de notificaciones del navegador. */
-export const PwaSettingsSection: React.FC = () => {
+export const PwaSettingsSection: React.FC<{ embedded?: boolean }> = ({ embedded = false }) => {
   const { isInstalled, needsManualInstructions, install } = useInstallPrompt();
   const { permission, isSupported, isBlocked, requesting, request, sendTestNotification } = useWebNotifications();
   const {
@@ -54,21 +54,8 @@ export const PwaSettingsSection: React.FC = () => {
     await install();
   }, [needsManualInstructions, install]);
 
-  return (
-    <section>
-      <div className="mb-6 flex items-center gap-3">
-        <div className="rounded-xl bg-sky-600 p-2">
-          <Smartphone className="text-white" size={20} />
-        </div>
-        <div className="min-w-0 flex-1">
-          <h2 className="text-xl font-black uppercase tracking-tight text-slate-800 dark:text-slate-100">Aplicación</h2>
-          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
-            Instálala en tu dispositivo y activa notificaciones, cámara y galería.
-          </p>
-        </div>
-      </div>
-
-      <Card padding="md" rounded="2xl" className="space-y-5">
+  const body = (
+    <>
         {/* Instalación */}
         <div className="app-row">
           <div className="flex min-w-0 flex-1 items-center gap-3 sm:gap-4">
@@ -383,6 +370,28 @@ export const PwaSettingsSection: React.FC = () => {
             </Button>
           )}
         </div>
+    </>
+  );
+
+  if (embedded) {
+    return <div className="space-y-5">{body}</div>;
+  }
+
+  return (
+    <section>
+      <div className="mb-6 flex items-center gap-3">
+        <div className="rounded-xl bg-sky-600 p-2">
+          <Smartphone className="text-white" size={20} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-xl font-black uppercase tracking-tight text-slate-800 dark:text-slate-100">Permisos</h2>
+          <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+            Instálala en tu dispositivo y activa notificaciones, cámara y galería.
+          </p>
+        </div>
+      </div>
+      <Card padding="md" rounded="2xl" className="space-y-5">
+        {body}
       </Card>
     </section>
   );

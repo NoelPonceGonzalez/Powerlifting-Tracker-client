@@ -2,7 +2,7 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { X } from 'lucide-react';
-import { SCREEN_TRANSITION, SLIME_CARD_IN, SLIME_CARD_OUT, SLIME_CARD_SHOW, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
+import { MODAL_RISE, SCREEN_TRANSITION, SLIME_CARD_IN, SLIME_CARD_OUT, SLIME_CARD_SHOW, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
 import { cn } from '@/src/lib/utils';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 
@@ -11,6 +11,8 @@ interface GlassModalProps {
   onClose: () => void;
   title?: string;
   subtitle?: string;
+  /** Enlace u acción junto al título (p. ej. Ver perfil). */
+  titleExtra?: React.ReactNode;
   children: React.ReactNode;
   footer?: React.ReactNode;
   /** Más ancho: log de series, importar plan. */
@@ -38,13 +40,14 @@ export function GlassModal({
   onClose,
   title,
   subtitle,
+  titleExtra,
   children,
   footer,
   wide = false,
   className,
   persist = false,
   zIndexClass = 'z-[100000]',
-  rise: _rise = false,
+  rise = true,
   sheet = false,
   center = false,
   frost = false,
@@ -156,12 +159,15 @@ export function GlassModal({
                     : 'border-white/40 bg-white/40 dark:border-white/10 dark:bg-slate-900/40'
                 )}
               >
-                <div className="min-w-0">
-                  {title && (
-                    <p className={cn('truncate text-sm font-semibold', frost ? 'text-white' : 'text-slate-900 dark:text-slate-100')}>
-                      {title}
-                    </p>
-                  )}
+                <div className="min-w-0 flex-1">
+                  <div className="flex min-w-0 items-center gap-2">
+                    {title && (
+                      <p className={cn('min-w-0 truncate text-sm font-semibold', frost ? 'text-white' : 'text-slate-900 dark:text-slate-100')}>
+                        {title}
+                      </p>
+                    )}
+                    {titleExtra}
+                  </div>
                   {subtitle && (
                     <p className={cn('truncate text-[11px]', frost ? 'text-white/55' : 'text-slate-500')}>{subtitle}</p>
                   )}
@@ -182,9 +188,14 @@ export function GlassModal({
                 </button>
               </div>
             )}
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 py-3 [touch-action:pan-y]">
+            <motion.div
+              initial={rise ? MODAL_RISE.initial : false}
+              animate={rise ? MODAL_RISE.animate : undefined}
+              transition={rise ? MODAL_RISE.transition : undefined}
+              className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 py-3 [touch-action:pan-y]"
+            >
               {children}
-            </div>
+            </motion.div>
             {footer && (
               <div className={cn(
                 'shrink-0 border-t px-4 py-3 backdrop-blur-xl',

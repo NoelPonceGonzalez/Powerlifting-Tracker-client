@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Loader2, TrendingUp } from 'lucide-react';
+import { TrendingUp } from 'lucide-react';
 import {
   Area,
   ComposedChart,
@@ -10,6 +10,7 @@ import {
   YAxis,
 } from 'recharts';
 import { GlassModal } from '@/src/components/ui/GlassModal';
+import { LoadingBlock } from '@/src/components/ui/Spinner';
 import { fetchProfileTmHistory, type ProfileTmHistory } from '@/src/lib/feedApi';
 
 function unitFor(mode: string) {
@@ -103,9 +104,7 @@ export const TmHistoryModal: React.FC<TmHistoryModalProps> = ({ userId, tm, onCl
           </p>
         )}
         {!data && !error ? (
-          <div className="flex h-44 items-center justify-center text-slate-400">
-            <Loader2 className="animate-spin" />
-          </div>
+          <LoadingBlock className="h-44 py-0" />
         ) : (
           <div className="h-44 w-full min-w-0 outline-none [&_.recharts-surface]:outline-none [&_.recharts-wrapper]:outline-none">
             <ResponsiveContainer width="100%" height="100%">

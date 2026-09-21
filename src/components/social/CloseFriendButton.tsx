@@ -7,10 +7,16 @@ import { cn } from '@/src/lib/utils';
 
 export function CloseFriendButton({
   userId,
+  name,
+  avatar,
   className,
+  labeled,
 }: {
   userId: string;
+  name?: string;
+  avatar?: string | null;
   className?: string;
+  labeled?: boolean;
 }) {
   const { isClose, toggle } = useCloseFriends();
   const on = isClose(userId);
@@ -25,7 +31,7 @@ export function CloseFriendButton({
     setPulse(next ? 'add' : 'remove');
     setBusy(true);
     try {
-      await toggle(userId, next);
+      await toggle(userId, next, name ? { id: userId, name, avatar } : undefined);
     } catch {
       setPulse(null);
     } finally {
@@ -42,10 +48,17 @@ export function CloseFriendButton({
       aria-pressed={on}
       aria-label={on ? 'Quitar de mejores amigos' : 'Añadir a mejores amigos'}
       className={cn(
-        'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full touch-manipulation disabled:opacity-50',
+        'inline-flex shrink-0 items-center justify-center touch-manipulation disabled:opacity-50',
+        labeled
+          ? 'min-h-11 w-full gap-2 rounded-2xl px-3 text-left'
+          : 'h-11 w-11 rounded-full',
         on
-          ? 'bg-emerald-500/15 text-emerald-500 dark:bg-emerald-400/15 dark:text-emerald-300'
-          : 'bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500',
+          ? labeled
+            ? 'bg-emerald-500/15 text-emerald-600 dark:bg-emerald-400/15 dark:text-emerald-300'
+            : 'bg-emerald-500/15 text-emerald-500 dark:bg-emerald-400/15 dark:text-emerald-300'
+          : labeled
+            ? 'bg-slate-50 text-slate-700 dark:bg-slate-800/70 dark:text-slate-100'
+            : 'bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500',
         className
       )}
     >
@@ -74,6 +87,11 @@ export function CloseFriendButton({
       >
         <Handshake size={18} strokeWidth={on ? 2.4 : 2} />
       </motion.span>
+      {labeled && (
+        <span className="min-w-0 flex-1 text-sm font-semibold">
+          {on ? 'En mejores amigos' : 'Añadir a mejores amigos'}
+        </span>
+      )}
     </button>
   );
 }

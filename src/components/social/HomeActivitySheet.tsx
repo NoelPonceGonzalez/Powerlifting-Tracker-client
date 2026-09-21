@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
-import { SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
+import { MODAL_RISE, SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
 import { Dumbbell, GraduationCap, Heart, Loader2, MapPin, MessageCircle, Trophy, UserCheck, Users, UserX, X } from 'lucide-react';
 import { apiGet, apiPut } from '@/src/lib/api';
 import { coachRequestCopy, coachRequestPerson, timeAgo, type ChatAsk, type ChatGroupInvite, type CoachRequest } from '@/src/lib/feedApi';
 import type { FriendRequest } from '@/src/types';
 import { Avatar } from '@/src/components/ui/Avatar';
+import { LoadingBlock } from '@/src/components/ui/Spinner';
 
 export interface AppNotification {
   id: string;
@@ -152,7 +153,12 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
               </button>
             </div>
 
-            <div className="space-y-5 px-3 py-4">
+            <motion.div
+              initial={MODAL_RISE.initial}
+              animate={MODAL_RISE.animate}
+              transition={MODAL_RISE.transition}
+              className="space-y-5 px-3 py-4"
+            >
               <section className="space-y-2.5">
                 <p className="px-1 text-xs font-medium text-slate-400">Solicitudes</p>
                 {requestCount === 0 ? (
@@ -297,9 +303,7 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
               <section className="space-y-2.5">
                 <p className="px-1 text-xs font-medium text-slate-400">Reciente</p>
                 {loadingNotes ? (
-                  <div className="flex justify-center py-8 text-slate-400">
-                    <Loader2 size={20} className="animate-spin" />
-                  </div>
+                  <LoadingBlock className="py-8" />
                 ) : recent.length === 0 ? (
                   <p className="rounded-2xl bg-white/60 px-4 py-6 text-center text-sm text-slate-400 dark:bg-slate-800/40">
                     Aún no hay likes, mensajes ni avisos.
@@ -344,7 +348,7 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
                   ))
                 )}
               </section>
-            </div>
+            </motion.div>
           </motion.div>
         </motion.div>
       )}

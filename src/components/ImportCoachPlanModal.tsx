@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion } from 'motion/react';
-import { SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
+import { MODAL_RISE, SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
 import { AlertCircle, CheckCircle2, FileUp, Loader2, X } from 'lucide-react';
 import { Button } from '@/src/components/ui/Button';
 import { cn } from '@/src/lib/utils';
@@ -310,7 +310,12 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
             </button>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          <motion.div
+            initial={MODAL_RISE.initial}
+            animate={MODAL_RISE.animate}
+            transition={MODAL_RISE.transition}
+            className="min-h-0 flex-1 overflow-y-auto px-5 py-4"
+          >
             <input
               ref={fileInputRef}
               type="file"
@@ -660,7 +665,7 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
                 </div>
               </div>
             )}
-          </div>
+          </motion.div>
 
           <div className="flex gap-3 border-t border-slate-100 px-5 py-4 dark:border-slate-700">
             <Button variant="outline" className="flex-1" onClick={onClose} disabled={saving}>

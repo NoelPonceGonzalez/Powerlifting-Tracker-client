@@ -75,6 +75,9 @@ export interface PublicProfile {
   routineName: string | null;
   coach: FeedAuthor | null;
   trainingMaxes: { id?: string; name: string; value: number; mode: string }[];
+  /** Solo si le sigo: torneo activo o gym en la próxima hora. */
+  liveChallenge?: { title: string; exercise: string } | null;
+  liveGym?: { gymName: string; time: string } | null;
 }
 
 export interface ProfileTmHistory {
@@ -249,6 +252,7 @@ export interface ChatLine {
   storyReply?: StoryReply | null;
   requested?: boolean;
   waiting?: boolean;
+  readAt?: string | null;
 }
 
 export function fetchChats() {

@@ -3,6 +3,7 @@ import { Plus } from 'lucide-react';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { fetchOwnProfile, fetchStories, type StoryGroup } from '@/src/lib/feedApi';
 import { StoryViewer } from '@/src/components/social/StoryViewer';
+import { StoryBubblesSkeleton } from '@/src/components/ui/Spinner';
 import { cn } from '@/src/lib/utils';
 import { isRealtimeOpen } from '@/src/lib/chatRealtime';
 
@@ -84,6 +85,7 @@ export function StoriesRail({ myId, myAvatar, myName, refreshTick = 0, onAddStor
   const [watching, setWatching] = useState<StoryGroup[] | null>(null);
   const [myFace, setMyFace] = useState<string | null>(myAvatar ?? null);
   const [myLabel, setMyLabel] = useState(myName || '');
+  const [railReady, setRailReady] = useState(false);
 
   useEffect(() => {
     if (myAvatar) setMyFace(myAvatar);
@@ -104,6 +106,8 @@ export function StoriesRail({ myId, myAvatar, myName, refreshTick = 0, onAddStor
       if (me?.name) setMyLabel(me.name);
     } catch {
       /* se deja lo último visto */
+    } finally {
+      setRailReady(true);
     }
   }, []);
 
@@ -185,6 +189,9 @@ export function StoriesRail({ myId, myAvatar, myName, refreshTick = 0, onAddStor
             ) : (
               <Bubble name="Tu historia" avatarName={myLabel} avatar={myFace} unseen={false} add onClick={onAddStory} />
             )}
+            {!railReady && unseen.length === 0 && seen.length === 0 ? (
+              <StoryBubblesSkeleton count={4} />
+            ) : null}
             {unseen.map(g => (
               <Bubble
                 key={g.author.id}

@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { motion } from 'motion/react';
-import { SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
-import { FileUp, Loader2, Plus, Trash2, X } from 'lucide-react';
+import { MODAL_RISE, SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
+import { FileUp, Plus, Trash2, X } from 'lucide-react';
 import { apiGet, apiPatch, apiPost } from '@/src/lib/api';
 import { createEmptyTemplate, expandRoutineFromApi } from '@/src/lib/planMaterialize';
 import { mergeCoachImportIntoRoutine } from '@/src/lib/coachPlan/applyCoachPlan';
@@ -10,6 +10,7 @@ import { buildPlanPatchPayload } from '@/src/lib/planSyncPayload';
 import { weekOfYearFromDate } from '@/src/lib/mesocycleWeek';
 import { normalizeExerciseNameKey } from '@/src/lib/normalizeExerciseName';
 import type { ImportCoachPlanResult } from '@/src/components/ImportCoachPlanModal';
+import { LoadingBlock } from '@/src/components/ui/Spinner';
 import type { DayType, PlannedExercise, TrainingDay, TrainingWeek } from '@/src/types';
 
 const ImportCoachPlanModal = React.lazy(() =>
@@ -308,11 +309,14 @@ export const CoachAthletePlan: React.FC<CoachAthletePlanProps> = ({ athleteId, a
         </div>
 
         {loading ? (
-          <div className="flex justify-center py-16 text-slate-400">
-            <Loader2 className="animate-spin" />
-          </div>
+          <LoadingBlock />
         ) : (
-          <div className="space-y-4 overflow-y-auto px-4 py-4">
+          <motion.div
+            initial={MODAL_RISE.initial}
+            animate={MODAL_RISE.animate}
+            transition={MODAL_RISE.transition}
+            className="space-y-4 overflow-y-auto px-4 py-4"
+          >
             {error && <p className="rounded-2xl bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">{error}</p>}
 
             <section className="rounded-2xl border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-900 dark:bg-amber-950/20">
@@ -505,7 +509,7 @@ export const CoachAthletePlan: React.FC<CoachAthletePlanProps> = ({ athleteId, a
             >
               Guardar plan
             </button>
-          </div>
+          </motion.div>
         )}
       </motion.div>
 

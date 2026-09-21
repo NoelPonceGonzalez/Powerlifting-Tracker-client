@@ -2,9 +2,10 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { Heart, MessageCircle, Send, Trash2 } from 'lucide-react';
 import { Card } from '@/src/components/ui/Card';
+import { LoadingBlock } from '@/src/components/ui/Spinner';
 import { cn } from '@/src/lib/utils';
 import { mediaUrl } from '@/src/lib/api';
-import { avatarInitial, resolveAvatarUrl } from '@/src/lib/avatar';
+import { avatarInitial, userAvatarSrc } from '@/src/lib/avatar';
 import { EASE_OUT } from '@/src/lib/motionPresets';
 import {
   addComment,
@@ -17,8 +18,8 @@ import {
   type FeedPost,
 } from '@/src/lib/feedApi';
 
-export function Avatar({ name, avatar, size = 40 }: { name: string; avatar: string | null; size?: number }) {
-  const src = resolveAvatarUrl(avatar);
+export function Avatar({ name, avatar, size = 40, userId }: { name: string; avatar: string | null; size?: number; userId?: string | null }) {
+  const src = userAvatarSrc(avatar, userId);
   const [broken, setBroken] = useState(false);
   useEffect(() => {
     setBroken(false);
@@ -172,7 +173,7 @@ export const MediaPost: React.FC<MediaPostProps> = ({
           onClick={() => onOpenAuthor?.(post.author.id)}
           className="flex items-center gap-3 text-left"
         >
-          <Avatar name={post.author.name} avatar={post.author.avatar} />
+          <Avatar name={post.author.name} avatar={post.author.avatar} userId={post.author.id} />
           <div>
             <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{post.author.name}</p>
             <p className="text-[11px] text-slate-400">{timeAgo(post.createdAt)}</p>
@@ -279,7 +280,7 @@ export const MediaPost: React.FC<MediaPostProps> = ({
             className="mt-3 space-y-3 overflow-hidden border-t border-slate-100 pt-3 dark:border-slate-700/60"
           >
             {comments === null ? (
-              <p className="text-xs text-slate-400">Cargando comentarios…</p>
+              <LoadingBlock className="py-4" />
             ) : comments.length === 0 ? (
               <p className="text-xs text-slate-400">Sé el primero en comentar.</p>
             ) : (
@@ -292,7 +293,7 @@ export const MediaPost: React.FC<MediaPostProps> = ({
                   exit={{ opacity: 0 }}
                   className="flex items-start gap-2"
                 >
-                  <Avatar name={c.author.name} avatar={c.author.avatar} size={28} />
+                  <Avatar name={c.author.name} avatar={c.author.avatar} userId={c.author.id} size={28} />
                   <div className="min-w-0 flex-1">
                     <p className="text-xs text-slate-700 dark:text-slate-200">
                       <span className="font-black text-slate-900 dark:text-slate-100">{c.author.name} </span>

@@ -4,6 +4,7 @@ import {
   hydrateCloseFriends,
   subscribeCloseFriends,
   toggleCloseFriend,
+  type PrivacyPerson,
 } from '@/src/lib/privacyApi';
 
 export function useCloseFriends() {
@@ -15,9 +16,9 @@ export function useCloseFriends() {
     return unsub;
   }, []);
 
-  const toggle = useCallback(async (userId: string, on?: boolean) => {
+  const toggle = useCallback(async (userId: string, on?: boolean, person?: PrivacyPerson) => {
     const next = on ?? !getCloseFriendIds().has(userId);
-    await toggleCloseFriend(userId, next);
+    await toggleCloseFriend(userId, next, person);
   }, []);
 
   return { ids, isClose: (id: string) => ids.has(id), toggle };

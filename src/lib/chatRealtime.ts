@@ -26,6 +26,12 @@ export type ChatRealtimeEvent =
       fromName?: string;
       peerId?: string;
       groupId?: string;
+    }
+  | {
+      type: 'chat_read';
+      peerId?: string;
+      groupId?: string;
+      at?: string;
     };
 
 const EVENT = 'pl-chat';

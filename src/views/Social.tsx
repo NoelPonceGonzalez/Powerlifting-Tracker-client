@@ -46,6 +46,7 @@ import { useLongPress } from '@/src/lib/useLongPress';
 import { usePageEnter } from '@/src/lib/usePageEnter';
 import { equitySummary, suggestBodyWeightScoring } from '@/src/lib/challengeEquity';
 import { GlassModal } from '@/src/components/ui/GlassModal';
+import { CoverSkeleton, LoadingBlock } from '@/src/components/ui/Spinner';
 import { AudienceToggle } from '@/src/components/social/AudienceToggle';
 import type { Audience } from '@/src/lib/privacyApi';
 import { SlimeScroll } from '@/src/components/ui/SlimeScroll';
@@ -68,6 +69,8 @@ import {
 } from '@/src/lib/feedApi';
 import { TmHistoryModal } from '@/src/components/social/TmHistoryModal';
 import { InstagramCover } from '@/src/components/social/ProgressMiniProfile';
+import { CloseFriendButton } from '@/src/components/social/CloseFriendButton';
+import { unblockUser } from '@/src/lib/privacyApi';
 import { ChatTab } from '@/src/components/social/ChatTab';
 import { HomeActivitySheet } from '@/src/components/social/HomeActivitySheet';
 import { ProfileScreen } from '@/src/components/social/ProfileScreen';
@@ -455,7 +458,7 @@ function ChallengeDetailBody({
                 )}>
                   {rank}
                 </span>
-                <Avatar src={p.avatar} name={p.name} className="h-9 w-9 shrink-0 rounded-full border border-white/80 dark:border-slate-700" />
+                <Avatar src={p.avatar} userId={p.id} name={p.name} className="h-9 w-9 shrink-0 rounded-full border border-white/80 dark:border-slate-700" />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
                     {p.name}{isMe ? ' (tú)' : ''}
@@ -783,6 +786,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
     friendshipStatus?: string;
     friendshipDirection?: string | null;
     canSendRequest?: boolean;
+    blocked?: 'you' | 'them' | null;
   } | null>(null);
   const [friendRequestBusy, setFriendRequestBusy] = useState(false);
   const [copyingFriendRoutine, setCopyingFriendRoutine] = useState(false);
@@ -855,6 +859,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [chatPeerId, setChatPeerId] = useState<string | null>(null);
   const [showHomeActivity, setShowHomeActivity] = useState(false);
   const [friendsFromChat, setFriendsFromChat] = useState(false);
+  const [friendsFromProfile, setFriendsFromProfile] = useState(false);
   const [friendsPageTick, setFriendsPageTick] = useState(0);
   const [friendsFilter, setFriendsFilter] = useState<'all' | 'following' | 'followers'>('all');
   const activityBadge = pendingRequests.length + coachRequests.length + groupInvites.length + chatAsks.length;
@@ -932,12 +937,14 @@ export const SocialView: React.FC<SocialViewProps> = ({
     if (tab === 'friends') {
       setActiveTab('chat');
       setFriendsFilter(openFriendsFilter === 'followers' ? 'followers' : 'following');
+      setFriendsFromProfile(socialBackTo === 'dashboard' || socialBackTo === 'profile');
       setFriendsPageTick(t => t + 1);
     } else {
       setActiveTab(tab);
+      setFriendsFromProfile(false);
     }
     prevInitialTabPropRef.current = initialTab;
-  }, [initialTab, openFriendsFilter, socialNavTick]);
+  }, [initialTab, openFriendsFilter, socialNavTick, socialBackTo]);
 
   /** Al cambiar de pestaña por la barra, se cierran hojas sueltas. El check-in pedido en el mismo tick se reabre después. */
   const lastNavTick = useRef(socialNavTick);
@@ -961,13 +968,13 @@ export const SocialView: React.FC<SocialViewProps> = ({
   }, [socialNavTick]);
 
   useEscapeClose(!!unfriendConfirmFriend, () => setUnfriendConfirmFriend(null));
-  useEscapeClose(!!showFriendModal && !unfriendConfirmFriend, () => {
+  useEscapeClose(!!viewingProfileId, () => setViewingProfileId(null));
+  useEscapeClose(!!showFriendModal && !unfriendConfirmFriend && !viewingProfileId, () => {
     setShowFriendModal(null);
     setFriendRoutine(null);
     setFriendProfile(null);
   });
   useEscapeClose(!!selectedChallengeDetail && !showJoinChallengeModal && !deleteChallenge, () => setSelectedChallengeDetail(null));
-  useEscapeClose(!!viewingProfileId && !showFriendModal, () => setViewingProfileId(null));
   useEscapeClose(showHomeActivity, () => setShowHomeActivity(false));
 
   useEffect(() => {
@@ -1123,13 +1130,22 @@ export const SocialView: React.FC<SocialViewProps> = ({
           athleteCount?: number;
           trainingMaxes: { id?: string; name: string; value: number; mode: string }[];
           trainingMaxesAll?: { name: string; mode: string; linkedExercise?: string }[];
-        }>(`/api/social/friends/${friend.id}/profile?includeAllTms=1`).catch(() => ({
-          name: friend.name,
-          avatar: friend.avatar || '',
-          bio: '',
-          trainingMaxes: [] as { id?: string; name: string; value: number; mode: string }[],
-        })),
-        fetchProfile(friend.id).catch(() => null),
+        }>(`/api/social/friends/${friend.id}/profile?includeAllTms=1`).catch((e: unknown) => {
+          const msg = String((e as { message?: string })?.message || '');
+          if (/te ha bloqueado|has bloqueado/i.test(msg)) return null;
+          return {
+            name: friend.name,
+            avatar: friend.avatar || '',
+            bio: '',
+            trainingMaxes: [] as { id?: string; name: string; value: number; mode: string }[],
+          };
+        }),
+        fetchProfile(friend.id).catch((e: unknown) => {
+          const msg = String((e as { message?: string })?.message || '');
+          if (/te ha bloqueado/i.test(msg)) return { blocked: 'them' as const };
+          if (/has bloqueado/i.test(msg)) return { blocked: 'you' as const };
+          return null;
+        }),
       ]);
       if (routineRaw) {
         const { expandRoutineFromApi } = await import('@/src/lib/planMaterialize');
@@ -1156,16 +1172,33 @@ export const SocialView: React.FC<SocialViewProps> = ({
       } else {
         setFriendRoutine(null);
       }
+      const blocked =
+        cover && 'blocked' in cover && (cover.blocked === 'you' || cover.blocked === 'them')
+          ? cover.blocked
+          : null;
+      if (blocked) {
+        setFriendProfile({
+          name: friend.name,
+          avatar: friend.avatar || '',
+          trainingMaxes: [],
+          blocked,
+        });
+        return;
+      }
+      if (!profile) {
+        setFriendProfile({ name: friend.name, avatar: friend.avatar || '', trainingMaxes: [] });
+        return;
+      }
       setFriendProfile({
         ...profile,
-        bio: cover?.bio ?? profile.bio ?? '',
-        username: cover?.username,
-        postCount: cover?.postCount ?? 0,
-        followerCount: cover?.followerCount ?? 0,
-        followingCount: cover?.followingCount ?? 0,
-        friendshipStatus: cover?.friendshipStatus,
-        friendshipDirection: cover?.friendshipDirection,
-        canSendRequest: cover?.canSendRequest,
+        bio: cover && 'bio' in cover ? cover.bio ?? profile.bio ?? '' : profile.bio ?? '',
+        username: cover && 'username' in cover ? cover.username : undefined,
+        postCount: cover && 'postCount' in cover ? cover.postCount ?? 0 : 0,
+        followerCount: cover && 'followerCount' in cover ? cover.followerCount ?? 0 : 0,
+        followingCount: cover && 'followingCount' in cover ? cover.followingCount ?? 0 : 0,
+        friendshipStatus: cover && 'friendshipStatus' in cover ? cover.friendshipStatus : undefined,
+        friendshipDirection: cover && 'friendshipDirection' in cover ? cover.friendshipDirection : null,
+        canSendRequest: cover && 'canSendRequest' in cover ? cover.canSendRequest : undefined,
       });
     } catch {
       setFriendRoutine(null);
@@ -1188,6 +1221,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
     setShowHomeActivity(false);
     setChatPeerId(null);
     setFriendsFromChat(false);
+    setFriendsFromProfile(false);
     setFriendsFilter(filter === 'followers' ? 'followers' : 'following');
     setActiveTab('chat');
     setFriendsPageTick(t => t + 1);
@@ -1457,7 +1491,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
               className="absolute inset-x-0 top-full z-30 mt-2 max-h-80 overflow-y-auto rounded-2xl border border-slate-100 bg-white p-2 shadow-xl dark:border-slate-700 dark:bg-slate-900"
             >
               {searchLoading && searchResultsVisible.length === 0 ? (
-                <p className="px-2 py-3 text-xs text-slate-400">Buscando…</p>
+                <LoadingBlock className="py-6" />
               ) : searchResultsVisible.length === 0 ? (
                 <p className="px-2 py-3 text-xs text-slate-400">Nadie con ese nombre.</p>
               ) : (
@@ -1510,6 +1544,14 @@ export const SocialView: React.FC<SocialViewProps> = ({
               openFriendsTick={friendsPageTick}
               openFriendsFilter={friendsFilter}
               homeTick={socialNavTick}
+              onLeaveFriends={
+                friendsFromProfile
+                  ? () => {
+                      setFriendsFromProfile(false);
+                      onGoToDashboard?.();
+                    }
+                  : undefined
+              }
             />
         </div>
 
@@ -1546,7 +1588,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   {pendingRequests.map(req => (
                     <Card key={req.id} padding="md" rounded="xl" className="flex items-center justify-between">
                       <div className="flex items-center gap-4">
-                        <Avatar src={req.avatar} name={req.name} className="w-12 h-12 rounded-full border-2 border-slate-100 dark:border-slate-700" />
+                        <Avatar src={req.avatar} userId={req.userId || req.id} name={req.name} className="w-12 h-12 rounded-full border-2 border-slate-100 dark:border-slate-700" />
                         <div>
                           <h3 className="font-bold text-slate-900 dark:text-slate-100">{req.name}</h3>
                           <p className="text-xs text-slate-500">
@@ -1591,7 +1633,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   {chatAsks.map(ask => (
                     <Card key={ask.id} padding="md" rounded="xl" className="flex items-center justify-between">
                       <div className="flex items-center gap-4 min-w-0">
-                        <Avatar src={ask.from.avatar || undefined} name={ask.from.name} className="w-12 h-12 rounded-full border-2 border-slate-100 dark:border-slate-700" />
+                        <Avatar src={ask.from.avatar || undefined} userId={ask.from.id} name={ask.from.name} className="w-12 h-12 rounded-full border-2 border-slate-100 dark:border-slate-700" />
                         <div className="min-w-0">
                           <h3 className="font-bold text-slate-900 dark:text-slate-100 truncate">{ask.from.name}</h3>
                           <p className="text-xs text-slate-500 truncate">{ask.preview || 'Quiere chatear contigo'}</p>
@@ -1622,7 +1664,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   {groupInvites.map(inv => (
                     <Card key={inv.id} padding="md" rounded="xl" className="flex items-center justify-between">
                       <div className="flex items-center gap-4 min-w-0">
-                        <Avatar src={inv.from.avatar || undefined} name={inv.from.name} className="w-12 h-12 rounded-full border-2 border-slate-100 dark:border-slate-700" />
+                        <Avatar src={inv.from.avatar || undefined} userId={inv.from.id} name={inv.from.name} className="w-12 h-12 rounded-full border-2 border-slate-100 dark:border-slate-700" />
                         <div className="min-w-0">
                           <h3 className="font-bold text-slate-900 dark:text-slate-100 truncate">{inv.from.name}</h3>
                           <p className="text-xs text-slate-500">Te invita a «{inv.groupName}»</p>
@@ -1675,7 +1717,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                       className="flex items-center gap-4 cursor-pointer hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors"
                       onClick={() => void openFriendModal(f)}
                     >
-                      <Avatar src={f.avatar} name={f.name} className="w-12 h-12 rounded-full border-2 border-slate-100 dark:border-slate-700" />
+                      <Avatar src={f.avatar} userId={f.id} name={f.name} className="w-12 h-12 rounded-full border-2 border-slate-100 dark:border-slate-700" />
                       <div className="flex-1 min-w-0">
                         <h3 className="font-bold text-slate-900 dark:text-slate-100">{f.name}</h3>
                         
@@ -2054,7 +2096,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   {myCheckInToday && onCheckInUpdate && onCheckInDelete && (
                     <Card padding="md" rounded="2xl" className="flex items-center justify-between border-l-4 border-l-emerald-500 bg-emerald-50/50 dark:bg-emerald-950/20 dark:border-emerald-800">
                       <div className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
-                        <Avatar src={user.avatar || myCheckInToday.avatar} name={user.name} className="w-10 h-10 sm:w-12 sm:h-12 rounded-full border-2 border-slate-100 dark:border-slate-700 flex-shrink-0" />
+                        <Avatar src={user.avatar || myCheckInToday.avatar} userId={user.id} name={user.name} className="w-10 h-10 sm:w-12 sm:h-12 rounded-full border-2 border-slate-100 dark:border-slate-700 flex-shrink-0" />
                         <div className="min-w-0 flex-1">
                           <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
                             <span className="text-emerald-600 dark:text-emerald-400">Mi hora</span>
@@ -2119,7 +2161,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                       return (
                         <Card key={checkIn.id} padding="md" rounded="2xl" className="flex items-center justify-between border-l-4 border-l-indigo-600">
                           <div className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
-                            <Avatar src={checkIn.avatar} name={checkIn.userName} className="w-10 h-10 sm:w-12 sm:h-12 rounded-full border-2 border-slate-100 dark:border-slate-700 flex-shrink-0" />
+                            <Avatar src={checkIn.avatar} userId={checkIn.userId} name={checkIn.userName} className="w-10 h-10 sm:w-12 sm:h-12 rounded-full border-2 border-slate-100 dark:border-slate-700 flex-shrink-0" />
                             <div className="min-w-0">
                               <p className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100">
                                 <span className="text-indigo-600 dark:text-indigo-400">{checkIn.userName}</span> va a entrenar
@@ -2866,30 +2908,13 @@ export const SocialView: React.FC<SocialViewProps> = ({
 
       {/* Friend Detail Modal */}
       {viewingProfileId && viewingProfileId !== user.id && typeof document !== 'undefined' && createPortal(
-        <motion.div
-          key="profile-screen"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="fixed inset-0 z-[99000] flex items-end justify-center bg-slate-900/40 p-0 backdrop-blur-sm sm:items-center sm:p-5"
-          onClick={() => setViewingProfileId(null)}
-        >
-          <motion.div
-            initial={{ opacity: 0, y: 28, scale: 0.96 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-            onClick={e => e.stopPropagation()}
-            className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-t-[28px] bg-slate-50 shadow-2xl sm:rounded-[28px] dark:bg-slate-950"
-          >
-            <div className="app-page mx-auto max-w-2xl">
+        <div className="fixed inset-0 z-[80] flex flex-col bg-[var(--app-bg)]">
+          <div className="app-page mx-auto min-h-0 w-full max-w-2xl flex-1 overflow-y-auto">
             <ProfileScreen
               userId={viewingProfileId}
               liveAvatar={viewingProfileId === user.id ? user.avatar : undefined}
               onBack={() => setViewingProfileId(null)}
               onOpenProfile={id => setViewingProfileId(id)}
-              onOpenRoutine={() => {
-                const friend = friendsList.find(f => f.id === viewingProfileId);
-                void openFriendModal(friend || { id: viewingProfileId, name: 'Atleta', avatar: '' });
-              }}
               onSendFriendRequest={
                 onSendFriendRequest ? async () => { await onSendFriendRequest(viewingProfileId); } : undefined
               }
@@ -2903,14 +2928,16 @@ export const SocialView: React.FC<SocialViewProps> = ({
               }}
               onOpenChat={peerId => {
                 setViewingProfileId(null);
+                setShowFriendModal(null);
+                setFriendRoutine(null);
+                setFriendProfile(null);
                 setChatPeerId(peerId);
                 setActiveTab('chat');
               }}
               onOpenFriends={goToFriendsPage}
             />
-            </div>
-          </motion.div>
-        </motion.div>,
+          </div>
+        </div>,
         document.body
       )}
 
@@ -2919,21 +2946,65 @@ export const SocialView: React.FC<SocialViewProps> = ({
       )}
 
       <GlassModal
-        open={!!showFriendModal}
+        open={!!showFriendModal && !viewingProfileId}
         onClose={closeFriendSheet}
         center
         title={friendProfile?.name || showFriendModal?.name || 'Perfil'}
+        titleExtra={
+          showFriendModal ? (
+            <button
+              type="button"
+              onClick={() => {
+                const id = showFriendModal.id;
+                setShowFriendModal(null);
+                setViewingProfileId(id);
+              }}
+              className="shrink-0 text-[12px] font-semibold text-indigo-600 dark:text-indigo-300"
+            >
+              Ver perfil completo
+            </button>
+          ) : undefined
+        }
         subtitle={
           friendProfile?.coach
             ? `Entrena con ${friendProfile.coach.name}`
             : friendProfile?.athleteCount
               ? `Entrenador de ${friendProfile.athleteCount}`
-              : 'Marcas y rutina'
+              : undefined
         }
         footer={
           showFriendModal ? (
-            <div className="flex gap-2">
-              {friendProfile?.friendshipStatus === 'pending' && friendProfile?.friendshipDirection === 'incoming' ? (
+            <div className="space-y-2">
+              <div className="flex gap-2">
+              {!friendProfile?.blocked &&
+                (friendProfile?.friendshipStatus === 'accepted' ||
+                  friendProfile?.friendshipStatus === 'following') && (
+                  <CloseFriendButton
+                    userId={showFriendModal.id}
+                    name={friendProfile.name || showFriendModal.name}
+                    avatar={friendProfile.avatar || showFriendModal.avatar}
+                  />
+                )}
+              {friendProfile?.blocked === 'them' ? (
+                <p className="flex-1 py-2 text-center text-sm font-medium text-slate-500">Te ha bloqueado</p>
+              ) : friendProfile?.blocked === 'you' ? (
+                <Button
+                  variant="outline"
+                  className="flex-1 rounded-xl"
+                  disabled={friendRequestBusy}
+                  onClick={async () => {
+                    setFriendRequestBusy(true);
+                    try {
+                      await unblockUser(showFriendModal.id);
+                      void openFriendModal(showFriendModal);
+                    } finally {
+                      setFriendRequestBusy(false);
+                    }
+                  }}
+                >
+                  Desbloquear
+                </Button>
+              ) : friendProfile?.friendshipStatus === 'pending' && friendProfile?.friendshipDirection === 'incoming' ? (
                 <div className="flex flex-1 gap-2">
                   <Button
                     variant="outline"
@@ -3036,23 +3107,29 @@ export const SocialView: React.FC<SocialViewProps> = ({
                 </>
               )}
             </div>
+            </div>
           ) : undefined
         }
       >
         {showFriendModal && (
           <div>
               <div className="mb-5">
+                {!friendProfile ? (
+                  <CoverSkeleton />
+                ) : (
                 <InstagramCover
-                  name={friendProfile?.name || showFriendModal.name}
-                  username={friendProfile?.username}
-                  avatar={friendProfile?.avatar || showFriendModal.avatar}
-                  marcas={friendProfile?.trainingMaxes?.length ?? 0}
-                  followers={friendProfile?.followerCount ?? 0}
-                  following={friendProfile?.followingCount ?? 0}
-                  bio={friendProfile?.bio || ''}
+                  name={friendProfile.name || showFriendModal.name}
+                  username={friendProfile.username}
+                  userId={showFriendModal.id}
+                  avatar={friendProfile.avatar || showFriendModal.avatar}
+                  marcas={friendProfile.trainingMaxes?.length ?? 0}
+                  followers={friendProfile.followerCount ?? 0}
+                  following={friendProfile.followingCount ?? 0}
+                  bio={friendProfile.bio || ''}
                   onFollowersClick={() => goToFriendsPage('followers')}
                   onFollowingClick={() => goToFriendsPage('following')}
                 />
+                )}
                 {friendProfile?.coach && (
                   <p className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] font-bold text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300">
                     <GraduationCap size={13} />
@@ -3067,9 +3144,9 @@ export const SocialView: React.FC<SocialViewProps> = ({
                 )}
               </div>
 
+              {friendProfile && friendProfile.trainingMaxes && friendProfile.trainingMaxes.length > 0 && (
               <div className="border-t border-white/40 pt-4 pb-4 dark:border-white/10">
                 <h4 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Marcas</h4>
-                {friendProfile?.trainingMaxes && friendProfile.trainingMaxes.length > 0 ? (
                   <div className="grid grid-cols-3 gap-2">
                     {friendProfile.trainingMaxes.map((tm, i) => (
                       <button
@@ -3088,18 +3165,12 @@ export const SocialView: React.FC<SocialViewProps> = ({
                       </button>
                     ))}
                   </div>
-                ) : (
-                  <p className="py-3 text-center text-sm text-slate-400">Aún no tiene marcas.</p>
-                )}
               </div>
+              )}
 
+              {friendRoutine && (
               <div className="border-t border-slate-200 dark:border-slate-700 pt-6">
-                <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-3">Rutina activa</h4>
-                {friendRoutineLoading ? (
-                  <div className="py-8 flex justify-center">
-                    <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin" />
-                  </div>
-                ) : friendRoutine ? (
+                <h4 className="mb-3 text-[10px] font-black uppercase tracking-widest text-slate-400">Rutina activa</h4>
                   <div className="space-y-4">
                     <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-600">
                       <div className="flex items-center gap-2 mb-3">
@@ -3170,12 +3241,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
                       </Button>
                     ) : null}
                   </div>
-                ) : (
-                  <p className="text-slate-500 dark:text-slate-400 py-6 text-center text-sm">
-                    {showFriendModal.name} no tiene una rutina configurada o la tiene oculta.
-                  </p>
-                )}
               </div>
+              )}
           </div>
         )}
       </GlassModal>

@@ -34,10 +34,13 @@ export async function hydrateCloseFriends() {
   return r;
 }
 
-export async function toggleCloseFriend(userId: string, on: boolean) {
+export async function toggleCloseFriend(userId: string, on: boolean, person?: PrivacyPerson) {
   const r = await apiPut<{ ok: true; on: boolean; ids: string[] }>('/api/social/close-friends', { userId, on });
   closeIds = new Set(r.ids || []);
   if (!on) closePeople = closePeople.filter(p => p.id !== userId);
+  else if (person && !closePeople.some(p => p.id === userId)) {
+    closePeople = [person, ...closePeople];
+  }
   emitClose();
   return r;
 }

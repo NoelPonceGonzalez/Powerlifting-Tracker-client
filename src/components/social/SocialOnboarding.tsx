@@ -4,6 +4,7 @@ import { Avatar } from '@/src/components/social/MediaPost';
 import { Button } from '@/src/components/ui/Button';
 import { apiPost } from '@/src/lib/api';
 import { fetchFollowSuggestions, flattenFollowSuggestions } from '@/src/lib/followSuggestions';
+import { LoadingBlock } from '@/src/components/ui/Spinner';
 import { cn } from '@/src/lib/utils';
 import type { UserSearchResult } from '@/src/types';
 
@@ -71,7 +72,7 @@ export function SocialOnboarding({
       </div>
 
       {loading ? (
-        <p className="py-8 text-center text-sm text-slate-400">Buscando gente…</p>
+        <LoadingBlock className="py-8" label="Buscando gente" />
       ) : people.length === 0 ? (
         <p className="py-8 text-center text-sm text-slate-400">
           Ahora mismo no hay sugerencias. Entra y búscalas cuando quieras.

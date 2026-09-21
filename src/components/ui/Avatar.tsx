@@ -1,15 +1,16 @@
 import React from 'react';
 import { cn } from '@/src/lib/utils';
-import { avatarInitial, resolveAvatarUrl } from '@/src/lib/avatar';
+import { avatarInitial, resolveAvatarUrl, userAvatarSrc } from '@/src/lib/avatar';
 
 interface AvatarProps extends React.ImgHTMLAttributes<HTMLImageElement> {
   src?: string | null;
   name?: string;
   fallback?: string;
+  userId?: string | null;
 }
 
-export const Avatar: React.FC<AvatarProps> = ({ src, name, fallback, className, alt, onError, ...props }) => {
-  const resolved = resolveAvatarUrl(src) || resolveAvatarUrl(fallback);
+export const Avatar: React.FC<AvatarProps> = ({ src, name, fallback, userId, className, alt, onError, ...props }) => {
+  const resolved = userAvatarSrc(src, userId) || resolveAvatarUrl(fallback);
   const [broken, setBroken] = React.useState(false);
   React.useEffect(() => {
     setBroken(false);

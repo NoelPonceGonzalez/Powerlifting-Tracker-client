@@ -24,6 +24,7 @@ import { Button } from '@/src/components/ui/Button';
 import { GlassModal } from '@/src/components/ui/GlassModal';
 import { HistoryEntry, LogEntry, RMData, TrainingMax, TrainingWeek, Challenge, GymCheckIn, User, RoutineProgressKind } from '@/src/types';
 import { ProgressMiniProfile } from '@/src/components/social/ProgressMiniProfile';
+import { ConnectionsOverlay } from '@/src/components/social/ConnectionsOverlay';
 import { entryDateISO } from '@/src/lib/calendarWeekDate';
 import { cn } from '@/src/lib/utils';
 import {
@@ -503,6 +504,8 @@ export interface DashboardProps {
     tab?: 'friends' | 'challenges' | 'checkins' | 'chat',
     options?: { openCheckInModal?: boolean; openCreateChallenge?: boolean; from?: 'dashboard'; friendsFilter?: 'all' | 'following' | 'followers' }
   ) => void;
+  onSendFriendRequest?: (userId: string) => Promise<void>;
+  onConnectionsOpenChange?: (open: boolean) => void;
   onJoinFriendCheckIn: (checkIn: GymCheckIn) => void;
   onOpenSettings?: () => void;
   friendCount?: number;
@@ -575,6 +578,8 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
   onOpenProgram,
   onCreateRoutine,
   onOpenSocial,
+  onSendFriendRequest,
+  onConnectionsOpenChange,
   onJoinFriendCheckIn,
   onOpenSettings,
   friendCount = 0,
@@ -600,11 +605,18 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
   const [selectedMonth, setSelectedMonth] = useState<number>(currentMonth);
   const [totalOpen, setTotalOpen] = useState(false);
   const [selectedTmId, setSelectedTmId] = useState<string | null>(null);
+  const [connectionsOpen, setConnectionsOpen] = useState<'followers' | 'following' | null>(null);
+
+  useEffect(() => {
+    onConnectionsOpenChange?.(!!connectionsOpen);
+    return () => onConnectionsOpenChange?.(false);
+  }, [connectionsOpen, onConnectionsOpenChange]);
 
   useEffect(() => {
     if (pageActive) return;
     setSelectedCheckIn(null);
     setTotalOpen(false);
+    setConnectionsOpen(null);
     setSelectedTmId(null);
   }, [pageActive]);
 
@@ -1213,9 +1225,9 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
           marcaCount={trainingMaxes.length}
           onOpenSettings={onOpenSettings}
           onUpdateUser={onUpdateUser}
-          onOpenFriends={() => onOpenSocial('friends', { friendsFilter: 'following' })}
-          onOpenFollowers={() => onOpenSocial('friends', { friendsFilter: 'followers' })}
-          onOpenFollowing={() => onOpenSocial('friends', { friendsFilter: 'following' })}
+          onOpenFriends={() => setConnectionsOpen('following')}
+          onOpenFollowers={() => setConnectionsOpen('followers')}
+          onOpenFollowing={() => setConnectionsOpen('following')}
           refreshTick={socialRefreshTick}
           aside={
             canTotal ? (
@@ -1574,6 +1586,19 @@ const DashboardViewInner: React.FC<DashboardProps> = ({
           </p>
         )}
       </GlassModal>
+
+      {connectionsOpen && (
+        <ConnectionsOverlay
+          myId={user.id}
+          filter={connectionsOpen}
+          onClose={() => setConnectionsOpen(null)}
+          onSendRequest={onSendFriendRequest}
+          onOpenChat={() => {
+            setConnectionsOpen(null);
+            onOpenSocial('chat');
+          }}
+        />
+      )}
 
     </motion.div>
   );
