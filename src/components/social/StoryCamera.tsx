@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { Image as ImageIcon, Loader2, RefreshCw, RotateCw, X } from 'lucide-react';
@@ -27,7 +27,10 @@ import {
   getCameraStream,
   markCameraGranted,
   markGalleryReady,
-  takePrimedCamera,
+  cameraBlockedHint,
+  cameraNeedsUserGesture,
+  isSecureCameraContext,
+  readCameraPermission,
 } from '@/src/pwa/mediaAccess';
 import { cn } from '@/src/lib/utils';
 
@@ -169,8 +172,12 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
 
   const [facing, setFacing] = useState<'user' | 'environment'>('environment');
   const [camReady, setCamReady] = useState(false);
-  const [camError, setCamError] = useState(false);
   const [camDenied, setCamDenied] = useState(false);
+  /** Safari necesita que el getUserMedia salga de un toque: pedimos confirmación. */
+  const [needTap, setNeedTap] = useState(false);
+  /** Sin vista en vivo: se ofrece la cámara del móvil, que no pide permiso web. */
+  const [chooser, setChooser] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recMs, setRecMs] = useState(0);
   const [file, setFile] = useState<File | null>(null);
@@ -199,9 +206,11 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     setCamReady(false);
   }, []);
 
-  const startStream = useCallback(async (mode: 'user' | 'environment', fromGesture = false) => {
+  const startStream = useCallback(async (mode: 'user' | 'environment') => {
     const gen = ++camGen.current;
-    setCamError(false);
+    setNeedTap(false);
+    setChooser(false);
+    setShowHelp(false);
     setCamDenied(false);
     setCamReady(false);
     const stale = () => camGen.current !== gen;
@@ -258,16 +267,9 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
       }
       markCameraGranted();
       setCamReady(true);
-      setCamError(false);
       setCamDenied(false);
       return true;
     };
-    const primed = await takePrimedCamera();
-    if (stale()) {
-      if (primed) drop(primed);
-      return;
-    }
-    if (primed && (await attach(primed))) return;
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(t => t.stop());
       streamRef.current = null;
@@ -279,14 +281,14 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
       const name = err instanceof DOMException ? err.name : '';
       const denied = name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError';
       if (!stale()) {
-        setCamDenied(denied && fromGesture);
-        setCamError(true);
+        setCamDenied(denied);
+        setChooser(true);
       }
       return;
     }
     if (!stale()) {
       setCamDenied(false);
-      setCamError(true);
+      setChooser(true);
     }
   }, []);
 
@@ -303,14 +305,36 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     if (open && avatarOnly) setFacing('user');
   }, [open, avatarOnly]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open || file || justPublished) {
       wantLive.current = false;
+      setNeedTap(false);
       return;
     }
     wantLive.current = true;
-    void startStream(facing);
+    let cancelled = false;
+    setNeedTap(false);
+    setChooser(false);
+    setShowHelp(false);
+    setCamDenied(false);
+    void readCameraPermission().then(state => {
+      if (cancelled || !wantLive.current) return;
+      if (state === 'granted') {
+        void startStream(facing);
+        return;
+      }
+      // Denegado o sin contexto seguro: nunca insistimos, damos la cámara del móvil.
+      if (state === 'denied' || state === 'unsupported') {
+        setCamDenied(state === 'denied');
+        setChooser(true);
+        return;
+      }
+      // Safari exige que getUserMedia salga de un toque; Chrome puede preguntar ya.
+      if (cameraNeedsUserGesture()) setNeedTap(true);
+      else void startStream(facing);
+    });
     return () => {
+      cancelled = true;
       wantLive.current = false;
       if (holdTimer.current != null) window.clearTimeout(holdTimer.current);
       if (recorderRef.current && recorderRef.current.state !== 'inactive') {
@@ -319,7 +343,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
       const id = camGen.current;
       window.setTimeout(() => {
         if (!wantLive.current && camGen.current === id) stopStream();
-      }, 400);
+      }, 600);
     };
   }, [open, facing, startStream, stopStream, file, justPublished]);
 
@@ -350,6 +374,13 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
   }, []);
 
   useEffect(() => {
+    if (open) return;
+    setNeedTap(false);
+    setChooser(false);
+    setShowHelp(false);
+  }, [open]);
+
+  useEffect(() => {
     if (!open) return;
     const resume = () => {
       if (document.visibilityState !== 'visible') return;
@@ -358,6 +389,8 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
         return;
       }
       if (justPublished) return;
+      // En la pantalla de opciones ya sabemos que la vista en vivo no va: no insistas.
+      if (chooser || needTap) return;
       const live = streamRef.current?.getVideoTracks().some(t => t.readyState === 'live');
       if (!live) void startStream(facing);
       else if (videoRef.current && videoRef.current.paused) {
@@ -389,7 +422,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
       document.removeEventListener('visibilitychange', onVis);
       window.removeEventListener('pageshow', resume);
     };
-  }, [open, facing, startStream, stopStream, justPublished, revivePreview]);
+  }, [open, facing, startStream, stopStream, justPublished, revivePreview, chooser, needTap]);
 
   useEffect(() => {
     if (open) return;
@@ -483,6 +516,12 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     captureRef.current?.click();
   };
 
+  /** Si cancela el selector, no reintentes la vista en vivo cuando ya sabemos que no va. */
+  const afterPickerCancel = () => {
+    if (fileRef.current || chooser || needTap) return;
+    void startStream(facing);
+  };
+
   const acceptFile = (selected: File | null) => {
     if (!selected) return;
     markGalleryReady();
@@ -529,7 +568,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     const video = videoRef.current;
     if (!video || !video.videoWidth) {
       setError('La cámara aún no está lista. Espera un segundo o pulsa para reintentar.');
-      void startStream(facing, true);
+      void startStream(facing);
       return;
     }
     const canvas = document.createElement('canvas');
@@ -674,7 +713,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     imgNatRef.current = null;
     setFrame(EMPTY_FRAME);
     dropPreviewUrl();
-    void startStream(facing, true);
+    void startStream(facing);
   };
 
   const clipLen = Math.max(0, trimEnd - trimStart);
@@ -747,7 +786,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     imgNatRef.current = null;
     setFrame(EMPTY_FRAME);
     dropPreviewUrl();
-    void startStream(facing, true);
+    void startStream(facing);
   };
 
   const onPreviewLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
@@ -978,7 +1017,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
           const picked = e.target.files?.[0] ?? null;
           acceptFile(picked);
           e.target.value = '';
-          if (!picked && !fileRef.current) void startStream(facing, true);
+          if (!picked) afterPickerCancel();
         }}
       />
       <input
@@ -991,7 +1030,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
           const picked = e.target.files?.[0] ?? null;
           acceptFile(picked);
           e.target.value = '';
-          if (!picked && !fileRef.current) void startStream(facing, true);
+          if (!picked) afterPickerCancel();
         }}
       />
       {!file && !justPublished && (
@@ -1009,39 +1048,87 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
               facing === 'user' && 'scale-x-[-1]'
             )}
           />
-          {!camReady && !camError && (
-            <div className="absolute inset-0 flex items-center justify-center">
-              <Loader2 size={28} className="animate-spin text-white/50" />
-            </div>
-          )}
-          {camError && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-8 text-center">
-              <p className="text-sm font-semibold text-white/80">
-                {camDenied
-                  ? 'La cámara está bloqueada. Actívala en los ajustes del sitio (candado o «Sitio») y pulsa de nuevo.'
-                  : 'Necesitamos la cámara. Pulsa Permitir cuando te lo pida el móvil.'}
+          {needTap && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-8 text-center">
+              <p className="text-lg font-bold text-white">
+                {avatarOnly ? 'Tu foto de perfil' : chatMode ? 'Enviar foto o vídeo' : 'Tu historia'}
+              </p>
+              <p className="max-w-xs text-sm leading-relaxed text-white/70">
+                Se abre aquí dentro, sin salir de la app. El móvil te pedirá permiso una sola vez.
               </p>
               <button
                 type="button"
-                onClick={() => void startStream(facing, true)}
-                className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-slate-900"
+                onClick={() => void startStream(facing)}
+                className="w-full max-w-xs rounded-full bg-white px-5 py-3 text-sm font-semibold text-slate-900"
               >
-                {camDenied ? 'Reintentar' : 'Permitir cámara'}
+                Abrir cámara aquí
               </button>
               <button
                 type="button"
                 onClick={openSystemCamera}
-                className="rounded-full bg-white/15 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/30"
+                className="text-sm font-semibold text-white/65 underline-offset-2 hover:underline"
               >
-                Cámara del sistema
+                Prefiero la app de Cámara del móvil
               </button>
               <button
                 type="button"
                 onClick={openGallery}
-                className="rounded-full bg-white/15 px-4 py-2 text-sm font-semibold text-white ring-1 ring-white/30"
+                className="text-sm font-semibold text-white/65 underline-offset-2 hover:underline"
               >
                 Elegir de la galería
               </button>
+            </div>
+          )}
+          {chooser && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3.5 px-8 text-center">
+              <p className="text-lg font-bold text-white">
+                {avatarOnly ? 'Tu foto de perfil' : chatMode ? 'Enviar foto o vídeo' : 'Tu historia'}
+              </p>
+              <p className="max-w-xs text-sm leading-relaxed text-white/70">
+                {!isSecureCameraContext()
+                  ? 'Aquí no se puede abrir la cámara dentro de la app. Se abrirá la app de Cámara del móvil y volverás con la foto.'
+                  : 'Se abrirá la app de Cámara del móvil y volverás aquí con la foto para encuadrarla.'}
+              </p>
+              <button
+                type="button"
+                onClick={openSystemCamera}
+                className="w-full max-w-xs rounded-full bg-white px-5 py-3 text-sm font-semibold text-slate-900"
+              >
+                {avatarOnly ? 'Hacer una foto' : 'Abrir la app de Cámara'}
+              </button>
+              <button
+                type="button"
+                onClick={openGallery}
+                className="w-full max-w-xs rounded-full bg-white/15 px-5 py-3 text-sm font-semibold text-white ring-1 ring-white/30"
+              >
+                Elegir de la galería
+              </button>
+              {camDenied && isSecureCameraContext() && (
+                <button
+                  type="button"
+                  onClick={() => setShowHelp(v => !v)}
+                  className="mt-1 text-xs font-semibold text-white/55 underline-offset-2 hover:underline"
+                >
+                  Quiero la cámara dentro de la app
+                </button>
+              )}
+              {showHelp && (
+                <div className="max-w-xs space-y-2.5">
+                  <p className="text-xs leading-relaxed text-white/60">{cameraBlockedHint()}</p>
+                  <button
+                    type="button"
+                    onClick={() => void startStream(facing)}
+                    className="rounded-full bg-white/15 px-4 py-2 text-xs font-semibold text-white ring-1 ring-white/30"
+                  >
+                    Ya está, reintentar
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          {!needTap && !chooser && !camReady && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <Loader2 size={28} className="animate-spin text-white/50" />
             </div>
           )}
         </>
@@ -1140,7 +1227,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
             {formatStoryTime(trimStart)}–{formatStoryTime(trimEnd)} · {Math.round(clipLen)} s
           </span>
         )}
-        {!file && !justPublished && (
+        {!file && !justPublished && !chooser && !needTap && (
           <button
             type="button"
             onClick={() => setFacing(f => (f === 'user' ? 'environment' : 'user'))}
@@ -1223,7 +1310,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
               </button>
             </div>
           </div>
-        ) : (
+        ) : chooser || needTap ? null : (
           <div className="flex items-end justify-between">
             <button
               type="button"
@@ -1259,7 +1346,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
             <span className="w-12" />
           </div>
         )}
-        {!file && !justPublished && (
+        {!file && !justPublished && !chooser && !needTap && (
           <p className="mt-3 text-center text-[11px] text-white/55">
             {avatarOnly
               ? 'Solo foto · luego la encuadras en círculo'

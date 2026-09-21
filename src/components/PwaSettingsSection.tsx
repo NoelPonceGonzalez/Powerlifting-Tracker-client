@@ -4,7 +4,7 @@ import { Card } from '@/src/components/ui/Card';
 import { Button } from '@/src/components/ui/Button';
 import { isAndroid, isIOS, useInstallPrompt } from '@/src/pwa/installPrompt';
 import { useWebNotifications } from '@/src/pwa/notifications';
-import { useMediaAccess } from '@/src/pwa/mediaAccess';
+import { cameraBlockedHint, useMediaAccess } from '@/src/pwa/mediaAccess';
 import { cn } from '@/src/lib/utils';
 import { showAppError, showAppOk } from '@/src/lib/appNotice';
 
@@ -28,6 +28,7 @@ export const PwaSettingsSection: React.FC = () => {
   const { camera, galleryReady, requestingCamera, requestCamera, enableGallery } = useMediaAccess();
   const [showIosSteps, setShowIosSteps] = useState(false);
   const [askedCamera, setAskedCamera] = useState(false);
+  const [camHelp, setCamHelp] = useState(false);
   const [testingPush, setTestingPush] = useState(false);
   const [testPushMsg, setTestPushMsg] = useState('');
 
@@ -232,13 +233,13 @@ export const PwaSettingsSection: React.FC = () => {
             <div className="min-w-0">
               <p className="font-bold text-slate-900 dark:text-slate-100">Activar cámara</p>
               <p className="text-xs leading-snug text-slate-500 dark:text-slate-400">
-                {camera === 'unsupported'
-                  ? 'Este dispositivo no puede abrir la cámara desde el navegador.'
-                  : camera === 'granted'
-                    ? 'Lista para historias y fotos de perfil.'
-                    : camera === 'denied' && askedCamera
-                      ? 'El móvil la ha bloqueado. Actívala en los ajustes del sitio (candado o «Sitio») y pulsa Activar otra vez.'
-                      : 'Pulsa Activar: te saldrá Permitir. Luego se queda activa para historias y la foto de perfil.'}
+                {camera === 'granted'
+                  ? 'Lista. Las historias y la foto de perfil se hacen dentro de la app.'
+                  : camera === 'unsupported'
+                    ? 'Aquí no se puede abrir dentro de la app, pero puedes usar la cámara del móvil o la galería sin activar nada.'
+                    : camera === 'denied'
+                      ? 'Ahora mismo no se abre dentro de la app. Prueba a activarla; si no, la cámara del móvil y la galería siguen funcionando.'
+                      : 'Pulsa Activar y acepta. Así la cámara se abre dentro de la app, sin salir a la del móvil.'}
               </p>
             </div>
           </div>
@@ -253,14 +254,37 @@ export const PwaSettingsSection: React.FC = () => {
               variant="primary"
               disabled={camera === 'unsupported' || requestingCamera}
               onClick={() => {
-                void requestCamera().then(() => setAskedCamera(true));
+                setAskedCamera(true);
+                void requestCamera().then(state => {
+                  if (state === 'granted') {
+                    setCamHelp(false);
+                    showAppOk('Cámara activada.');
+                  } else {
+                    setCamHelp(true);
+                  }
+                });
               }}
               className="w-full shrink-0 uppercase tracking-widest min-[360px]:w-auto"
             >
-              {requestingCamera ? 'Pidiendo…' : camera === 'denied' && askedCamera ? 'Reintentar' : 'Activar'}
+              {requestingCamera ? 'Pidiendo…' : askedCamera ? 'Reintentar' : 'Activar'}
             </Button>
           )}
         </div>
+
+        {/* Solo si al pulsar Activar el navegador ya no pregunta: ahí sí hay que tocar ajustes. */}
+        {camera === 'denied' && askedCamera && camHelp && (
+          <div className="space-y-2 rounded-2xl bg-slate-50 p-4 dark:bg-slate-900/70">
+            <p className="text-xs font-bold text-slate-700 dark:text-slate-200">
+              El navegador ya no vuelve a preguntar
+            </p>
+            <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">{cameraBlockedHint()}</p>
+            <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+              Si prefieres no tocar nada: al hacer una historia o cambiar tu foto tienes
+              <strong className="font-bold"> Hacer una foto </strong>
+              y <strong className="font-bold">Galería</strong>, que funcionan igual sin este permiso.
+            </p>
+          </div>
+        )}
 
         {/* Galería */}
         <div className="app-row border-t border-slate-100 pt-5 dark:border-slate-700">

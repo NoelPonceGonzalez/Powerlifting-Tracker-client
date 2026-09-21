@@ -245,4 +245,6 @@ export interface UserSearchResult {
   /** 'outgoing' = la enviaste tú; 'incoming' = te la enviaron a ti. */
   friendshipDirection?: 'incoming' | 'outgoing' | null;
   canSendRequest?: boolean;
+  /** Por qué sale en sugerencias: te sigue, lo siguen tus amigos, o gente nueva. */
+  reason?: 'followback' | 'friends' | 'discover';
 }

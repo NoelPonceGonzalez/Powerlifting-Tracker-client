@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { isAndroid, isIOS, isStandalone } from '@/src/pwa/installPrompt';
 
 export type MediaPermissionState = 'unsupported' | 'prompt' | 'granted' | 'denied';
 
@@ -24,8 +25,19 @@ export function ensureMediaDevices(): MediaDevices | null {
   return nav.mediaDevices;
 }
 
+/**
+ * getUserMedia solo existe en contexto seguro (HTTPS o localhost). Servido por IP de la
+ * red local en http:// el navegador ni siquiera pregunta: hay que ir a la cámara nativa.
+ */
+export function isSecureCameraContext(): boolean {
+  if (typeof window === 'undefined') return false;
+  if (window.isSecureContext) return true;
+  const host = window.location.hostname;
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
+
 export function isCameraSupported(): boolean {
-  return !!ensureMediaDevices()?.getUserMedia;
+  return isSecureCameraContext() && !!ensureMediaDevices()?.getUserMedia;
 }
 
 export function isGallerySupported(): boolean {
@@ -62,6 +74,69 @@ export function markCameraGranted(): void {
   writeFlag(CAMERA_OK_KEY, true);
 }
 
+export function isCameraMarkedGranted(): boolean {
+  return readFlag(CAMERA_OK_KEY);
+}
+
+/** APK con WebView: no hay barra de direcciones y los permisos son los de la app nativa. */
+export function isNativeShell(): boolean {
+  if (typeof window === 'undefined') return false;
+  return !!(window as unknown as { ReactNativeWebView?: unknown }).ReactNativeWebView;
+}
+
+/**
+ * Solo se enseña si el usuario abre «no me deja». Los permisos de una PWA instalada los
+ * sigue gestionando el navegador que la instaló (WebAPK en Android), no el sistema.
+ */
+export function cameraBlockedHint(): string {
+  if (isNativeShell()) {
+    return 'Ajustes del móvil → Aplicaciones → esta app → Permisos → Cámara → Permitir. Luego vuelve a entrar.';
+  }
+  if (isIOS()) {
+    return isStandalone()
+      ? 'Ajustes del iPhone → Power → Cámara. Actívala y vuelve a entrar.'
+      : 'Ajustes → Safari → Cámara → Preguntar o Permitir, y recarga.';
+  }
+  if (isAndroid()) {
+    return isStandalone()
+      ? 'Mantén pulsado el icono de la app → Información de la app → Permisos → Cámara → Permitir. Si no aparece, ábrela en Chrome, toca el candado de la barra y pon Cámara en Permitir.'
+      : 'Toca el candado junto a la dirección → Permisos → Cámara → Permitir (o Restablecer permisos) y recarga.';
+  }
+  return 'Toca el candado junto a la dirección del navegador, pon Cámara en Permitir y recarga.';
+}
+
+/** En iPhone instalado la cámara nativa (capture) suele ir mejor que la vista en vivo. */
+export function preferNativeCameraOnDevice(): boolean {
+  return isIOS() && isStandalone();
+}
+
+/** WebKit solo abre el diálogo si getUserMedia sale de un toque; Chrome pregunta igual. */
+export function cameraNeedsUserGesture(): boolean {
+  return isIOS();
+}
+
+/**
+ * Estado real del permiso sin tocar la cámara. Chrome (también en la PWA instalada) lo
+ * expone por Permissions API; Safari no, y ahí devolvemos 'prompt' para poder preguntar.
+ */
+export async function readCameraPermission(): Promise<MediaPermissionState> {
+  if (typeof navigator === 'undefined') return 'unsupported';
+  if (!isCameraSupported()) return 'unsupported';
+  const perms = navigator.permissions;
+  if (!perms?.query) return 'prompt';
+  try {
+    const status = await perms.query({ name: 'camera' as PermissionName });
+    if (status.state === 'granted') {
+      markCameraGranted();
+      return 'granted';
+    }
+    if (status.state === 'denied') return 'denied';
+    return 'prompt';
+  } catch {
+    return 'prompt';
+  }
+}
+
 export function markGalleryReady(): void {
   writeFlag(GALLERY_OK_KEY, true);
 }
@@ -87,26 +162,11 @@ async function queryName(name: PermissionName): Promise<MediaPermissionState> {
 }
 
 export function queryCameraPermission(): Promise<MediaPermissionState> {
-  return queryName('camera' as PermissionName);
+  return readCameraPermission();
 }
 
 export function queryMicrophonePermission(): Promise<MediaPermissionState> {
   return queryName('microphone' as PermissionName);
-}
-
-let primedStoryStream: MediaStream | null = null;
-let primeInFlight: Promise<MediaStream | null> | null = null;
-
-function keepStream(stream: MediaStream): void {
-  if (primedStoryStream && primedStoryStream !== stream) {
-    primedStoryStream.getTracks().forEach(t => t.stop());
-  }
-  primedStoryStream = stream;
-  markCameraGranted();
-}
-
-function liveTracks(stream: MediaStream | null): boolean {
-  return !!stream?.getVideoTracks().some(t => t.readyState === 'live');
 }
 
 /**
@@ -139,52 +199,6 @@ function isDenied(err: unknown): boolean {
   return name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError';
 }
 
-/** Mismo clic que abre el compositor. No mates el stream en pagehide: iOS lo dispara al pedir permiso. */
-export async function primeStoryCamera(facing: 'user' | 'environment' = 'environment'): Promise<boolean> {
-  if (liveTracks(primedStoryStream)) return true;
-  if (primeInFlight) return primeInFlight.then(s => liveTracks(s));
-  if (!isCameraSupported()) return false;
-  primeInFlight = getCameraStream(facing)
-    .then(stream => {
-      keepStream(stream);
-      return stream;
-    })
-    .catch(() => null)
-    .finally(() => {
-      primeInFlight = null;
-    });
-  return primeInFlight.then(s => liveTracks(s));
-}
-
-export async function takePrimedCamera(): Promise<MediaStream | null> {
-  if (liveTracks(primedStoryStream)) {
-    const stream = primedStoryStream;
-    primedStoryStream = null;
-    return stream;
-  }
-  if (primeInFlight) {
-    const stream = await primeInFlight;
-    if (stream && primedStoryStream === stream) primedStoryStream = null;
-    return liveTracks(stream) ? stream : null;
-  }
-  return null;
-}
-
-export function consumePrimedStoryCamera(): MediaStream | null {
-  if (!liveTracks(primedStoryStream)) {
-    primedStoryStream = null;
-    return null;
-  }
-  const stream = primedStoryStream;
-  primedStoryStream = null;
-  return stream;
-}
-
-export function releasePrimedStoryCamera(): void {
-  primedStoryStream?.getTracks().forEach(t => t.stop());
-  primedStoryStream = null;
-}
-
 /**
  * Pide cámara desde un clic. Eso es lo que hace salir el diálogo «Permitir».
  */
@@ -196,10 +210,12 @@ export async function requestCameraAccess(): Promise<MediaPermissionState> {
     markCameraGranted();
     return 'granted';
   } catch (err) {
-    if (isDenied(err)) return 'denied';
     const name = err instanceof DOMException ? err.name : '';
     if (name === 'NotFoundError' || name === 'OverconstrainedError') return 'unsupported';
-    return 'denied';
+    // Cerrar el diálogo sin decidir no es un bloqueo: manda el estado real, no el error.
+    const state = await readCameraPermission();
+    if (state === 'granted' || state === 'denied') return state;
+    return isDenied(err) ? 'denied' : 'prompt';
   }
 }
 
@@ -236,7 +252,7 @@ export interface UseMediaAccessResult {
 
 export function useMediaAccess(): UseMediaAccessResult {
   const [camera, setCamera] = useState<MediaPermissionState>(() =>
-    isCameraSupported() ? (readFlag(CAMERA_OK_KEY) ? 'granted' : 'prompt') : 'unsupported'
+    isCameraSupported() ? 'prompt' : 'unsupported'
   );
   const [galleryReady, setGalleryReady] = useState(() => isGalleryMarkedReady());
   const [requestingCamera, setRequestingCamera] = useState(false);

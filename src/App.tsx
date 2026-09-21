@@ -20,7 +20,6 @@ import { ProfileView } from '@/src/views/Profile';
 // Components
 import { useRealtimeUpdates } from '@/src/hooks/useRealtimeUpdates';
 import { isRealtimeOpen } from '@/src/lib/chatRealtime';
-import { primeStoryCamera } from '@/src/pwa/mediaAccess';
 import { SLIME_TAP, STICKY } from '@/src/lib/motionPresets';
 
 // Types
@@ -3953,10 +3952,7 @@ export default function App() {
               onGoToDashboard={() => setView('dashboard')}
               socialBackTo={socialBackTo}
               onChatConversationChange={setChatConversationOpen}
-              onAddStory={() => {
-                void primeStoryCamera();
-                setStoryComposerOpen(true);
-              }}
+              onAddStory={() => setStoryComposerOpen(true)}
               storyRefreshTick={storyRefreshTick}
               socialRefreshTick={socialRefreshTick}
               onSeeRequests={seeRequests}
@@ -4082,7 +4078,6 @@ export default function App() {
         onPublish={() => {
           setComposeOpen(false);
           goToSocial('chat');
-          void primeStoryCamera();
           setStoryComposerOpen(true);
         }}
         onGymNow={() => {

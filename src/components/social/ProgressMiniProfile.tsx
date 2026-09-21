@@ -4,7 +4,6 @@ import { Avatar } from '@/src/components/ui/Avatar';
 import { StoryCamera } from '@/src/components/social/StoryCamera';
 import { fetchProfile, saveBio } from '@/src/lib/feedApi';
 import { hasRealAvatar } from '@/src/lib/avatar';
-import { primeStoryCamera } from '@/src/pwa/mediaAccess';
 import type { User } from '@/src/types';
 
 export function ProfileStat({
@@ -207,10 +206,7 @@ export function ProgressMiniProfile({
         <div className="relative shrink-0">
           <button
             type="button"
-            onClick={() => {
-              void primeStoryCamera('user');
-              setCamOpen(true);
-            }}
+            onClick={() => setCamOpen(true)}
             className="relative rounded-full"
             aria-label="Cambiar foto de perfil"
           >

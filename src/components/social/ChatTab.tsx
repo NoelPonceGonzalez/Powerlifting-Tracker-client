@@ -13,7 +13,7 @@ import { useEscapeClose } from '@/src/lib/useEscapeClose';
 import { STICKY } from '@/src/lib/motionPresets';
 import type { Friend, FriendRequest, UserSearchResult } from '@/src/types';
 import { StoryCamera } from '@/src/components/social/StoryCamera';
-import { FILE_INPUT_VISUAL, GALLERY_MEDIA_ACCEPT, primeStoryCamera } from '@/src/pwa/mediaAccess';
+import { FILE_INPUT_VISUAL, GALLERY_MEDIA_ACCEPT } from '@/src/pwa/mediaAccess';
 import { AddFriendsModal } from '@/src/components/social/AddFriendsModal';
 import { ChatPeoplePanel } from '@/src/components/social/ChatPeoplePanel';
 import { StoriesRail } from '@/src/components/social/StoriesRail';
@@ -1360,10 +1360,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
           <button
             type="button"
             disabled={waitingPeer || incomingPeer}
-            onClick={() => {
-              void primeStoryCamera();
-              setCamOpen(true);
-            }}
+            onClick={() => setCamOpen(true)}
             className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-slate-200 text-slate-500 disabled:opacity-30 dark:border-slate-700"
             aria-label="Cámara · toca foto, mantén para vídeo"
           >
@@ -1496,19 +1493,29 @@ export const ChatTab: React.FC<ChatTabProps> = ({
             </button>
           }
           trailing={
-            <button
-              type="button"
-              onClick={() => goPeople('activity')}
-              className="app-icon-hit relative z-30 min-h-12 min-w-12 overflow-visible rounded-full text-slate-900 dark:text-slate-100"
-              aria-label={heartBadge > 0 ? `Actividad, ${heartBadge} por aceptar` : 'Actividad'}
-            >
-              <Heart size={22} strokeWidth={2} />
-              {heartBadge > 0 && (
-                <span className="absolute right-1 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold leading-none text-white">
-                  {heartBadge > 9 ? '9+' : heartBadge}
-                </span>
-              )}
-            </button>
+            <div className="flex items-center">
+              <button
+                type="button"
+                onClick={() => setAddFriendsOpen(true)}
+                className="app-icon-hit relative z-30 min-h-12 min-w-12 rounded-full text-slate-900 dark:text-slate-100"
+                aria-label="Añadir amigos"
+              >
+                <UserPlus size={22} strokeWidth={2} />
+              </button>
+              <button
+                type="button"
+                onClick={() => goPeople('activity')}
+                className="app-icon-hit relative z-30 min-h-12 min-w-12 overflow-visible rounded-full text-slate-900 dark:text-slate-100"
+                aria-label={heartBadge > 0 ? `Actividad, ${heartBadge} por aceptar` : 'Actividad'}
+              >
+                <Heart size={22} strokeWidth={2} />
+                {heartBadge > 0 && (
+                  <span className="absolute right-1 top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[9px] font-bold leading-none text-white">
+                    {heartBadge > 9 ? '9+' : heartBadge}
+                  </span>
+                )}
+              </button>
+            </div>
           }
         />
       )}
@@ -1541,8 +1548,16 @@ export const ChatTab: React.FC<ChatTabProps> = ({
             Aún no hay chats
           </p>
           <p className="mt-1 text-xs text-slate-400">
-            El corazón es la actividad: solicitudes, follows y likes.
+            El + de amigos está arriba, junto al corazón.
           </p>
+          <button
+            type="button"
+            onClick={() => setAddFriendsOpen(true)}
+            className="mx-auto mt-4 inline-flex items-center gap-2 rounded-full bg-slate-900 px-4 py-2 text-sm font-semibold text-white dark:bg-white dark:text-slate-900"
+          >
+            <UserPlus size={16} />
+            Añadir amigos
+          </button>
         </div>
       ) : (
         <div className="rounded-3xl bg-white shadow-sm dark:bg-slate-900">

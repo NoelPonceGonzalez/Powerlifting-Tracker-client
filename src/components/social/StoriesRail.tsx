@@ -164,7 +164,7 @@ export function StoriesRail({ myId, myAvatar, myName, refreshTick = 0, onAddStor
             <div className="flex h-12 w-12 shrink-0 items-center justify-center">
               {leading}
             </div>
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-visible">
+            <div className="flex h-12 min-w-12 shrink-0 items-center justify-end overflow-visible">
               {trailing}
             </div>
           </div>

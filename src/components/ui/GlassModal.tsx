@@ -51,6 +51,25 @@ export function GlassModal({
 }: GlassModalProps) {
   useEscapeClose(open && !persist, onClose);
 
+  const [kb, setKb] = React.useState({ open: false, height: 0, top: 0 });
+  React.useEffect(() => {
+    if (!open || typeof window === 'undefined') return;
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const sync = () => {
+      const overlap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      setKb({ open: overlap > 80, height: vv.height, top: vv.offsetTop });
+    };
+    sync();
+    vv.addEventListener('resize', sync);
+    vv.addEventListener('scroll', sync);
+    return () => {
+      vv.removeEventListener('resize', sync);
+      vv.removeEventListener('scroll', sync);
+      setKb({ open: false, height: 0, top: 0 });
+    };
+  }, [open]);
+
   React.useEffect(() => {
     if (!open) return;
     const prev = document.body.style.overflow;
@@ -74,10 +93,17 @@ export function GlassModal({
           className={cn(
             'fixed inset-0 flex min-h-[100dvh] justify-center',
             center
-              ? 'items-center p-3 sm:p-4'
+              ? kb.open
+                ? 'items-start px-3'
+                : 'items-center p-3 sm:p-4'
               : 'items-end p-0 sm:items-center sm:p-4',
             zIndexClass
           )}
+          style={
+            center && kb.open
+              ? { paddingTop: Math.max(10, kb.top + 8), paddingBottom: 8 }
+              : undefined
+          }
         >
           <motion.div
             initial={{ opacity: 0 }}
@@ -102,7 +128,12 @@ export function GlassModal({
                 ? 'border border-white/15 bg-black/35 shadow-[0_16px_48px_rgba(0,0,0,0.28)]'
                 : 'border border-white/50 bg-white/70 shadow-2xl shadow-slate-900/10 dark:border-white/10 dark:bg-slate-900/65',
               center
-                ? 'max-h-[min(88dvh,calc(100dvh-1.5rem-env(safe-area-inset-top)-env(safe-area-inset-bottom)))] w-[min(100%,22rem)] rounded-[28px] sm:w-full sm:max-w-sm'
+                ? cn(
+                    'w-[min(100%,22rem)] rounded-[28px] sm:w-full sm:max-w-sm',
+                    kb.open
+                      ? 'min-h-0'
+                      : 'max-h-[min(88dvh,calc(100dvh-1.5rem-env(safe-area-inset-top)-env(safe-area-inset-bottom)))]'
+                  )
                 : 'rounded-t-[28px] sm:rounded-[28px]',
               !center && (sheet
                 ? 'min-h-[min(72dvh,100%)] max-h-[min(92dvh,calc(100dvh-env(safe-area-inset-top)))] max-w-lg'
@@ -110,6 +141,11 @@ export function GlassModal({
               !center && !sheet && (wide ? 'max-w-lg sm:max-w-xl' : 'max-w-sm'),
               className
             )}
+            style={
+              center && kb.open && kb.height > 0
+                ? { maxHeight: Math.max(220, kb.height - 16) }
+                : undefined
+            }
           >
             {(title || subtitle) && (
               <div

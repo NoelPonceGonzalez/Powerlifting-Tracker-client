@@ -1,6 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
-import { Check, Clock, Loader2, Search, UserPlus } from 'lucide-react';
+import { Check, Clock, Loader2, RefreshCw, Search, UserPlus } from 'lucide-react';
 import { Avatar } from '@/src/components/social/MediaPost';
 import { Button } from '@/src/components/ui/Button';
 import { GlassModal } from '@/src/components/ui/GlassModal';
@@ -13,6 +13,12 @@ import type { UserSearchResult } from '@/src/types';
 type Person = { id: string; name: string; avatar?: string };
 
 type Kind = 'friend' | 'following' | 'sent' | 'incoming' | 'follow';
+
+type SuggestPack = {
+  followBack: UserSearchResult[];
+  friends: UserSearchResult[];
+  discover: UserSearchResult[];
+};
 
 function kindOf(u: UserSearchResult, sentIds: Set<string>): Kind {
   if (u.friendshipStatus === 'accepted') return 'friend';
@@ -32,6 +38,18 @@ function kindCopy(kind: Kind, follower: boolean): { title: string; hint: string 
   return { title: 'Seguir', hint: follower ? 'Te sigue' : 'Aún no le sigues' };
 }
 
+function parseSuggestPack(raw: unknown): SuggestPack {
+  const empty: SuggestPack = { followBack: [], friends: [], discover: [] };
+  if (!raw) return empty;
+  if (Array.isArray(raw)) return { ...empty, discover: raw };
+  const obj = raw as Partial<SuggestPack>;
+  return {
+    followBack: Array.isArray(obj.followBack) ? obj.followBack : [],
+    friends: Array.isArray(obj.friends) ? obj.friends : [],
+    discover: Array.isArray(obj.discover) ? obj.discover : [],
+  };
+}
+
 export function AddFriendsModal({
   open,
   onClose,
@@ -47,16 +65,23 @@ export function AddFriendsModal({
 }) {
   const [q, setQ] = useState('');
   const [hits, setHits] = useState<UserSearchResult[]>([]);
+  const [suggest, setSuggest] = useState<SuggestPack>({ followBack: [], friends: [], discover: [] });
   const [searching, setSearching] = useState(false);
+  const [suggesting, setSuggesting] = useState(false);
   const [sendingId, setSendingId] = useState<string | null>(null);
   const [sentIds, setSentIds] = useState<Set<string>>(() => new Set());
-  const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const t = window.setTimeout(() => inputRef.current?.focus(), 80);
-    return () => window.clearTimeout(t);
-  }, [open]);
+  const loadSuggest = async () => {
+    setSuggesting(true);
+    try {
+      const raw = await apiGet<SuggestPack | UserSearchResult[]>('/api/social/suggestions');
+      setSuggest(parseSuggestPack(raw));
+    } catch {
+      setSuggest({ followBack: [], friends: [], discover: [] });
+    } finally {
+      setSuggesting(false);
+    }
+  };
 
   useEffect(() => {
     if (!open) {
@@ -64,7 +89,9 @@ export function AddFriendsModal({
       setHits([]);
       setSearching(false);
       setSendingId(null);
+      return;
     }
+    void loadSuggest();
   }, [open]);
 
   useEffect(() => {
@@ -99,13 +126,18 @@ export function AddFriendsModal({
       next.add(id);
       return next;
     });
-    setHits(prev =>
-      prev.map(h =>
+    const patch = (list: UserSearchResult[]) =>
+      list.map(h =>
         h.id === id
-          ? { ...h, friendshipStatus: 'pending', friendshipDirection: 'outgoing', canSendRequest: false }
+          ? { ...h, friendshipStatus: 'pending' as const, friendshipDirection: 'outgoing' as const, canSendRequest: false }
           : h
-      )
-    );
+      );
+    setHits(prev => patch(prev));
+    setSuggest(prev => ({
+      followBack: patch(prev.followBack),
+      friends: patch(prev.friends),
+      discover: patch(prev.discover),
+    }));
   };
 
   const sendTo = async (person: Person) => {
@@ -123,6 +155,7 @@ export function AddFriendsModal({
   };
 
   const needle = q.trim();
+  const hasSuggest = suggest.followBack.length + suggest.friends.length + suggest.discover.length > 0;
 
   return (
     <GlassModal
@@ -131,78 +164,204 @@ export function AddFriendsModal({
       center
       frost
       title="Añadir amigos"
-      subtitle="Busca por nombre"
-      className="min-h-[min(28rem,70dvh)]"
+      subtitle={needle ? 'Resultados' : 'Sugerencias y búsqueda'}
     >
       <div className="relative mb-3">
         <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-white/50" />
         <input
-          ref={inputRef}
           value={q}
           onChange={e => setQ(e.target.value)}
           placeholder="Busca gente para seguir"
           autoComplete="off"
           autoCorrect="off"
           spellCheck={false}
+          enterKeyHint="search"
           className="h-11 w-full rounded-full border border-white/15 bg-white/10 pl-10 pr-4 text-sm text-white placeholder:text-white/45 backdrop-blur-md focus:outline-none"
         />
       </div>
 
-      {!needle ? (
+      {needle ? (
+        searching && hits.length === 0 ? (
+          <p className="py-10 text-center text-sm text-white/55">Buscando…</p>
+        ) : hits.length === 0 ? (
+          <p className="py-10 text-center text-sm text-white/55">Nadie con ese nombre.</p>
+        ) : (
+          <PeopleList
+            people={hits}
+            sentIds={sentIds}
+            sendingId={sendingId}
+            onSend={sendTo}
+            onHold={onHoldPerson}
+            onSendRequest={onSendRequest}
+          />
+        )
+      ) : suggesting && !hasSuggest ? (
+        <p className="py-10 text-center text-sm text-white/55">Buscando gente…</p>
+      ) : !hasSuggest ? (
         <p className="py-10 text-center text-sm text-white/55">Escribe un nombre para buscar.</p>
-      ) : searching && hits.length === 0 ? (
-        <p className="py-10 text-center text-sm text-white/55">Buscando…</p>
-      ) : hits.length === 0 ? (
-        <p className="py-10 text-center text-sm text-white/55">Nadie con ese nombre.</p>
       ) : (
-        <div className="space-y-1">
-          {hits.map((u, i) => {
-            const kind = kindOf(u, sentIds);
-            const copy = kindCopy(kind, u.friendshipStatus === 'follower');
-            return (
-              <motion.div
-                key={u.id}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: Math.min(i, 8) * 0.035, duration: 0.22, ease: EASE_OUT }}
-                className="flex items-center gap-3 rounded-2xl px-2 py-2"
-              >
-                <SearchPerson
-                  person={{ id: u.id, name: u.name, avatar: u.avatar }}
-                  kind={kind}
-                  hint={copy.hint}
-                  onHold={onHoldPerson}
-                />
-                {kind === 'follow' ? (
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    className="h-9 shrink-0 rounded-full px-3 text-[12px]"
-                    disabled={sendingId === u.id || !onSendRequest}
-                    onClick={() => void sendTo({ id: u.id, name: u.name, avatar: u.avatar })}
-                  >
-                    {sendingId === u.id ? <Loader2 size={14} className="animate-spin" /> : <UserPlus size={14} />}
-                    Seguir
-                  </Button>
-                ) : (
-                  <span
-                    className={cn(
-                      'inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium',
-                      (kind === 'friend' || kind === 'following') && 'bg-emerald-400/15 text-emerald-300',
-                      kind === 'sent' && 'bg-amber-400/15 text-amber-300',
-                      kind === 'incoming' && 'bg-white/10 text-white/60'
-                    )}
-                  >
-                    {kind === 'friend' || kind === 'following' ? <Check size={12} /> : <Clock size={12} />}
-                    {copy.title}
-                  </span>
-                )}
-              </motion.div>
-            );
-          })}
+        <div className="space-y-4">
+          <SuggestBlock
+            title="Te siguen"
+            hint="Aún no les sigues"
+            people={suggest.followBack}
+            sentIds={sentIds}
+            sendingId={sendingId}
+            onSend={sendTo}
+            onHold={onHoldPerson}
+            onSendRequest={onSendRequest}
+          />
+          <SuggestBlock
+            title="Los siguen tus amigos"
+            hint="Gente de tu círculo"
+            people={suggest.friends}
+            sentIds={sentIds}
+            sendingId={sendingId}
+            onSend={sendTo}
+            onHold={onHoldPerson}
+            onSendRequest={onSendRequest}
+          />
+          <SuggestBlock
+            title="Descubrir"
+            hint="Ni tú ni tus amigos"
+            people={suggest.discover}
+            sentIds={sentIds}
+            sendingId={sendingId}
+            onSend={sendTo}
+            onHold={onHoldPerson}
+            onSendRequest={onSendRequest}
+            onRefresh={() => void loadSuggest()}
+            refreshing={suggesting}
+          />
         </div>
       )}
     </GlassModal>
+  );
+}
+
+function SuggestBlock({
+  title,
+  hint,
+  people,
+  sentIds,
+  sendingId,
+  onSend,
+  onHold,
+  onSendRequest,
+  onRefresh,
+  refreshing,
+}: {
+  title: string;
+  hint: string;
+  people: UserSearchResult[];
+  sentIds: Set<string>;
+  sendingId: string | null;
+  onSend: (person: Person) => void;
+  onHold?: (person: Person) => void;
+  onSendRequest?: (userId: string) => Promise<void>;
+  onRefresh?: () => void;
+  refreshing?: boolean;
+}) {
+  if (people.length === 0) return null;
+  return (
+    <section>
+      <div className="mb-1 flex items-center justify-between gap-2 px-1">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-white/45">{title}</p>
+          <p className="text-[11px] text-white/35">{hint}</p>
+        </div>
+        {onRefresh && (
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={refreshing}
+            className="flex h-8 w-8 items-center justify-center rounded-full text-white/50 disabled:opacity-40"
+            aria-label="Otras sugerencias"
+          >
+            <RefreshCw size={14} className={refreshing ? 'animate-spin' : undefined} />
+          </button>
+        )}
+      </div>
+      <PeopleList
+        people={people}
+        sentIds={sentIds}
+        sendingId={sendingId}
+        onSend={onSend}
+        onHold={onHold}
+        onSendRequest={onSendRequest}
+      />
+    </section>
+  );
+}
+
+function PeopleList({
+  people,
+  sentIds,
+  sendingId,
+  onSend,
+  onHold,
+  onSendRequest,
+}: {
+  people: UserSearchResult[];
+  sentIds: Set<string>;
+  sendingId: string | null;
+  onSend: (person: Person) => void;
+  onHold?: (person: Person) => void;
+  onSendRequest?: (userId: string) => Promise<void>;
+}) {
+  return (
+    <div className="space-y-1">
+      {people.map((u, i) => {
+        const kind = kindOf(u, sentIds);
+        const copy = kindCopy(kind, u.friendshipStatus === 'follower' || u.reason === 'followback');
+        return (
+          <motion.div
+            key={u.id}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: Math.min(i, 8) * 0.035, duration: 0.22, ease: EASE_OUT }}
+            className="flex items-center gap-3 rounded-2xl px-2 py-2"
+          >
+            <SearchPerson
+              person={{ id: u.id, name: u.name, avatar: u.avatar }}
+              kind={kind}
+              hint={
+                u.reason === 'friends' && kind === 'follow'
+                  ? 'Lo siguen tus amigos'
+                  : u.reason === 'discover' && kind === 'follow'
+                    ? 'Gente nueva'
+                    : copy.hint
+              }
+              onHold={onHold}
+            />
+            {kind === 'follow' ? (
+              <Button
+                variant="primary"
+                size="sm"
+                className="h-9 shrink-0 rounded-full px-3 text-[12px]"
+                disabled={sendingId === u.id || !onSendRequest}
+                onClick={() => void onSend({ id: u.id, name: u.name, avatar: u.avatar })}
+              >
+                {sendingId === u.id ? <Loader2 size={14} className="animate-spin" /> : <UserPlus size={14} />}
+                Seguir
+              </Button>
+            ) : (
+              <span
+                className={cn(
+                  'inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium',
+                  (kind === 'friend' || kind === 'following') && 'bg-emerald-400/15 text-emerald-300',
+                  kind === 'sent' && 'bg-amber-400/15 text-amber-300',
+                  kind === 'incoming' && 'bg-white/10 text-white/60'
+                )}
+              >
+                {kind === 'friend' || kind === 'following' ? <Check size={12} /> : <Clock size={12} />}
+                {copy.title}
+              </span>
+            )}
+          </motion.div>
+        );
+      })}
+    </div>
   );
 }
 
