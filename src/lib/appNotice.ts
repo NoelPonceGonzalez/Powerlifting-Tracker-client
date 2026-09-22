@@ -23,8 +23,11 @@ function emit(message: string, tone: AppNoticeTone) {
   listeners.forEach((fn) => fn(notice));
 }
 
+const SILENT_ERRORS = /^(no le sigues|ya le sigues|ya le enviaste|ya existe una solicitud)/i;
+
 export function showAppError(message: string, err?: unknown) {
   const fromErr = err instanceof Error && err.message ? err.message.trim() : '';
+  if (SILENT_ERRORS.test(fromErr) || SILENT_ERRORS.test(message)) return;
   const generic = !fromErr || /error en la solicitud|failed to fetch|networkerror|load failed|network request failed/i.test(fromErr);
   emit(generic ? message : fromErr, 'error');
 }

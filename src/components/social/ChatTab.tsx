@@ -1428,7 +1428,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
               {open.peer.name} quiere chatear
             </p>
             <p className="mt-0.5 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
-              No le sigues. Si aceptas, verá si lees el chat y podrás responder. Si lo rechazas, desaparece para los dos.
+              Si aceptas, podréis hablar. Si lo rechazas, desaparece para los dos.
             </p>
             <div className="mt-2.5 flex gap-2">
               <button
@@ -1459,7 +1459,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
           )}
           {open.kind === 'dm' && waitingPeer && (
             <p className="mx-3 rounded-2xl bg-amber-50 px-4 py-3 text-center text-xs font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-              Le ha llegado el mensaje. Como no te sigue, tiene que aceptar para hablar. Tú no le sigues por escribirle.
+              Le ha llegado. Tiene que aceptar para que podáis hablar.
             </p>
           )}
           {threadBusy && messages.length === 0 && (
@@ -1479,7 +1479,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
                     ? 'Cuando acepte verá este mensaje.'
                     : friends.some(f => f.id === open.peer.id)
                       ? 'Escribe el primer mensaje.'
-                      : 'Escribe. Si ya te sigue, habla enseguida. Si no, le llega una solicitud para aceptar el chat.'}
+                      : 'Escribe el primer mensaje.'}
             </p>
           )}
           {messages.filter(line => line?.id).map(line => (
