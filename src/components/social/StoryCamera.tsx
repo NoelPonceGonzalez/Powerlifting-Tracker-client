@@ -75,6 +75,13 @@ const TEXT_TAP_PX = 8;
 type FrameXform = { x: number; y: number; w: number; h: number; rot: number; turns: number; tilt: number };
 const EMPTY_FRAME: FrameXform = { x: 0, y: 0, w: 0, h: 0, rot: 0, turns: 0, tilt: 0 };
 
+/** El número va a la izquierda de la x: 1x, 1.5x. */
+function zoomLabel(z: number) {
+  const shown = z < 10 ? Math.round(z * 10) / 10 : Math.round(z);
+  const num = Number.isInteger(shown) ? String(shown) : shown.toFixed(1);
+  return `${num}x`;
+}
+
 function frameAngle(f: FrameXform) {
   return ((f.turns % 4) + 4) % 4 * 90 + (f.tilt || 0);
 }
@@ -1644,7 +1651,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
       />
       {!file && !justPublished && (
         <>
-          <div className="absolute inset-0">
+          <div className="absolute inset-0 overflow-hidden">
             <video
               ref={videoRef}
               playsInline
@@ -1653,7 +1660,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
               controls={false}
               disablePictureInPicture
               disableRemotePlayback
-              className="h-full w-full bg-black object-contain"
+              className="h-full w-full object-cover object-center"
               style={{
                 transform: hwZoom
                   ? facing === 'user' ? 'scaleX(-1)' : undefined
@@ -1664,34 +1671,10 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
             />
           </div>
           {camReady && (
-            <div className="absolute right-3 top-1/2 z-20 flex -translate-y-1/2 flex-col items-center gap-2">
-              <button
-                type="button"
-                aria-label="Acercar"
-                onClick={() => {
-                  const range = zoomRangeRef.current;
-                  const step = range ? Math.max(range.step, (range.max - range.min) / 8) : 0.25;
-                  setZoomLevel(zoomRef.current + step);
-                }}
-                className="flex h-10 w-10 items-center justify-center rounded-full bg-black/45 text-lg font-semibold text-white ring-1 ring-white/25 backdrop-blur-md"
-              >
-                +
-              </button>
-              <span className="min-w-10 rounded-full bg-black/45 px-2 py-1 text-center text-[11px] font-semibold tabular-nums text-white ring-1 ring-white/20">
-                {zoomUi < 10 ? `${zoomUi.toFixed(1)}×` : `${Math.round(zoomUi)}×`}
+            <div className="absolute right-3 top-1/2 z-20 -translate-y-1/2">
+              <span className="rounded-full bg-black/45 px-2.5 py-1 text-[12px] font-semibold tabular-nums text-white ring-1 ring-white/20">
+                {zoomLabel(zoomUi)}
               </span>
-              <button
-                type="button"
-                aria-label="Alejar"
-                onClick={() => {
-                  const range = zoomRangeRef.current;
-                  const step = range ? Math.max(range.step, (range.max - range.min) / 8) : 0.25;
-                  setZoomLevel(zoomRef.current - step);
-                }}
-                className="flex h-10 w-10 items-center justify-center rounded-full bg-black/45 text-lg font-semibold text-white ring-1 ring-white/25 backdrop-blur-md"
-              >
-                −
-              </button>
             </div>
           )}
           {needTap && (
@@ -2143,7 +2126,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
         {!file && !justPublished && !chooser && !needTap && (
           <p className="mt-3 text-center text-[11px] text-white/55">
             {avatarOnly
-              ? 'Pellizca o usa +/− para el zoom · luego la encuadras en círculo'
+              ? 'Pellizca para el zoom · luego la encuadras en círculo'
               : chatMode
                 ? 'Pellizca para el zoom · toca para foto · mantén para vídeo'
                 : 'Pellizca para el zoom · toca para foto · mantén para vídeo · 1 min'}
