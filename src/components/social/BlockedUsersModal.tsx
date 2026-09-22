@@ -89,7 +89,7 @@ export function BlockedUsersModal({
                   transition={{ delay: Math.min(i, 6) * 0.03, duration: 0.2, ease: EASE_OUT }}
                   className="flex items-center gap-3 rounded-2xl px-2 py-2"
                 >
-                  <Avatar name={person.name} avatar={person.avatar ?? null} size={44} />
+                  <Avatar name={person.name} avatar={person.avatar ?? null} userId={person.id} size={44} />
                   <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-white">
                     {person.name}
                   </span>
@@ -143,7 +143,7 @@ export function BlockedUsersModal({
                 transition={{ delay: Math.min(i, 6) * 0.03, duration: 0.2, ease: EASE_OUT }}
                 className="flex items-center gap-3 rounded-2xl px-2 py-2"
               >
-                <Avatar name={person.name} avatar={person.avatar ?? null} size={44} />
+                <Avatar name={person.name} avatar={person.avatar ?? null} userId={person.id} size={44} />
                 <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-white">
                   {person.name}
                 </span>

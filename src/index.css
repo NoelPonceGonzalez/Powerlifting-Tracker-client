@@ -181,7 +181,25 @@
 }
 
 .app-tabbar {
+  overflow: visible;
+  isolation: isolate;
   border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* El resalte de Perfil / Torneos sigue la curva de la pastilla, no un rectángulo. */
+.app-tabbar-tab {
+  border-radius: 999px;
+}
+
+/* El blur recorta overflow; va en una capa interna para no cortar los puntos. */
+.app-tabbar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
   border: 1px solid rgba(255, 255, 255, 0.55);
   background: color-mix(in srgb, white 52%, transparent);
   box-shadow:
@@ -189,9 +207,10 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.72);
   backdrop-filter: blur(28px) saturate(1.8);
   -webkit-backdrop-filter: blur(28px) saturate(1.8);
+  pointer-events: none;
 }
 
-html.dark .app-tabbar {
+html.dark .app-tabbar::before {
   border-color: rgba(255, 255, 255, 0.1);
   background: color-mix(in srgb, #0b1220 62%, transparent);
   box-shadow:

@@ -674,9 +674,8 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   }, [accountAvatar, applyInbox]);
 
   useEffect(() => {
-    if (!pageActive) return;
     void loadInbox();
-  }, [loadInbox, pageActive]);
+  }, [loadInbox]);
 
   useEffect(() => {
     if (!pageActive || threads.length > 0) return;
@@ -1224,7 +1223,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({
     const title = open.kind === 'dm' ? open.peer.name : open.group.name;
     const subtitle =
       open.kind === 'dm'
-        ? talkingToCoach
+        ? typingLabel
+          ? 'Escribiendo…'
+          : talkingToCoach
           ? peerOnline
             ? 'Tu entrenador · en línea'
             : 'Tu entrenador'
@@ -1234,7 +1235,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
             ? 'Esperando a que acepte'
             : peerOnline
               ? 'En línea'
-              : 'Chat'
+              : ''
         : [
             `${open.group.members.length} en el ${open.group.kind === 'team' ? 'equipo' : 'grupo'}`,
             open.group.pending?.length ? `${open.group.pending.length} pendiente${open.group.pending.length === 1 ? '' : 's'}` : '',
@@ -1264,7 +1265,16 @@ export const ChatTab: React.FC<ChatTabProps> = ({
               <Face name={open.peer.name} avatar={photoOf(open.peer.id, open.peer.avatar)} userId={open.peer.id} size={40} online={peerOnline} />
               <span className="min-w-0">
                 <span className="block truncate text-sm font-black text-slate-900 dark:text-slate-100">{title}</span>
-                <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">{subtitle}</span>
+                {subtitle ? (
+                  <span className={cn(
+                    'block truncate text-[11px] font-semibold',
+                    peerOnline && !typingLabel && !incomingPeer && !waitingPeer
+                      ? 'text-emerald-500'
+                      : 'text-slate-400'
+                  )}>
+                    {subtitle}
+                  </span>
+                ) : null}
               </span>
             </button>
           ) : (
@@ -1308,15 +1318,6 @@ export const ChatTab: React.FC<ChatTabProps> = ({
             >
               {peerFollowBusy ? <Loader2 size={18} className="animate-spin" /> : <UserPlus size={18} />}
             </button>
-          )}
-          {open.kind === 'dm' && peerFollow === 'sent' && (
-            <span
-              className="rounded-xl p-2 text-amber-500 dark:text-amber-300"
-              title="Solicitud enviada"
-              aria-label="Solicitud enviada"
-            >
-              <Check size={18} />
-            </span>
           )}
           <button
             type="button"
@@ -1561,7 +1562,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
             </motion.div>
             )
           ))}
-          {typingLabel && (
+          {typingLabel && open.kind === 'group' && (
             <p className="px-3 text-[11px] font-bold italic text-slate-400">{typingLabel}</p>
           )}
           <div ref={bottomRef} />

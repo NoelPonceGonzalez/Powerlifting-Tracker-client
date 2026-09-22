@@ -106,7 +106,7 @@ import {
   type SavedAccount,
 } from '@/src/lib/savedAccounts';
 import { checkInExpiresAtMs, expiresAtFromSaved } from '@/src/lib/checkInExpires';
-import { hasUnseenMark, markSeenIds } from '@/src/lib/unseenMarks';
+import { hasUnseenMark, markSeenIds, readUnseenHint, writeUnseenHint } from '@/src/lib/unseenMarks';
 import { silentRefreshToken } from '@/src/lib/authRefresh';
 
 function mapCheckInFromApi(c: Record<string, unknown>): GymCheckIn {
@@ -577,6 +577,10 @@ export default function App() {
   useEffect(() => {
     setAliveViews((prev) => (prev[view] ? prev : { ...prev, [view]: true }));
   }, [view]);
+  useEffect(() => {
+    if (!user) return;
+    setAliveViews((prev) => (prev.social ? prev : { ...prev, social: true }));
+  }, [user?.id]);
   const [dashboardEnterKey, setDashboardEnterKey] = useState(0);
   const [tmsLoading, setTmsLoading] = useState(false);
 
@@ -613,6 +617,12 @@ export default function App() {
   const [friends, setFriends] = useState<FriendRequest[]>([]);
   const [friendsList, setFriendsList] = useState<Friend[]>([]);
   const [challenges, setChallenges] = useState<Challenge[]>([]);
+  const [socialListsReady, setSocialListsReady] = useState(false);
+  const [challengesReady, setChallengesReady] = useState(false);
+  useEffect(() => {
+    setSocialListsReady(false);
+    setChallengesReady(false);
+  }, [user?.id]);
   const [checkIns, setCheckIns] = useState<GymCheckIn[]>([]);
   const [socialTab, setSocialTab] = useState<SocialTab>(
     () => navFromLaunchUrl()?.socialTab || readSavedAppNav()?.socialTab || 'chat'
@@ -1555,9 +1565,18 @@ export default function App() {
     };
   }, [user?.id, view, bumpAllSocial, bumpSocialRefresh, bumpRoutineDataRefresh]);
 
-  // Al entrar en Social/Torneos (no al cambiar de chip: eso ya lo cubre socialNavTick en la vista).
+  // Al volver a Social/Torneos: refresca, pero no la primera vez (cancela la carga inicial).
+  const skipFirstSocialBumpRef = useRef(true);
   useEffect(() => {
-    if (!user || view !== 'social') return;
+    if (!user) {
+      skipFirstSocialBumpRef.current = true;
+      return;
+    }
+    if (view !== 'social') return;
+    if (skipFirstSocialBumpRef.current) {
+      skipFirstSocialBumpRef.current = false;
+      return;
+    }
     bumpAllSocial();
   }, [user?.id, view, bumpAllSocial]);
 
@@ -1586,6 +1605,7 @@ export default function App() {
         }
         if (Array.isArray(requestsRes)) {
           setFriends(requestsRes.map((r: FriendRequest) => ({ ...r, status: r.status ?? 'pending' })));
+          setSocialListsReady(true);
         }
       } catch {
         /* silently ignore */
@@ -1611,6 +1631,7 @@ export default function App() {
         }
         if (Array.isArray(challengesRes)) {
           setChallenges(challengesRes);
+          setChallengesReady(true);
         }
       } catch (e) {
         console.error('[App] Error cargando datos:', e);
@@ -1777,16 +1798,36 @@ export default function App() {
     }
   };
 
-  const socialUnseen = friends.some(r => r.status === 'pending' && !r.needsFollowBack);
+  const socialUnseenLive = friends.some(r => r.status === 'pending' && !r.needsFollowBack);
+  const socialUnseen = socialListsReady
+    ? socialUnseenLive
+    : readUnseenHint('requests', user?.id ?? '');
   const [tourneySeenTick, setTourneySeenTick] = useState(0);
   const activeChallengeIds = useMemo(
-    () => challenges.filter(c => new Date(c.endDate).getTime() > Date.now()).map(c => c.id).filter(Boolean),
-    [challenges]
+    () =>
+      challenges
+        .filter(c => {
+          if (new Date(c.endDate).getTime() <= Date.now()) return false;
+          if (c.createdBy?.id && user?.id && c.createdBy.id === user.id) return false;
+          return !!c.id;
+        })
+        .map(c => c.id),
+    [challenges, user?.id]
   );
-  const tourneyUnseen = useMemo(
-    () => hasUnseenMark('challenges', user?.id ?? '', activeChallengeIds),
-    [user?.id, activeChallengeIds, tourneySeenTick]
-  );
+  const tourneyHasUnseen = useMemo(() => {
+    const uid = user?.id ?? '';
+    if (!uid) return false;
+    if (!challengesReady) return readUnseenHint('challenges', uid);
+    if (activeChallengeIds.length === 0) return false;
+    return hasUnseenMark('challenges', uid, activeChallengeIds);
+  }, [user?.id, activeChallengeIds, tourneySeenTick, challengesReady]);
+  const tourneyUnseen = view === 'social' && socialTab === 'challenges' ? false : tourneyHasUnseen;
+  useEffect(() => {
+    if (user?.id && challengesReady) writeUnseenHint('challenges', user.id, tourneyHasUnseen);
+  }, [user?.id, tourneyHasUnseen, challengesReady]);
+  useEffect(() => {
+    if (user?.id && socialListsReady) writeUnseenHint('requests', user.id, socialUnseenLive);
+  }, [user?.id, socialUnseenLive, socialListsReady]);
   useEffect(() => {
     if (view !== 'social' || socialTab !== 'challenges' || !user?.id) return;
     if (activeChallengeIds.length === 0) return;
@@ -2212,6 +2253,7 @@ export default function App() {
     weekTypeOverrides?: Array<{ weekType: number; week: TrainingWeek }>;
     skippedWeeks?: number[];
     friendTrainingMaxes?: { name: string; mode: string; linkedExercise?: string }[];
+    activate?: boolean;
   }) => {
     /** Plan: series, %, kg, modo, linkedTo tm-*; sin historial ni series del amigo. TMs = mismos que el amigo/plan, valor 0 (no se añade el paquete por defecto si ya hay TMs reales). */
     const newWeeks = cloneFriendRoutineWeeks(routine.weeks);
@@ -2229,7 +2271,7 @@ export default function App() {
         versions: [{ effectiveFromWeek: 1, weeks: copiedBaseTemplate }],
         baseTemplate: copiedBaseTemplate,
         weekTypeOverrides,
-        isActive: true,
+        isActive: routine.activate !== false,
         cycleLength: cl,
         sameTemplateAllWeeks,
         skippedWeeks: [],
@@ -2277,9 +2319,11 @@ export default function App() {
         progressCheckpointTms: created.progressCheckpointTms,
       });
       setRoutines(prev => [...prev, plan]);
-      setActiveRoutineId(plan.id);
-      setProgramScreen('plan');
-      setView('program');
+      if (routine.activate !== false) {
+        setActiveRoutineId(plan.id);
+        setProgramScreen('plan');
+        setView('program');
+      }
       bumpRoutineDataRefresh();
     } catch (e) {
       console.error('[Routine] Error copiando:', e);
@@ -4086,7 +4130,7 @@ export default function App() {
       </div>
       
       {!chatConversationOpen && !profileSheetOpen && <nav
-        className="app-tabbar fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] left-2 right-2 z-50 mx-auto flex max-w-lg items-center gap-0.5 px-1 py-1 max-[360px]:left-1.5 max-[360px]:right-1.5 sm:bottom-6 sm:left-3 sm:right-3 sm:px-1.5"
+        className="app-tabbar fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] left-2 right-2 z-50 mx-auto flex max-w-lg items-center gap-0.5 overflow-visible px-1.5 py-1 max-[360px]:left-1.5 max-[360px]:right-1.5 sm:bottom-6 sm:left-3 sm:right-3 sm:px-2"
         style={{ WebkitTapHighlightColor: 'transparent' }}
       >
         <div className="grid min-w-0 flex-1 grid-cols-2">
@@ -4096,7 +4140,7 @@ export default function App() {
             transition={STICKY}
             onClick={() => setView('dashboard')}
             className={cn(
-              "flex min-h-12 origin-center flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none max-[340px]:min-h-11 max-[340px]:text-[9px]",
+              "app-tabbar-tab flex min-h-12 origin-center flex-col items-center justify-center gap-0.5 text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none max-[340px]:min-h-11 max-[340px]:text-[9px]",
               view === 'dashboard'
                 ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
                 : "text-slate-400 dark:text-slate-500"
@@ -4114,7 +4158,7 @@ export default function App() {
               setView('program');
             }}
             className={cn(
-              "flex min-h-12 origin-center flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none max-[340px]:min-h-11 max-[340px]:text-[9px]",
+              "app-tabbar-tab flex min-h-12 origin-center flex-col items-center justify-center gap-0.5 text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none max-[340px]:min-h-11 max-[340px]:text-[9px]",
               view === 'program'
                 ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
                 : "text-slate-400 dark:text-slate-500"
@@ -4136,23 +4180,23 @@ export default function App() {
           <Plus className="size-5" strokeWidth={2.4} />
         </motion.button>
 
-        <div className="grid min-w-0 flex-1 grid-cols-2">
+        <div className="grid min-w-0 flex-1 grid-cols-2 overflow-visible">
           <motion.button
             type="button"
             whileTap={SLIME_TAP}
             transition={STICKY}
             onClick={() => goToSocial('chat')}
             className={cn(
-              "flex min-h-12 origin-center flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none max-[340px]:min-h-11 max-[340px]:text-[9px]",
+              "app-tabbar-tab flex min-h-12 origin-center flex-col items-center justify-center gap-0.5 overflow-visible text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none max-[340px]:min-h-11 max-[340px]:text-[9px]",
               view === 'social' && socialTab === 'chat'
                 ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
                 : "text-slate-400 dark:text-slate-500"
             )}
           >
-            <span className="relative">
+            <span className="relative inline-flex size-[22px] items-center justify-center">
               <Users className="size-[17px]" strokeWidth={view === 'social' && socialTab === 'chat' ? 2.35 : 1.9} />
               {socialUnseen && (
-                <span className="absolute -right-1 -top-0.5 h-2 w-2 rounded-full bg-rose-500 ring-2 ring-white dark:ring-slate-950" />
+                <span className="absolute right-px top-px h-2 w-2 rounded-full bg-rose-500 ring-2 ring-white dark:ring-slate-950" />
               )}
             </span>
             <span>Social</span>
@@ -4163,16 +4207,16 @@ export default function App() {
             transition={STICKY}
             onClick={() => goToSocial('challenges')}
             className={cn(
-              "flex min-h-12 origin-center flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none max-[340px]:min-h-11 max-[340px]:text-[9px]",
+              "app-tabbar-tab flex min-h-12 origin-center flex-col items-center justify-center gap-0.5 overflow-visible text-[10px] font-medium leading-none tracking-wide outline-none focus:outline-none focus-visible:outline-none max-[340px]:min-h-11 max-[340px]:text-[9px]",
               view === 'social' && socialTab === 'challenges'
                 ? "bg-white/65 text-indigo-600 shadow-sm dark:bg-white/10 dark:text-indigo-300"
                 : "text-slate-400 dark:text-slate-500"
             )}
           >
-            <span className="relative">
+            <span className="relative inline-flex size-[22px] items-center justify-center">
               <Trophy className="size-[17px]" strokeWidth={view === 'social' && socialTab === 'challenges' ? 2.35 : 1.9} />
               {tourneyUnseen && (
-                <span className="absolute -right-1 -top-0.5 h-2 w-2 rounded-full bg-amber-400 ring-2 ring-white dark:ring-slate-950" />
+                <span className="absolute right-px top-px h-2 w-2 rounded-full bg-amber-400 ring-2 ring-white dark:ring-slate-950" />
               )}
             </span>
             <span>Torneos</span>

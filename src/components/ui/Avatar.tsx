@@ -1,21 +1,40 @@
 import React from 'react';
 import { cn } from '@/src/lib/utils';
-import { avatarInitial, resolveAvatarUrl, userAvatarSrc } from '@/src/lib/avatar';
+import { avatarInitial, avatarSrcCandidates, resolveAvatarUrl } from '@/src/lib/avatar';
 
-interface AvatarProps extends React.ImgHTMLAttributes<HTMLImageElement> {
+interface AvatarProps extends Omit<React.ImgHTMLAttributes<HTMLImageElement>, 'src' | 'size'> {
   src?: string | null;
+  avatar?: string | null;
   name?: string;
   fallback?: string;
   userId?: string | null;
+  size?: number;
 }
 
-export const Avatar: React.FC<AvatarProps> = ({ src, name, fallback, userId, className, alt, onError, ...props }) => {
-  const resolved = userAvatarSrc(src, userId) || resolveAvatarUrl(fallback);
-  const [broken, setBroken] = React.useState(false);
+export const Avatar: React.FC<AvatarProps> = ({
+  src,
+  avatar,
+  name,
+  fallback,
+  userId,
+  className,
+  alt,
+  onError,
+  size,
+  style,
+  ...props
+}) => {
+  const candidates = React.useMemo(() => {
+    const list = avatarSrcCandidates(src ?? avatar, userId);
+    const extra = resolveAvatarUrl(fallback);
+    return extra && !list.includes(extra) ? [...list, extra] : list;
+  }, [src, avatar, userId, fallback]);
+  const [index, setIndex] = React.useState(0);
   React.useEffect(() => {
-    setBroken(false);
-  }, [resolved]);
-  const showImg = !!resolved && !broken;
+    setIndex(0);
+  }, [candidates.join('|')]);
+  const resolved = candidates[index] || null;
+  const showImg = !!resolved;
 
   return (
     <div
@@ -24,6 +43,7 @@ export const Avatar: React.FC<AvatarProps> = ({ src, name, fallback, userId, cla
         !showImg && 'flex items-center justify-center bg-indigo-100 font-black text-indigo-600 dark:bg-indigo-950/60 dark:text-indigo-300',
         className
       )}
+      style={size ? { width: size, height: size, ...style } : style}
     >
       {showImg ? (
         <img
@@ -33,8 +53,12 @@ export const Avatar: React.FC<AvatarProps> = ({ src, name, fallback, userId, cla
           className="absolute inset-0 block h-full w-full min-h-0 min-w-0 object-cover object-center"
           style={{ objectFit: 'cover', objectPosition: 'center' }}
           referrerPolicy="no-referrer"
-          onError={(e) => {
-            setBroken(true);
+          onError={e => {
+            if (index + 1 < candidates.length) {
+              setIndex(i => i + 1);
+              return;
+            }
+            setIndex(candidates.length);
             onError?.(e);
           }}
           draggable={false}

@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { animate, motion, useMotionValue, useTransform } from 'motion/react';
 import { X } from 'lucide-react';
 import { Avatar } from '@/src/components/ui/Avatar';
-import { resolveAvatarUrl } from '@/src/lib/avatar';
+import { userAvatarSrc } from '@/src/lib/avatar';
 import { EASE_OUT } from '@/src/lib/motionPresets';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 
@@ -26,7 +26,7 @@ export function ProfilePhotoViewer({
   person: ProfilePhotoPerson;
   onClose: () => void;
 }) {
-  const src = resolveAvatarUrl(person.avatar);
+  const src = userAvatarSrc(person.avatar, person.id);
   const [leaving, setLeaving] = useState(false);
   const busy = useRef(false);
   const pointer = useRef<{ id: number; x: number; y: number; t: number; axis: 'h' | 'v' | null } | null>(null);
@@ -137,7 +137,7 @@ export function ProfilePhotoViewer({
 
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 bg-gradient-to-b from-black/55 to-transparent px-3 pb-8 pt-[max(0.75rem,env(safe-area-inset-top))]">
           <div className="pointer-events-auto flex items-center gap-3">
-            <Avatar src={person.avatar} name={person.name} className="h-8 w-8 rounded-full" />
+            <Avatar src={person.avatar} userId={person.id} name={person.name} className="h-8 w-8 rounded-full" />
             <p className="min-w-0 flex-1 truncate text-sm font-semibold">{person.name}</p>
             <button
               type="button"

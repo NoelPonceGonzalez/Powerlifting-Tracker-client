@@ -5,7 +5,7 @@ import { Card } from '@/src/components/ui/Card';
 import { LoadingBlock } from '@/src/components/ui/Spinner';
 import { cn } from '@/src/lib/utils';
 import { mediaUrl } from '@/src/lib/api';
-import { avatarInitial, userAvatarSrc } from '@/src/lib/avatar';
+import { avatarInitial, avatarSrcCandidates } from '@/src/lib/avatar';
 import { EASE_OUT } from '@/src/lib/motionPresets';
 import {
   addComment,
@@ -19,12 +19,13 @@ import {
 } from '@/src/lib/feedApi';
 
 export function Avatar({ name, avatar, size = 40, userId }: { name: string; avatar: string | null; size?: number; userId?: string | null }) {
-  const src = userAvatarSrc(avatar, userId);
-  const [broken, setBroken] = useState(false);
+  const candidates = avatarSrcCandidates(avatar, userId);
+  const [index, setIndex] = useState(0);
   useEffect(() => {
-    setBroken(false);
-  }, [src]);
-  if (src && !broken) {
+    setIndex(0);
+  }, [candidates.join('|')]);
+  const src = candidates[index] || null;
+  if (src) {
     return (
       <span
         className="inline-block overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700"
@@ -38,7 +39,7 @@ export function Avatar({ name, avatar, size = 40, userId }: { name: string; avat
           className="block h-full w-full object-cover object-center"
           style={{ objectFit: 'cover', objectPosition: 'center' }}
           referrerPolicy="no-referrer"
-          onError={() => setBroken(true)}
+          onError={() => setIndex(i => i + 1)}
         />
       </span>
     );

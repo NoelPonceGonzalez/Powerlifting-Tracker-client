@@ -5,8 +5,223 @@ export const STORY_VIDEO_MIN_SEC = 3;
 export const STORY_UPLOAD_MAX_BYTES = 40 * 1024 * 1024;
 /** Tope al abrir de la galería: se recorta aquí; no hace falta bajar de 200 MB en Fotos. */
 export const STORY_SOURCE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
-export const STORY_VIDEO_BITRATE = 3_500_000;
+/**
+ * Historia en vertical 720×1280. En el teléfono se ve más nítida que un 1080
+ * a pocos bits por píxel, y un minuto pesa ~24 MB.
+ * Verla 1.000 veces son unos 24 GB de salida: el almacenamiento de 24 h es barato,
+ * lo que cuesta es cada reproducción, así que no subimos de aquí.
+ */
+export const STORY_OUT_W = 720;
+export const STORY_OUT_H = 1280;
+export const STORY_VIDEO_BITRATE = 3_200_000;
+export const STORY_AUDIO_BITRATE = 64_000;
 export const STORY_THUMB_COUNT = 10;
+
+/** Lo que el servidor guarda tal cual (utils/mediaStorage.ts). */
+const UPLOADABLE_MIME = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+  'video/mp4',
+  'video/quicktime',
+  'video/webm',
+]);
+
+/** `MediaRecorder` devuelve `video/webm;codecs=vp9`: al servidor va el tipo base. */
+export function cleanMediaMime(type?: string | null): string {
+  return String(type || '')
+    .split(';')[0]
+    .trim()
+    .toLowerCase();
+}
+
+export function isUploadableMedia(type?: string | null): boolean {
+  return UPLOADABLE_MIME.has(cleanMediaMime(type));
+}
+
+/** Mismo contenido con el tipo saneado, que es lo que mira multer al subirlo. */
+export function withCleanMime(blob: Blob, name: string, fallback: string): File {
+  const type = isUploadableMedia(blob.type) ? cleanMediaMime(blob.type) : fallback;
+  return new File([blob], name, { type });
+}
+
+/** El texto se pinta igual en la vista previa y en el canvas: misma fuente y mismo ancho. */
+export const STORY_TEXT_LINE = 1.18;
+
+export const STORY_FONTS = [
+  { id: 'classic', label: 'Clásica', family: 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif', weight: 800 },
+  { id: 'modern', label: 'Moderna', family: 'Arial, Helvetica, sans-serif', weight: 700 },
+  { id: 'serif', label: 'Serif', family: 'Georgia, "Times New Roman", serif', weight: 700 },
+  { id: 'mono', label: 'Mono', family: 'ui-monospace, "SFMono-Regular", "Courier New", monospace', weight: 700 },
+  { id: 'strong', label: 'Fuerte', family: 'Impact, "Arial Black", "Segoe UI", sans-serif', weight: 400 },
+  { id: 'hand', label: 'Nota', family: '"Segoe Script", "Segoe Print", "Comic Sans MS", cursive', weight: 700 },
+] as const;
+
+export type StoryFontId = (typeof STORY_FONTS)[number]['id'];
+
+/** Columna de color, de arriba a abajo, como en Instagram. */
+export const STORY_TEXT_COLORS = [
+  '#ffffff',
+  '#000000',
+  '#ff2d55',
+  '#ff9500',
+  '#ffcc00',
+  '#34c759',
+  '#00c7be',
+  '#007aff',
+  '#5856d6',
+  '#af52de',
+] as const;
+
+export const STORY_TEXT_FONT = STORY_FONTS[0].family;
+export const STORY_TEXT_WEIGHT = STORY_FONTS[0].weight;
+
+export function storyFont(id?: string | null) {
+  return STORY_FONTS.find(f => f.id === id) || STORY_FONTS[0];
+}
+
+/** Contorno fino para que se lea encima del vídeo, sin el borde gordo. */
+export function storyStrokeColor(color?: string | null): string {
+  const hex = (color || '#ffffff').replace('#', '');
+  if (hex.length < 6) return 'rgba(0,0,0,0.65)';
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  if ([r, g, b].some(n => Number.isNaN(n))) return 'rgba(0,0,0,0.65)';
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum > 0.62 ? 'rgba(0,0,0,0.72)' : 'rgba(255,255,255,0.9)';
+}
+/** Ancho máximo del bloque, en tanto por uno del encuadre. */
+export const STORY_TEXT_MAX_W = 0.86;
+export const STORY_TEXT_MIN_PX = 14;
+export const STORY_TEXT_MAX_PX = 140;
+
+export type StoryTextOverlay = {
+  id: string;
+  value: string;
+  /** Centro del texto respecto al centro del encuadre, en px de pantalla. */
+  x: number;
+  y: number;
+  /** Cuerpo de la letra en px de pantalla. */
+  size: number;
+  rot: number;
+  font?: StoryFontId | string;
+  color?: string;
+};
+
+export function storyTextFont(px: number, fontId?: string | null): string {
+  const face = storyFont(fontId);
+  return `${face.weight} ${px}px ${face.family}`;
+}
+
+export function storyRecorderOptions(mime?: string): MediaRecorderOptions {
+  const opts: MediaRecorderOptions = {
+    videoBitsPerSecond: STORY_VIDEO_BITRATE,
+    audioBitsPerSecond: STORY_AUDIO_BITRATE,
+  };
+  if (mime) opts.mimeType = mime;
+  return opts;
+}
+
+export function clampStoryTextSize(px: number): number {
+  return Math.max(STORY_TEXT_MIN_PX, Math.min(STORY_TEXT_MAX_PX, px));
+}
+
+/** Textos con contenido; se pintan en el mismo orden que en la vista previa. */
+export function storyTextsForExport(texts?: StoryTextOverlay[] | null): StoryTextOverlay[] {
+  return (texts || []).filter(t => t.value.trim());
+}
+
+export function drawStoryTexts(
+  ctx: CanvasRenderingContext2D,
+  texts: StoryTextOverlay[] | null | undefined,
+  W: number,
+  H: number,
+  viewW: number,
+  viewH: number
+): void {
+  for (const text of storyTextsForExport(texts)) {
+    drawStoryText(ctx, text, W, H, viewW, viewH);
+  }
+}
+
+function splitLongWord(ctx: CanvasRenderingContext2D, word: string, maxW: number): string[] {
+  if (ctx.measureText(word).width <= maxW) return [word];
+  const parts: string[] = [];
+  let cur = '';
+  for (const ch of word) {
+    if (cur && ctx.measureText(cur + ch).width > maxW) {
+      parts.push(cur);
+      cur = ch;
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur) parts.push(cur);
+  return parts;
+}
+
+/** Corta por palabras como haría el navegador con el mismo ancho. */
+function wrapStoryText(ctx: CanvasRenderingContext2D, value: string, maxW: number): string[] {
+  const out: string[] = [];
+  for (const raw of value.split('\n')) {
+    const words = raw.split(/\s+/).filter(Boolean).flatMap(w => splitLongWord(ctx, w, maxW));
+    if (!words.length) {
+      out.push('');
+      continue;
+    }
+    let line = words[0];
+    for (let i = 1; i < words.length; i++) {
+      const next = `${line} ${words[i]}`;
+      if (ctx.measureText(next).width <= maxW) {
+        line = next;
+      } else {
+        out.push(line);
+        line = words[i];
+      }
+    }
+    out.push(line);
+  }
+  return out;
+}
+
+/** Quema el texto encima del fotograma ya dibujado, en las mismas coordenadas que la vista previa. */
+export function drawStoryText(
+  ctx: CanvasRenderingContext2D,
+  text: StoryTextOverlay,
+  W: number,
+  H: number,
+  viewW: number,
+  viewH: number
+): void {
+  const value = text.value.replace(/\s+$/, '');
+  if (!value.trim()) return;
+  const sx = W / Math.max(1, viewW);
+  const sy = H / Math.max(1, viewH);
+  const px = Math.max(8, text.size * sx);
+  const fill = text.color || '#ffffff';
+  ctx.save();
+  ctx.font = storyTextFont(px, text.font);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  ctx.miterLimit = 2;
+  const lines = wrapStoryText(ctx, value, W * STORY_TEXT_MAX_W);
+  const lh = px * STORY_TEXT_LINE;
+  ctx.translate(W / 2 + text.x * sx, H / 2 + text.y * sy);
+  ctx.rotate((text.rot * Math.PI) / 180);
+  ctx.lineWidth = Math.max(1.25, px * 0.055);
+  ctx.strokeStyle = storyStrokeColor(fill);
+  ctx.fillStyle = fill;
+  const top = -((lines.length - 1) * lh) / 2;
+  lines.forEach((line, i) => {
+    if (!line) return;
+    ctx.strokeText(line, 0, top + i * lh);
+    ctx.fillText(line, 0, top + i * lh);
+  });
+  ctx.restore();
+}
 
 export function formatStoryTime(sec: number): string {
   if (!Number.isFinite(sec) || sec < 0) return '0:00';
@@ -79,16 +294,21 @@ export async function trimVideoFile(
     h?: number;
     viewW?: number;
     viewH?: number;
+    /** Sube el clip sin pista de audio. */
+    mute?: boolean;
+    texts?: StoryTextOverlay[] | null;
   }
 ): Promise<File> {
   const from = Math.max(0, startSec);
   const to = Math.max(from + 0.4, endSec);
   const rotation = ((opts?.rotationDeg ?? 0) % 360 + 360) % 360;
   const framed = !!(opts?.w && opts.viewW && opts.viewH && opts.h);
-  const bakeRotate = (rotation > 0.8 && rotation < 359.2) || framed;
+  const overlays = storyTextsForExport(opts?.texts);
+  const mute = !!opts?.mute;
+  const bakeRotate = (rotation > 0.8 && rotation < 359.2) || framed || overlays.length > 0;
   const url = URL.createObjectURL(file);
   const video = document.createElement('video') as CapturableVideo;
-  video.muted = false;
+  video.muted = mute;
   video.playsInline = true;
   video.preload = 'auto';
   video.src = url;
@@ -118,13 +338,15 @@ export async function trimVideoFile(
 
     let stream: MediaStream;
     if (bakeRotate) {
-      const W = 1080;
-      const H = 1920;
+      const W = STORY_OUT_W;
+      const H = STORY_OUT_H;
       const canvas = document.createElement('canvas');
       canvas.width = W;
       canvas.height = H;
-      const ctx = canvas.getContext('2d');
+      const ctx = canvas.getContext('2d', { alpha: false });
       if (!ctx) throw new Error('No se ha podido girar el vídeo.');
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
       const rad = (rotation * Math.PI) / 180;
       const paint = () => {
         const vw = video.videoWidth || 1;
@@ -149,6 +371,7 @@ export async function trimVideoFile(
           ctx.drawImage(video, -(vw * s) / 2, -(vh * s) / 2, vw * s, vh * s);
         }
         ctx.restore();
+        if (overlays.length) drawStoryTexts(ctx, overlays, W, H, opts?.viewW || W, opts?.viewH || H);
       };
       let raf = 0;
       const loop = () => {
@@ -159,16 +382,21 @@ export async function trimVideoFile(
       raf = requestAnimationFrame(loop);
       stopDraw = () => cancelAnimationFrame(raf);
       const visual = canvas.captureStream(30);
-      capture(30).getAudioTracks().forEach(t => visual.addTrack(t));
+      if (!mute) capture(30).getAudioTracks().forEach(t => visual.addTrack(t));
       stream = visual;
     } else {
-      stream = capture(30);
+      const captured = capture(30);
+      if (mute) {
+        captured.getAudioTracks().forEach(t => {
+          captured.removeTrack(t);
+          t.stop();
+        });
+      }
+      stream = captured;
     }
 
     const mime = pickRecorderMime();
-    const rec = mime
-      ? new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: STORY_VIDEO_BITRATE })
-      : new MediaRecorder(stream, { videoBitsPerSecond: STORY_VIDEO_BITRATE });
+    const rec = new MediaRecorder(stream, storyRecorderOptions(mime));
     const chunks: Blob[] = [];
     rec.ondataavailable = e => {
       if (e.data.size > 0) chunks.push(e.data);
@@ -204,7 +432,7 @@ export async function trimVideoFile(
       throw new Error('El recorte sigue siendo muy pesado para el servidor. Elige un tramo más corto.');
     }
     const ext = (blob.type || rec.mimeType || '').includes('mp4') ? 'mp4' : 'webm';
-    return new File([blob], `historia.${ext}`, { type: blob.type || `video/${ext}` });
+    return withCleanMime(blob, `historia.${ext}`, `video/${ext}`);
   } finally {
     stopDraw?.();
     URL.revokeObjectURL(url);
@@ -223,7 +451,7 @@ export function needsStoryPrepare(file: File, duration: number, start: number, l
   return needsStoryTrim(duration, start, length) || file.size > STORY_UPLOAD_MAX_BYTES;
 }
 
-/** Lo que acabará pesando el clip: recorte + re-encode a 3.5 Mbps si hace falta. */
+/** Lo que acabará pesando el clip: recorte + re-encode a 3,2 Mbps en 720p si hace falta. */
 export function estimateClipBytes(file: File, duration: number, start: number, clipLen: number): number {
   const len = Math.max(0.4, Math.min(clipLen, STORY_VIDEO_MAX_SEC));
   const encoded = (STORY_VIDEO_BITRATE / 8) * len;

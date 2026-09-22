@@ -139,6 +139,8 @@ interface SocialViewProps {
     weekTypeOverrides?: Array<{ weekType: number; week: TrainingWeek }>;
     skippedWeeks?: number[];
     friendTrainingMaxes?: { name: string; mode: string; linkedExercise?: string }[];
+    /** false: se guarda en Rutinas sin sustituir la activa. */
+    activate?: boolean;
   }) => void | Promise<void>;
   /** La pestaña Perfil vive fuera de Social: el avatar de la cabecera lleva allí. */
   onGoToProfile?: () => void;
@@ -743,7 +745,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [search, setSearch] = useState('');
   const [challengeSearch, setChallengeSearch] = useState('');
   const [activeTab, setActiveTab] = useState<SocialTab>(() => normalizeSocialTab(initialTab));
-  const pageEnter = usePageEnter(pageActive, activeTab);
+  const pageEnter = usePageEnter(pageActive);
   const prevInitialTabPropRef = useRef(initialTab);
   const [challengeSubTab, setChallengeSubTab] = useState<'active' | 'finished' | 'progress'>('active');
   const [checkInSaving, setCheckInSaving] = useState(false);
@@ -766,7 +768,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
     weekTypeOverrides?: Array<{ weekType: number; week: TrainingWeek }>;
     skippedWeeks?: number[];
   } | null>(null);
-  const [friendRoutineLoading, setFriendRoutineLoading] = useState(false);
+  const friendModalSeq = useRef(0);
   const [openFriendTm, setOpenFriendTm] = useState<{ id?: string; name: string; value: number; mode: string } | null>(null);
   /** Perfil abierto a pantalla completa (amigo, resultado de búsqueda o entrenador). */
   const [viewingProfileId, setViewingProfileId] = useState<string | null>(null);
@@ -787,9 +789,17 @@ export const SocialView: React.FC<SocialViewProps> = ({
     friendshipDirection?: string | null;
     canSendRequest?: boolean;
     blocked?: 'you' | 'them' | null;
+    routineName?: string | null;
+    todayPlan?: { name: string; title: string; rest: boolean; lifts: string[]; more: number } | null;
   } | null>(null);
   const [friendRequestBusy, setFriendRequestBusy] = useState(false);
-  const [copyingFriendRoutine, setCopyingFriendRoutine] = useState(false);
+  const [copyingFriendRoutine, setCopyingFriendRoutine] = useState<'save' | 'activate' | null>(null);
+  const [copyRoutineAsk, setCopyRoutineAsk] = useState(false);
+  const [copyOutline, setCopyOutline] = useState<{
+    name: string;
+    weeks: { label: string; days: { name: string; exercises: { name: string; detail: string }[] }[] }[];
+  } | null>(null);
+  const [copyOutlineLoading, setCopyOutlineLoading] = useState(false);
   const [friendActionError, setFriendActionError] = useState<string | null>(null);
   const [gymName, setGymName] = useState('');
   const [gymTime, setGymTime] = useState('');
@@ -884,11 +894,10 @@ export const SocialView: React.FC<SocialViewProps> = ({
   }, []);
 
   useEffect(() => {
-    if (!pageActive) return;
     loadCoachRequests();
     loadGroupInvites();
     loadChatAsks();
-  }, [loadCoachRequests, loadGroupInvites, loadChatAsks, user.id, pageActive]);
+  }, [loadCoachRequests, loadGroupInvites, loadChatAsks, user.id, socialRefreshTick]);
 
   const answerCoach = useCallback(async (id: string, decision: 'accept' | 'reject') => {
     setCoachRequestBusyId(id);
@@ -1103,25 +1112,15 @@ export const SocialView: React.FC<SocialViewProps> = ({
     setJoinLifts(lifts);
   }, [user.id]);
 
-  const openFriendModal = useCallback(async (friend: Friend) => {
+  const openFriendModal = useCallback((friend: Friend) => {
+    const seq = ++friendModalSeq.current;
     setShowFriendModal(friend);
     setFriendRoutine(null);
     setFriendProfile(null);
     setOpenFriendTm(null);
-    setFriendRoutineLoading(true);
-    try {
-      const [routineRaw, profile, cover] = await Promise.all([
-        apiGet<{
-          name: string;
-          weeks: TrainingWeek[];
-          baseTemplate?: TrainingWeek[];
-          versions?: { effectiveFromWeek: number; weeks: TrainingWeek[] }[];
-          logs?: unknown;
-          sameTemplateAllWeeks?: boolean;
-          weekTypeOverrides?: Array<{ weekType: number; week: TrainingWeek }>;
-          cycleLength?: number;
-          skippedWeeks?: number[];
-        } | null>(`/api/social/friends/${friend.id}/routine`),
+
+    void (async () => {
+      const [profile, cover] = await Promise.all([
         apiGet<{
           name: string;
           avatar: string;
@@ -1129,16 +1128,11 @@ export const SocialView: React.FC<SocialViewProps> = ({
           coach?: { id: string; name: string; avatar: string | null } | null;
           athleteCount?: number;
           trainingMaxes: { id?: string; name: string; value: number; mode: string }[];
-          trainingMaxesAll?: { name: string; mode: string; linkedExercise?: string }[];
-        }>(`/api/social/friends/${friend.id}/profile?includeAllTms=1`).catch((e: unknown) => {
+        }>(`/api/social/friends/${friend.id}/profile`).catch((e: unknown) => {
           const msg = String((e as { message?: string })?.message || '');
-          if (/te ha bloqueado|has bloqueado/i.test(msg)) return null;
-          return {
-            name: friend.name,
-            avatar: friend.avatar || '',
-            bio: '',
-            trainingMaxes: [] as { id?: string; name: string; value: number; mode: string }[],
-          };
+          if (/te ha bloqueado/i.test(msg)) return { blocked: 'them' as const };
+          if (/has bloqueado/i.test(msg)) return { blocked: 'you' as const };
+          return null;
         }),
         fetchProfile(friend.id).catch((e: unknown) => {
           const msg = String((e as { message?: string })?.message || '');
@@ -1147,36 +1141,12 @@ export const SocialView: React.FC<SocialViewProps> = ({
           return null;
         }),
       ]);
-      if (routineRaw) {
-        const { expandRoutineFromApi } = await import('@/src/lib/planMaterialize');
-        const expanded = expandRoutineFromApi({
-          id: friend.id,
-          name: routineRaw.name,
-          weeks: routineRaw.weeks,
-          versions: routineRaw.versions,
-          baseTemplate: routineRaw.baseTemplate,
-          logs: routineRaw.logs,
-          sameTemplateAllWeeks: routineRaw.sameTemplateAllWeeks,
-          cycleLength: routineRaw.cycleLength,
-          skippedWeeks: routineRaw.skippedWeeks,
-          weekTypeOverrides: routineRaw.weekTypeOverrides,
-        });
-        setFriendRoutine({
-          name: expanded.name,
-          weeks: expanded.weeks,
-          cycleLength: expanded.cycleLength,
-          sameTemplateAllWeeks: expanded.sameTemplateAllWeeks,
-          weekTypeOverrides: expanded.weekTypeOverrides,
-          skippedWeeks: expanded.skippedWeeks,
-        });
-      } else {
-        setFriendRoutine(null);
-      }
+      if (seq !== friendModalSeq.current) return;
       const blocked =
-        cover && 'blocked' in cover && (cover.blocked === 'you' || cover.blocked === 'them')
-          ? cover.blocked
-          : null;
-      if (blocked) {
+        (profile && 'blocked' in profile && profile.blocked) ||
+        (cover && 'blocked' in cover && cover.blocked) ||
+        null;
+      if (blocked === 'you' || blocked === 'them') {
         setFriendProfile({
           name: friend.name,
           avatar: friend.avatar || '',
@@ -1185,34 +1155,35 @@ export const SocialView: React.FC<SocialViewProps> = ({
         });
         return;
       }
-      if (!profile) {
-        setFriendProfile({ name: friend.name, avatar: friend.avatar || '', trainingMaxes: [] });
-        return;
-      }
+      const card = profile && 'trainingMaxes' in profile ? profile : null;
       setFriendProfile({
-        ...profile,
-        bio: cover && 'bio' in cover ? cover.bio ?? profile.bio ?? '' : profile.bio ?? '',
+        name: card?.name || (cover && 'name' in cover ? cover.name : friend.name),
+        avatar: card?.avatar || (cover && 'avatar' in cover ? cover.avatar || '' : friend.avatar || ''),
+        bio: (cover && 'bio' in cover ? cover.bio : card?.bio) || '',
         username: cover && 'username' in cover ? cover.username : undefined,
         postCount: cover && 'postCount' in cover ? cover.postCount ?? 0 : 0,
         followerCount: cover && 'followerCount' in cover ? cover.followerCount ?? 0 : 0,
         followingCount: cover && 'followingCount' in cover ? cover.followingCount ?? 0 : 0,
+        coach: card?.coach ?? (cover && 'coach' in cover ? cover.coach : null),
+        athleteCount: card?.athleteCount ?? (cover && 'athleteCount' in cover ? cover.athleteCount : 0),
+        trainingMaxes: card?.trainingMaxes || (cover && 'trainingMaxes' in cover ? cover.trainingMaxes : []),
         friendshipStatus: cover && 'friendshipStatus' in cover ? cover.friendshipStatus : undefined,
         friendshipDirection: cover && 'friendshipDirection' in cover ? cover.friendshipDirection : null,
         canSendRequest: cover && 'canSendRequest' in cover ? cover.canSendRequest : undefined,
+        routineName: cover && 'routineName' in cover ? cover.routineName : null,
+        todayPlan: cover && 'todayPlan' in cover ? cover.todayPlan ?? null : null,
       });
-    } catch {
-      setFriendRoutine(null);
-      setFriendProfile({ name: friend.name, avatar: friend.avatar || '', trainingMaxes: [] });
-    } finally {
-      setFriendRoutineLoading(false);
-    }
+    })();
   }, []);
 
   const closeFriendSheet = useCallback(() => {
+    friendModalSeq.current += 1;
     setShowFriendModal(null);
     setFriendRoutine(null);
     setFriendProfile(null);
     setOpenFriendTm(null);
+    setCopyRoutineAsk(false);
+    setCopyOutline(null);
   }, []);
 
   const goToFriendsPage = useCallback((filter: 'all' | 'following' | 'followers' = 'following') => {
@@ -1227,36 +1198,80 @@ export const SocialView: React.FC<SocialViewProps> = ({
     setFriendsPageTick(t => t + 1);
   }, [closeFriendSheet]);
 
-  const handleCopyAndActivate = useCallback(async () => {
-    if (!friendRoutine || !onCopyFriendRoutine) return;
-    setCopyingFriendRoutine(true);
+  const handleCopyAndActivate = useCallback(async (activate: boolean) => {
+    if (!showFriendModal || !onCopyFriendRoutine) return;
+    setCopyingFriendRoutine(activate ? 'activate' : 'save');
     try {
+      const [routineRaw, tmPack] = await Promise.all([
+        friendRoutine
+          ? Promise.resolve(null)
+          : apiGet<{
+              name: string;
+              weeks: TrainingWeek[];
+              baseTemplate?: TrainingWeek[];
+              versions?: { effectiveFromWeek: number; weeks: TrainingWeek[] }[];
+              logs?: unknown;
+              sameTemplateAllWeeks?: boolean;
+              weekTypeOverrides?: Array<{ weekType: number; week: TrainingWeek }>;
+              cycleLength?: number;
+              skippedWeeks?: number[];
+            } | null>(`/api/social/friends/${showFriendModal.id}/routine`),
+        apiGet<{ trainingMaxesAll?: { name: string; mode: string; linkedExercise?: string }[] }>(
+          `/api/social/friends/${showFriendModal.id}/profile?includeAllTms=1`
+        ).catch(() => null),
+      ]);
+      let routine = friendRoutine;
+      if (!routine && routineRaw) {
+        const { expandRoutineFromApi } = await import('@/src/lib/planMaterialize');
+        const expanded = expandRoutineFromApi({
+          id: showFriendModal.id,
+          name: routineRaw.name,
+          weeks: routineRaw.weeks,
+          versions: routineRaw.versions,
+          baseTemplate: routineRaw.baseTemplate,
+          logs: routineRaw.logs,
+          sameTemplateAllWeeks: routineRaw.sameTemplateAllWeeks,
+          cycleLength: routineRaw.cycleLength,
+          skippedWeeks: routineRaw.skippedWeeks,
+          weekTypeOverrides: routineRaw.weekTypeOverrides,
+        });
+        routine = {
+          name: expanded.name,
+          weeks: expanded.weeks,
+          cycleLength: expanded.cycleLength,
+          sameTemplateAllWeeks: expanded.sameTemplateAllWeeks,
+          weekTypeOverrides: expanded.weekTypeOverrides,
+          skippedWeeks: expanded.skippedWeeks,
+        };
+      }
+      if (!routine) return;
       await onCopyFriendRoutine({
-        name: friendRoutine.name,
-        friendName: (friendProfile?.name || showFriendModal?.name || 'Amigo').trim(),
-        weeks: friendRoutine.weeks,
-        cycleLength: friendRoutine.cycleLength,
-        sameTemplateAllWeeks: friendRoutine.sameTemplateAllWeeks,
-        weekTypeOverrides: friendRoutine.weekTypeOverrides,
+        name: routine.name,
+        friendName: (friendProfile?.name || showFriendModal.name || 'Amigo').trim(),
+        weeks: routine.weeks,
+        cycleLength: routine.cycleLength,
+        sameTemplateAllWeeks: routine.sameTemplateAllWeeks,
+        weekTypeOverrides: routine.weekTypeOverrides,
         skippedWeeks: [],
-        friendTrainingMaxes: friendProfile?.trainingMaxesAll?.length
-          ? friendProfile.trainingMaxesAll
-          : undefined,
+        friendTrainingMaxes: tmPack?.trainingMaxesAll?.length ? tmPack.trainingMaxesAll : undefined,
+        activate,
       });
+      setCopyRoutineAsk(false);
       setShowFriendModal(null);
       setFriendRoutine(null);
     } finally {
-      setCopyingFriendRoutine(false);
+      setCopyingFriendRoutine(null);
     }
-  }, [friendRoutine, onCopyFriendRoutine, friendProfile?.trainingMaxesAll, friendProfile?.name, showFriendModal?.name]);
+  }, [friendRoutine, onCopyFriendRoutine, friendProfile?.name, showFriendModal]);
 
   /** Misma regla que al copiar: `${nombreRutina} (${nombreAmigo})`. */
   const copiedRoutineFromFriend = useMemo(() => {
-    if (!friendRoutine || !myRoutines?.length) return null;
+    const routineName = friendRoutine?.name || friendProfile?.routineName;
+    if (!routineName || !myRoutines?.length) return null;
     const friendSuffix = (friendProfile?.name || showFriendModal?.name || 'Amigo').trim() || 'Amigo';
-    const expectedName = `${friendRoutine.name} (${friendSuffix})`;
+    const expectedName = `${routineName} (${friendSuffix})`;
     return myRoutines.find((r) => r.name === expectedName) ?? null;
-  }, [friendRoutine, friendProfile?.name, showFriendModal?.name, myRoutines]);
+  }, [friendRoutine, friendProfile?.routineName, friendProfile?.name, showFriendModal?.name, myRoutines]);
 
   const handleRequestAction = useCallback(async (id: string, action: (id: string) => void | Promise<void>) => {
     setAcceptRejectLoadingId(id);
@@ -2937,7 +2952,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
         center
         title={friendProfile?.name || showFriendModal?.name || 'Perfil'}
         titleExtra={
-          showFriendModal ? (
+          showFriendModal &&
+          (friendProfile?.friendshipStatus === 'accepted' || friendProfile?.friendshipStatus === 'following') ? (
             <button
               type="button"
               onClick={() => {
@@ -2952,14 +2968,16 @@ export const SocialView: React.FC<SocialViewProps> = ({
           ) : undefined
         }
         subtitle={
-          friendProfile?.coach
+          friendProfile?.username
+            ? `@${friendProfile.username}`
+            : friendProfile?.coach
             ? `Entrena con ${friendProfile.coach.name}`
             : friendProfile?.athleteCount
               ? `Entrenador de ${friendProfile.athleteCount}`
               : undefined
         }
         footer={
-          showFriendModal ? (
+          showFriendModal && friendProfile ? (
             <div className="space-y-2">
               <div className="flex gap-2">
               {!friendProfile?.blocked &&
@@ -3132,6 +3150,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   followers={friendProfile.followerCount ?? 0}
                   following={friendProfile.followingCount ?? 0}
                   bio={friendProfile.bio || ''}
+                  hideName
                   onFollowersClick={() => goToFriendsPage('followers')}
                   onFollowingClick={() => goToFriendsPage('following')}
                 />
@@ -3151,104 +3170,174 @@ export const SocialView: React.FC<SocialViewProps> = ({
               </div>
 
               {friendProfile && friendProfile.trainingMaxes && friendProfile.trainingMaxes.length > 0 && (
-              <div className="border-t border-white/40 pt-4 pb-4 dark:border-white/10">
-                <h4 className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Marcas</h4>
-                  <div className="grid grid-cols-3 gap-2">
-                    {friendProfile.trainingMaxes.map((tm, i) => (
+              <div className="border-t border-white/40 pt-3 dark:border-white/10">
+                <h4 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-400">Marcas</h4>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {friendProfile.trainingMaxes.slice(0, 6).map((tm, i) => (
                       <button
                         key={tm.id || `${tm.name}-${i}`}
                         type="button"
                         onClick={() => setOpenFriendTm(tm)}
-                        className="rounded-2xl bg-white/70 px-2.5 py-2.5 text-left shadow-sm ring-1 ring-black/[0.04] dark:bg-white/5 dark:ring-white/[0.06]"
+                        className="min-w-0 rounded-xl bg-white/80 px-2 py-2 text-left ring-1 ring-black/[0.04] dark:bg-white/5 dark:ring-white/[0.06]"
                       >
                         <p className="truncate text-[10px] font-semibold uppercase tracking-wide text-slate-400">{tm.name}</p>
-                        <p className="mt-0.5 text-lg font-semibold text-slate-900 dark:text-slate-100">
+                        <p className="mt-0.5 truncate text-[15px] font-semibold leading-none text-slate-900 dark:text-slate-100">
                           {tm.value}
-                          <span className="ml-0.5 text-[11px] font-medium text-slate-400">
+                          <span className="ml-0.5 text-[10px] font-medium text-slate-400">
                             {tm.mode === 'weight' ? 'kg' : tm.mode === 'reps' ? 'reps' : 's'}
                           </span>
                         </p>
                       </button>
                     ))}
                   </div>
+                  {friendProfile.trainingMaxes.length > 6 && (
+                    <p className="mt-1.5 text-[11px] text-slate-400">+{friendProfile.trainingMaxes.length - 6} marcas</p>
+                  )}
               </div>
               )}
 
-              {friendRoutine && (
-              <div className="border-t border-slate-200 dark:border-slate-700 pt-6">
-                <h4 className="mb-3 text-[10px] font-black uppercase tracking-widest text-slate-400">Rutina activa</h4>
-                  <div className="space-y-4">
-                    <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-600">
-                      <div className="flex items-center gap-2 mb-3">
-                        <Dumbbell size={18} className="text-indigo-600 dark:text-indigo-400" />
-                        <span className="font-bold text-slate-900 dark:text-slate-100">{friendRoutine.name}</span>
-                      </div>
-                      <p className="text-xs text-slate-500 dark:text-slate-400">
-                        {friendRoutine.weeks?.length || 0} semanas · {friendRoutine.weeks?.flatMap(w => w.days).filter(d => d.type === 'workout').length || 0} días de entrenamiento
-                      </p>
-                      {friendRoutine.weeks?.[0] && (
-                        <div className="mt-3 space-y-2">
-                          {friendRoutine.weeks[0].days.filter(d => d.type === 'workout').slice(0, 3).map(day => (
-                            <div key={day.id} className="text-xs">
-                              <span className="font-medium text-slate-700 dark:text-slate-300">{day.name}:</span>
-                              <span className="text-slate-500 dark:text-slate-400 ml-2">
-                                {day.exercises.map(e => e.name).join(', ')}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
+              {friendProfile?.todayPlan && (
+              <div className="mt-3">
+                  <button
+                    type="button"
+                    disabled={!!copyingFriendRoutine || !(friendProfile.friendshipStatus === 'accepted' || friendProfile.friendshipStatus === 'following')}
+                    onClick={() => {
+                      if (friendProfile.friendshipStatus !== 'accepted' && friendProfile.friendshipStatus !== 'following') return;
+                      if (!onCopyFriendRoutine && !copiedRoutineFromFriend) return;
+                      setCopyOutline(null);
+                      setCopyOutlineLoading(true);
+                      setCopyRoutineAsk(true);
+                      void apiGet<{
+                        name: string;
+                        weeks: { label: string; days: { name: string; exercises: { name: string; detail: string }[] }[] }[];
+                      } | null>(`/api/social/friends/${showFriendModal.id}/routine?preview=1`)
+                        .then(outline => {
+                          if (outline && Array.isArray(outline.weeks)) setCopyOutline(outline);
+                        })
+                        .catch(() => {})
+                        .finally(() => setCopyOutlineLoading(false));
+                    }}
+                    className="flex w-full items-center gap-3 rounded-2xl bg-white px-3.5 py-3 text-left shadow-sm ring-1 ring-black/[0.04] disabled:cursor-default dark:bg-slate-900 dark:ring-white/[0.06]"
+                  >
+                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300">
+                      <Dumbbell size={18} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                        Hoy · {friendProfile.todayPlan.title}
+                      </span>
+                      {friendProfile.todayPlan.rest ? (
+                        <span className="mt-0.5 block text-sm font-semibold text-slate-800 dark:text-slate-100">Día de descanso</span>
+                      ) : (
+                        <span className="mt-0.5 block truncate text-sm font-semibold text-slate-800 dark:text-slate-100">
+                          {friendProfile.todayPlan.lifts.join(' · ') || 'Entrenamiento'}
+                          {friendProfile.todayPlan.more > 0 ? ` +${friendProfile.todayPlan.more}` : ''}
+                        </span>
                       )}
-                    </div>
-                    {copiedRoutineFromFriend && onGoToCopiedRoutine ? (
-                      <div className="space-y-3">
-                        {activeRoutineId === copiedRoutineFromFriend.id ? (
-                          <>
-                            <p className="text-xs text-center text-slate-500 dark:text-slate-400 leading-relaxed px-1">
-                              Ya tienes esta rutina copiada y es la que tienes <span className="font-semibold text-slate-700 dark:text-slate-300">activa</span> ahora.
-                            </p>
-                            <Button
-                              variant="primary"
-                              className="w-full rounded-xl"
-                              onClick={() => onGoToCopiedRoutine(copiedRoutineFromFriend.id)}
-                            >
-                              <ArrowRight size={18} className="mr-2 shrink-0" />
-                              Ir a Programa (Rutinas)
-                            </Button>
-                          </>
-                        ) : (
-                          <Button
-                            variant="primary"
-                            className="w-full rounded-xl"
-                            onClick={() => onGoToCopiedRoutine(copiedRoutineFromFriend.id)}
-                          >
-                            <ArrowRight size={18} className="mr-2 shrink-0" />
-                            Activar esta rutina
-                          </Button>
-                        )}
-                      </div>
-                    ) : onCopyFriendRoutine ? (
-                      <Button 
-                        variant="primary" 
-                        className="w-full rounded-xl"
-                        onClick={() => void handleCopyAndActivate()}
-                        disabled={copyingFriendRoutine}
-                      >
-                        {copyingFriendRoutine ? (
-                          <>
-                            <Loader2 size={18} className="mr-2 animate-spin shrink-0" />
-                            Copiando rutina…
-                          </>
-                        ) : (
-                          <>
-                            <Copy size={18} className="mr-2 shrink-0" />
-                            Copiar y activar en Rutinas
-                          </>
-                        )}
-                      </Button>
-                    ) : null}
-                  </div>
+                    </span>
+                    <span className="shrink-0 text-[11px] font-bold text-indigo-600">
+                      {friendProfile.todayPlan.name || friendProfile.routineName || 'Rutina'}
+                    </span>
+                  </button>
               </div>
               )}
+          </div>
+        )}
+      </GlassModal>
+
+      <GlassModal
+        open={copyRoutineAsk && !!friendProfile?.todayPlan}
+        onClose={() => { if (!copyingFriendRoutine) setCopyRoutineAsk(false); }}
+        persist={!!copyingFriendRoutine}
+        center
+        zIndexClass="z-[100050]"
+        title="Copiar esta rutina"
+        subtitle={friendProfile?.todayPlan?.name || friendProfile?.routineName || undefined}
+        footer={
+          copiedRoutineFromFriend && onGoToCopiedRoutine ? (
+            <Button
+              variant="primary"
+              className="w-full rounded-xl"
+              onClick={() => {
+                setCopyRoutineAsk(false);
+                onGoToCopiedRoutine(copiedRoutineFromFriend.id);
+              }}
+            >
+              <ArrowRight size={16} className="mr-2 shrink-0" />
+              Ya la tienes · ir a la rutina
+            </Button>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <Button
+                variant="outline"
+                className="w-full rounded-xl"
+                disabled={!!copyingFriendRoutine}
+                onClick={() => void handleCopyAndActivate(false)}
+              >
+                {copyingFriendRoutine === 'save' ? <Loader2 size={16} className="mr-2 animate-spin" /> : null}
+                Copiar y guardar
+              </Button>
+              <Button
+                variant="primary"
+                className="w-full rounded-xl"
+                disabled={!!copyingFriendRoutine}
+                onClick={() => void handleCopyAndActivate(true)}
+              >
+                {copyingFriendRoutine === 'activate' ? <Loader2 size={16} className="mr-2 animate-spin" /> : <Copy size={16} className="mr-2 shrink-0" />}
+                Copiar y activar
+              </Button>
+            </div>
+          )
+        }
+      >
+        {friendProfile?.todayPlan && (
+          <div className="space-y-3 text-sm text-slate-600 dark:text-slate-300">
+            <p>
+              Se crea una copia de <span className="font-semibold text-slate-800 dark:text-slate-100">{copyOutline?.name || friendProfile.todayPlan.name || friendProfile.routineName || 'esta rutina'}</span>
+              {friendProfile.name ? <> de {friendProfile.name}</> : null}. Tus marcas empiezan en 0. La suya no cambia.
+            </p>
+            {copyOutlineLoading && !copyOutline ? (
+              <div className="space-y-2" aria-hidden>
+                <div className="h-16 animate-pulse rounded-xl bg-slate-100 dark:bg-slate-800" />
+                <div className="h-16 animate-pulse rounded-xl bg-slate-100 dark:bg-slate-800" />
+              </div>
+            ) : copyOutline && copyOutline.weeks.length > 0 ? (
+              <div className="space-y-3">
+                {copyOutline.weeks.map(week => (
+                  <div key={week.label} className="rounded-xl border border-slate-200 dark:border-slate-700">
+                    {copyOutline.weeks.length > 1 && (
+                      <p className="border-b border-slate-100 px-3 py-2 text-sm font-black uppercase tracking-tight text-slate-800 dark:border-slate-700 dark:text-slate-100">
+                        {week.label}
+                      </p>
+                    )}
+                    <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {week.days.map(day => (
+                        <div key={`${week.label}-${day.name}`} className="px-3 py-2.5">
+                          <p className="mb-1.5 text-[11px] font-black uppercase tracking-wider text-slate-400">
+                            {day.name} · {day.exercises.length}
+                          </p>
+                          <ul className="space-y-1">
+                            {day.exercises.map((ex, i) => (
+                              <li key={`${ex.name}-${i}`} className="flex items-baseline justify-between gap-3 text-xs">
+                                <span className="min-w-0 flex-1 truncate text-slate-700 dark:text-slate-200">{ex.name}</span>
+                                {ex.detail ? (
+                                  <span className="shrink-0 font-bold text-slate-500 dark:text-slate-400">{ex.detail}</span>
+                                ) : null}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {copiedRoutineFromFriend ? (
+              <p className="text-[13px] text-slate-500">Ya tienes esta copia en tus rutinas.</p>
+            ) : (
+              <p className="text-[13px] text-slate-500">Guardar la deja en Rutinas. Activar la pone como la que entrenas ahora.</p>
+            )}
           </div>
         )}
       </GlassModal>

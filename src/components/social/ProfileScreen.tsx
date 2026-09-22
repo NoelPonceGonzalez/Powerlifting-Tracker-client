@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { motion } from 'motion/react';
+import { animate as animateValue, AnimatePresence, motion, useMotionValue, useReducedMotion, useTransform } from 'motion/react';
 import {
   ArrowLeft,
   Ban,
@@ -11,6 +11,7 @@ import {
   Handshake,
   MapPin,
   MessageCircle,
+  UserMinus,
   MoreHorizontal,
   Pencil,
   Trophy,
@@ -18,7 +19,7 @@ import {
 } from 'lucide-react';
 import { CoverSkeleton, LoadingBlock } from '@/src/components/ui/Spinner';
 import { cn } from '@/src/lib/utils';
-import { apiGet, apiPatch, apiPost } from '@/src/lib/api';
+import { apiDelete, apiGet, apiPatch, apiPost } from '@/src/lib/api';
 import { Avatar } from '@/src/components/social/MediaPost';
 import {
   fetchProfile,
@@ -33,6 +34,7 @@ import { CloseFriendButton } from '@/src/components/social/CloseFriendButton';
 import { CloseFriendsModal } from '@/src/components/social/CloseFriendsModal';
 import { GlassModal } from '@/src/components/ui/GlassModal';
 import { blockUser, reportUser, unblockUser } from '@/src/lib/privacyApi';
+import { EASE_OUT } from '@/src/lib/motionPresets';
 import { weekOfYearFromDate } from '@/src/lib/mesocycleWeek';
 import { createEmptyTemplate, expandRoutineFromApi } from '@/src/lib/planMaterialize';
 import { mergeCoachImportIntoRoutine } from '@/src/lib/coachPlan/applyCoachPlan';
@@ -57,6 +59,96 @@ interface ProfileScreenProps {
   onOpenFriends?: (filter?: 'all' | 'following' | 'followers') => void;
   /** Foto actual de la sesión: así Perfil y Progreso enseñan la misma. */
   liveAvatar?: string | null;
+}
+
+const PEEK_HEAD_H = 40;
+const PEEK_ROW_H = 58;
+
+function tmAccent(name: string): { color: string; text: string } {
+  const lower = name.toLowerCase();
+  if (lower.includes('banca') || lower.includes('bench')) return { color: '#3b82f6', text: 'text-blue-600' };
+  if (lower.includes('sentadilla') || lower.includes('squat')) return { color: '#10b981', text: 'text-emerald-600' };
+  if (lower.includes('muerto') || lower.includes('dead')) return { color: '#f43f5e', text: 'text-rose-600' };
+  return { color: '#6366f1', text: 'text-indigo-600' };
+}
+
+function CountUp({ value, delay = 0 }: { value: number; delay?: number }) {
+  const reduceMotion = useReducedMotion();
+  const raw = useMotionValue(reduceMotion ? value : 0);
+  const text = useTransform(raw, v => String(Math.round(v * 10) / 10));
+  useEffect(() => {
+    if (reduceMotion) {
+      raw.set(value);
+      return;
+    }
+    raw.set(0);
+    const controls = animateValue(raw, value, {
+      duration: Math.min(1.4, Math.max(0.35, 0.28 + Math.abs(value) / 260)),
+      ease: [0.16, 0.84, 0.12, 1],
+      delay,
+    });
+    return () => controls.stop();
+  }, [value, raw, reduceMotion, delay]);
+  return <motion.span className="tabular-nums">{text}</motion.span>;
+}
+
+function ProfilePeek({
+  title,
+  kind,
+  rows,
+  empty,
+}: {
+  title: string;
+  kind: 'trophy' | 'pin';
+  rows: { key: string; title: string; subtitle: string }[];
+  empty: string;
+}) {
+  return (
+    <div
+      className="overflow-y-auto overflow-x-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/[0.04] [scrollbar-width:none] dark:bg-slate-900 dark:ring-white/[0.06] [&::-webkit-scrollbar]:hidden"
+      style={{ maxHeight: PEEK_HEAD_H + 2 * PEEK_ROW_H }}
+    >
+      <div
+        className="flex items-center gap-2 border-b border-slate-100 px-2.5 dark:border-slate-800 sm:px-3"
+        style={{ height: PEEK_HEAD_H }}
+      >
+        {kind === 'trophy' ? (
+          <Trophy size={14} className="shrink-0 text-amber-500" />
+        ) : (
+          <MapPin size={14} className="shrink-0 text-emerald-500" />
+        )}
+        <span className="truncate text-[12px] font-semibold text-slate-800 dark:text-slate-100">{title}</span>
+      </div>
+      {rows.length === 0 ? (
+        <div className="flex items-center justify-center px-3 text-center" style={{ height: PEEK_ROW_H }}>
+          <p className="text-[11px] font-medium text-slate-400">{empty}</p>
+        </div>
+      ) : (
+        <AnimatePresence initial={false}>
+          {rows.slice(0, 4).map(row => (
+            <motion.div
+              key={row.key}
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: PEEK_ROW_H }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.16, ease: EASE_OUT }}
+              className="flex items-center gap-2 border-b border-slate-100 px-2.5 last:border-0 dark:border-slate-800 sm:px-3"
+            >
+              {kind === 'trophy' ? (
+                <Trophy size={15} className="shrink-0 text-amber-500" />
+              ) : (
+                <MapPin size={15} className="shrink-0 text-emerald-500" />
+              )}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[12px] font-semibold text-slate-800 dark:text-slate-100">{row.title}</span>
+                <span className="block truncate text-[10px] text-slate-400">{row.subtitle}</span>
+              </span>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      )}
+    </div>
+  );
 }
 
 function Stat({
@@ -105,6 +197,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const [blocked, setBlocked] = useState<'you' | 'them' | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmBlock, setConfirmBlock] = useState(false);
+  const [confirmLeave, setConfirmLeave] = useState(false);
   const [closeOpen, setCloseOpen] = useState(false);
   const [privacyBusy, setPrivacyBusy] = useState(false);
 
@@ -489,7 +582,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             )
           ) : (
             <>
-              {(profile.isFriend || profile.friendshipStatus === 'following') && (
+              {(profile.isFriend || profile.friendshipStatus === 'following' || profile.friendshipStatus === 'accepted') && (
                 <CloseFriendButton
                   labeled
                   userId={userId}
@@ -497,6 +590,16 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                   avatar={profile.avatar}
                   className="!w-auto flex-1 justify-center"
                 />
+              )}
+              {(profile.isFriend || profile.friendshipStatus === 'following' || profile.friendshipStatus === 'accepted') && (
+                <button
+                  type="button"
+                  aria-label="Dejar de ser amigo"
+                  onClick={() => setConfirmLeave(true)}
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border-2 border-slate-200 text-slate-500 dark:border-slate-600 dark:text-slate-300"
+                >
+                  <UserMinus size={16} />
+                </button>
               )}
               {onOpenChat && (
                 <button
@@ -554,16 +657,20 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                       type="button"
                       onClick={async () => {
                         await onAcceptFriend();
-                        setProfile(prev =>
-                          prev
-                            ? { ...prev, isFriend: true, friendshipStatus: 'accepted', friendshipDirection: null, canSendRequest: false }
-                            : prev
-                        );
+                        const fresh = await fetchProfile(userId).catch(() => null);
+                        if (fresh) setProfile(fresh);
+                        else {
+                          setProfile(prev =>
+                            prev
+                              ? { ...prev, isFriend: false, friendshipStatus: 'follower', friendshipDirection: 'incoming', canSendRequest: true }
+                              : prev
+                          );
+                        }
                       }}
                       className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-emerald-500 py-2.5 text-xs font-black uppercase tracking-wider text-white"
                     >
                       <Check size={15} />
-                      Amigos
+                      Aceptar
                     </button>
                   )}
                 </div>
@@ -596,25 +703,18 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           )}
         </div>
 
-        {/* Las marcas viven en la propia ficha: son la carta de presentación, no una pestaña */}
-        {profile.trainingMaxes.length > 0 && (
-          <div className={profile.isSelf ? 'mt-4 border-t border-slate-200/70 pt-4 dark:border-slate-700/70' : 'mt-4'}>
-            {profile.isSelf && (
+        {profile.isSelf && profile.trainingMaxes.length > 0 && (
+          <div className="mt-4 border-t border-slate-200/70 pt-4 dark:border-slate-700/70">
             <p className="mb-2 text-[10px] font-black uppercase tracking-widest text-slate-400">
               Marcas · toca una para ver cómo ha subido
             </p>
-            )}
-            <div className={profile.isSelf ? 'flex flex-wrap gap-2' : 'grid grid-cols-3 gap-2'}>
+            <div className="flex flex-wrap gap-2">
               {profile.trainingMaxes.map((tm, i) => (
                 <button
                   key={tm.id || i}
                   type="button"
                   onClick={() => setOpenTm(tm)}
-                  className={
-                    profile.isSelf
-                      ? 'inline-flex items-baseline gap-1.5 rounded-xl bg-white px-3 py-2 shadow-sm transition-transform hover:-translate-y-0.5 dark:bg-slate-800'
-                      : 'rounded-2xl bg-white px-2.5 pb-2.5 pt-3 text-left shadow-sm ring-1 ring-black/[0.04] dark:bg-slate-900 dark:ring-white/[0.06]'
-                  }
+                  className="inline-flex items-baseline gap-1.5 rounded-xl bg-white px-3 py-2 shadow-sm transition-transform hover:-translate-y-0.5 dark:bg-slate-800"
                 >
                   <span className="text-[10px] font-black uppercase tracking-wide text-slate-400">{tm.name}</span>
                   <span className="text-sm font-black text-slate-900 dark:text-slate-100">
@@ -630,53 +730,100 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         )}
       </motion.div>
 
-      {!profile.isSelf && (profile.liveChallenge || profile.liveGym) && (
-        <div className="grid grid-cols-2 gap-2 max-[360px]:gap-1.5">
-          {profile.liveChallenge ? (
-            <div
-              aria-hidden
-              className="pointer-events-none select-none overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/[0.04] dark:bg-slate-900 dark:ring-white/[0.06]"
-            >
-              <div className="flex items-center gap-2 border-b border-slate-100 px-2.5 py-2 dark:border-slate-800 sm:px-3">
-                <Trophy size={14} className="shrink-0 text-amber-500" />
-                <span className="truncate text-[12px] font-semibold text-slate-800 dark:text-slate-100">Torneos</span>
-              </div>
-              <div className="flex items-center gap-2 px-2.5 py-2.5 sm:px-3">
-                <Trophy size={15} className="shrink-0 text-amber-500" />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[12px] font-semibold text-slate-800 dark:text-slate-100">
-                    {profile.liveChallenge.title}
+      {!profile.isSelf && profile.trainingMaxes.length > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ type: 'spring', stiffness: 300, damping: 28, delay: 0.05 }}
+        >
+          <div className={cn('grid gap-2', profile.trainingMaxes.length <= 2 ? 'grid-cols-2' : 'grid-cols-3')}>
+            {profile.trainingMaxes.map((tm, index) => {
+              const accent = tmAccent(tm.name);
+              const unit = tm.mode === 'weight' ? 'kg' : tm.mode === 'reps' ? 'reps' : 's';
+              return (
+                <motion.button
+                  key={tm.id || index}
+                  type="button"
+                  onClick={() => setOpenTm(tm)}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.05 * index, duration: 0.28, ease: EASE_OUT }}
+                  whileTap={{ scale: 0.97 }}
+                  className="relative min-w-0 overflow-hidden rounded-2xl bg-white px-2.5 pb-2.5 pt-3 text-left shadow-sm ring-1 ring-black/[0.04] dark:bg-slate-900 dark:ring-white/[0.06]"
+                >
+                  <span className="pointer-events-none absolute inset-x-0 top-0 h-1" style={{ background: accent.color }} />
+                  <span
+                    className="pointer-events-none absolute -right-5 -top-6 h-16 w-16 rounded-full opacity-40 blur-2xl"
+                    style={{ background: accent.color }}
+                  />
+                  <span className={cn('relative block truncate text-[11px] font-semibold', accent.text)}>{tm.name}</span>
+                  <span className="relative mt-1 block truncate text-[22px] font-black leading-none text-slate-900 dark:text-white">
+                    <CountUp value={Math.round(tm.value * 10) / 10} delay={0.02 * index} />
+                    <span className="ml-0.5 text-[10px] font-semibold text-slate-400">{unit}</span>
                   </span>
-                  <span className="block truncate text-[10px] text-slate-400">{profile.liveChallenge.exercise}</span>
-                </span>
-              </div>
-            </div>
-          ) : (
-            <div />
-          )}
-          {profile.liveGym ? (
-            <div
-              aria-hidden
-              className="pointer-events-none select-none overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-black/[0.04] dark:bg-slate-900 dark:ring-white/[0.06]"
-            >
-              <div className="flex items-center gap-2 border-b border-slate-100 px-2.5 py-2 dark:border-slate-800 sm:px-3">
-                <MapPin size={14} className="shrink-0 text-emerald-500" />
-                <span className="truncate text-[12px] font-semibold text-slate-800 dark:text-slate-100">Avisar que voy</span>
-              </div>
-              <div className="flex items-center gap-2 px-2.5 py-2.5 sm:px-3">
-                <MapPin size={15} className="shrink-0 text-emerald-500" />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[12px] font-semibold text-slate-800 dark:text-slate-100">
-                    {profile.liveGym.gymName}
-                  </span>
-                  <span className="block truncate text-[10px] text-slate-400">{profile.liveGym.time}</span>
-                </span>
-              </div>
-            </div>
-          ) : (
-            <div />
-          )}
-        </div>
+                </motion.button>
+              );
+            })}
+          </div>
+          <p className="mt-2 text-center text-[11px] text-slate-400">Toca una marca para ver la gráfica</p>
+        </motion.div>
+      )}
+
+      {!profile.isSelf && profile.todayPlan && (
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ type: 'spring', stiffness: 300, damping: 28, delay: 0.1 }}
+          className="flex w-full items-center gap-3 rounded-2xl bg-white px-3.5 py-3 text-left shadow-sm ring-1 ring-black/[0.04] dark:bg-slate-900 dark:ring-white/[0.06]"
+        >
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-300">
+            <Dumbbell size={18} />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              Hoy · {profile.todayPlan.title}
+            </span>
+            {profile.todayPlan.rest ? (
+              <span className="mt-0.5 block text-sm font-semibold text-slate-800 dark:text-slate-100">Día de descanso</span>
+            ) : (
+              <span className="mt-0.5 block truncate text-sm font-semibold text-slate-800 dark:text-slate-100">
+                {profile.todayPlan.lifts.join(' · ')}
+                {profile.todayPlan.more > 0 ? ` +${profile.todayPlan.more}` : ''}
+              </span>
+            )}
+          </span>
+          <span className="shrink-0 text-[11px] font-bold text-indigo-600">{profile.todayPlan.name || 'Rutina'}</span>
+        </motion.div>
+      )}
+
+      {!profile.isSelf && profile.theyFollowMe && (
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ type: 'spring', stiffness: 300, damping: 28, delay: 0.14 }}
+          className="grid grid-cols-2 gap-2 max-[360px]:gap-1.5"
+        >
+          <ProfilePeek
+            title="Torneos"
+            kind="trophy"
+            empty="Sin torneos"
+            rows={(profile.challenges || []).map((c, i) => ({
+              key: `ch-${i}`,
+              title: c.title,
+              subtitle: c.exercise || 'Torneo',
+            }))}
+          />
+          <ProfilePeek
+            title="Avisar que voy"
+            kind="pin"
+            empty="No ha dicho a qué hora va"
+            rows={(profile.gymPlans || []).map((g, i) => ({
+              key: `gym-${i}`,
+              title: g.gymName,
+              subtitle: g.time,
+            }))}
+          />
+        </motion.div>
       )}
 
       {profile.isSelf && profile.trainingMaxes.length === 0 ? (
@@ -716,6 +863,54 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       )}
 
       <CloseFriendsModal open={closeOpen} onClose={() => setCloseOpen(false)} />
+      <GlassModal
+        open={confirmLeave}
+        onClose={() => !privacyBusy && setConfirmLeave(false)}
+        center
+        title="¿Dejar de ser amigo?"
+        subtitle={profile.name}
+        footer={
+          <div className="flex gap-2">
+            <button
+              type="button"
+              disabled={privacyBusy}
+              onClick={() => setConfirmLeave(false)}
+              className="min-h-11 flex-1 rounded-xl border-2 border-slate-200 text-sm font-semibold text-slate-600 dark:border-slate-600 dark:text-slate-200"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              disabled={privacyBusy}
+              onClick={async () => {
+                setPrivacyBusy(true);
+                try {
+                  await apiDelete(`/api/social/friends/${userId}`);
+                  const fresh = await fetchProfile(userId).catch(() => null);
+                  if (fresh) setProfile(fresh);
+                  else {
+                    setProfile(prev =>
+                      prev
+                        ? { ...prev, isFriend: false, friendshipStatus: 'none', friendshipDirection: null, canSendRequest: true }
+                        : prev
+                    );
+                  }
+                  setConfirmLeave(false);
+                } finally {
+                  setPrivacyBusy(false);
+                }
+              }}
+              className="min-h-11 flex-1 rounded-xl bg-rose-500 text-sm font-semibold text-white"
+            >
+              Dejar de ser amigo
+            </button>
+          </div>
+        }
+      >
+        <p className="text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+          Dejáis de ser amigos. Podéis volver a enviaros solicitud cuando queráis.
+        </p>
+      </GlassModal>
       <GlassModal
         open={confirmBlock}
         onClose={() => setConfirmBlock(false)}

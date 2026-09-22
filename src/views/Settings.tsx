@@ -279,6 +279,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     >
                       <Avatar
                         src={acc.avatar}
+                        userId={acc.id}
                         name={acc.name}
                         className="h-11 w-11 shrink-0 rounded-2xl border-2 border-white dark:border-slate-700"
                       />
@@ -347,6 +348,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 >
                   <Avatar
                     src={user.avatar}
+                    userId={user.id}
                     name={user.name}
                     className="pointer-events-none h-[5.5rem] w-[5.5rem] rounded-full border-2 border-white shadow-lg dark:border-slate-700"
                   />
@@ -386,7 +388,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       <Camera size={18} className="text-indigo-600 dark:text-indigo-400" />
                       Hacer foto
                     </button>
-                    {hasRealAvatar(user.avatar) && (
+                    {hasRealAvatar(user.avatar, user.id) && (
                       <button
                         type="button"
                         role="menuitem"

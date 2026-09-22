@@ -85,7 +85,7 @@ export function SocialOnboarding({
               <div key={u.id} className="flex items-center gap-3 rounded-2xl px-1 py-2">
                 <span className="flex min-w-0 flex-1 items-center gap-3">
                   <span className="block h-11 w-11 overflow-hidden rounded-full bg-slate-100">
-                    <Avatar name={u.name} avatar={u.avatar || null} size={44} />
+                    <Avatar name={u.name} avatar={u.avatar || null} userId={u.id} size={44} />
                   </span>
                   <span className="min-w-0">
                     <span className="block truncate text-[15px] font-semibold text-slate-900 dark:text-slate-100">

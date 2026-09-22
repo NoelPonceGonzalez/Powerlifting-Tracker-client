@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { Loader2, UserPlus } from 'lucide-react';
+import { Loader2, UserMinus, UserPlus } from 'lucide-react';
 import { CloseFriendButton } from '@/src/components/social/CloseFriendButton';
 import { InstagramCover } from '@/src/components/social/ProgressMiniProfile';
 import { Button } from '@/src/components/ui/Button';
 import { GlassModal } from '@/src/components/ui/GlassModal';
-import { CoverSkeleton, LoadingBlock } from '@/src/components/ui/Spinner';
+import { LoadingBlock } from '@/src/components/ui/Spinner';
+import { apiDelete } from '@/src/lib/api';
 import { fetchProfile, type PublicProfile } from '@/src/lib/feedApi';
 
 export type PeekPerson = { id: string; name: string; avatar?: string | null };
@@ -16,6 +17,7 @@ export function PersonPeekModal({
   onOpenFull,
   onOpenChat,
   onSendRequest,
+  onUnfriend,
 }: {
   person: PeekPerson | null;
   persist?: boolean;
@@ -23,21 +25,25 @@ export function PersonPeekModal({
   onOpenFull: (person: PeekPerson) => void;
   onOpenChat?: (userId: string) => void;
   onSendRequest?: (userId: string) => Promise<void>;
+  onUnfriend?: (userId: string) => Promise<void>;
 }) {
   const [profile, setProfile] = useState<PublicProfile | null>(null);
   const [blocked, setBlocked] = useState<'you' | 'them' | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [confirmLeave, setConfirmLeave] = useState(false);
 
   useEffect(() => {
     if (!person) {
       setProfile(null);
       setBlocked(null);
+      setConfirmLeave(false);
       return;
     }
     let live = true;
     setLoading(true);
     setBlocked(null);
+    setConfirmLeave(false);
     setProfile(null);
     fetchProfile(person.id)
       .then(p => {
@@ -57,6 +63,33 @@ export function PersonPeekModal({
     };
   }, [person?.id]);
 
+  const linked =
+    !!profile &&
+    !profile.isSelf &&
+    blocked == null &&
+    (profile.isFriend || profile.friendshipStatus === 'following' || profile.friendshipStatus === 'accepted');
+
+  const dropFriend = async () => {
+    if (!person) return;
+    setBusy(true);
+    try {
+      if (onUnfriend) await onUnfriend(person.id);
+      else await apiDelete(`/api/social/friends/${person.id}`);
+      const fresh = await fetchProfile(person.id).catch(() => null);
+      if (fresh) setProfile(fresh);
+      else {
+        setProfile(prev =>
+          prev
+            ? { ...prev, isFriend: false, friendshipStatus: 'none', friendshipDirection: null, canSendRequest: true }
+            : prev
+        );
+      }
+      setConfirmLeave(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <GlassModal
       open={!!person}
@@ -65,7 +98,7 @@ export function PersonPeekModal({
       center
       title={profile?.name || person?.name || 'Perfil'}
       titleExtra={
-        person ? (
+        person && linked ? (
           <button
             type="button"
             onClick={() => onOpenFull(person)}
@@ -78,16 +111,35 @@ export function PersonPeekModal({
       subtitle={profile?.coach ? `Entrena con ${profile.coach.name}` : undefined}
       footer={
         person ? (
+          confirmLeave ? (
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1 rounded-xl" disabled={busy} onClick={() => setConfirmLeave(false)}>
+                Cancelar
+              </Button>
+              <Button variant="danger" className="flex-1 rounded-xl" disabled={busy} onClick={() => void dropFriend()}>
+                {busy ? <Loader2 size={16} className="animate-spin" /> : <UserMinus size={16} />}
+                Dejar de ser amigo
+              </Button>
+            </div>
+          ) : (
           <div className="flex gap-2">
-            {blocked !== 'them' &&
-              blocked !== 'you' &&
-              (profile?.isFriend || profile?.friendshipStatus === 'following') && (
-                <CloseFriendButton
-                  userId={person.id}
-                  name={profile.name}
-                  avatar={profile.avatar}
-                />
-              )}
+            {linked && (
+              <CloseFriendButton
+                userId={person.id}
+                name={profile.name}
+                avatar={profile.avatar || person.avatar}
+              />
+            )}
+            {linked && (
+              <Button
+                variant="outline"
+                className="rounded-xl px-3"
+                aria-label="Dejar de ser amigo"
+                onClick={() => setConfirmLeave(true)}
+              >
+                <UserMinus size={16} />
+              </Button>
+            )}
             {blocked === 'them' ? (
               <p className="py-2 text-center text-sm font-medium text-slate-500">Te ha bloqueado</p>
             ) : blocked === 'you' ? (
@@ -125,30 +177,27 @@ export function PersonPeekModal({
               </Button>
             )}
           </div>
+          )
         ) : undefined
       }
     >
       {person && (
         <div>
+          {blocked ? null : (
+            <InstagramCover
+              name={profile?.name || person.name}
+              username={profile?.username}
+              userId={person.id}
+              avatar={profile?.avatar || person.avatar}
+              marcas={profile?.trainingMaxes?.length ?? 0}
+              followers={profile?.followerCount ?? 0}
+              following={profile?.followingCount ?? 0}
+              bio={profile?.bio || ''}
+            />
+          )}
           {loading && !profile ? (
-            <>
-              <CoverSkeleton />
-              <LoadingBlock className="py-6" />
-            </>
-          ) : profile ? (
-            <>
-              <InstagramCover
-                name={profile.name}
-                username={profile.username}
-                userId={profile.id || person.id}
-                avatar={profile.avatar || person.avatar}
-                marcas={profile.trainingMaxes?.length ?? 0}
-                followers={profile.followerCount}
-                following={profile.followingCount}
-                bio={profile.bio || ''}
-              />
-            </>
-          ) : (
+            <LoadingBlock className="py-4" />
+          ) : profile ? null : (
             <p className="py-8 text-center text-sm text-slate-400">
               {blocked === 'them' ? 'Te ha bloqueado.' : blocked === 'you' ? 'Has bloqueado a esta persona.' : 'No se ha podido cargar.'}
             </p>

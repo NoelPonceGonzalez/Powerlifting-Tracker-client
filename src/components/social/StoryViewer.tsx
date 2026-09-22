@@ -5,6 +5,7 @@ import { EASE_OUT } from '@/src/lib/motionPresets';
 import { Eye, Heart, Loader2, Plus, Search, Send, Trash2, X } from 'lucide-react';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { mediaUrl } from '@/src/lib/api';
+import { cachedMediaUrl, dropCachedMedia, pinMedia, prefetchMedia } from '@/src/lib/mediaCache';
 import { addComment, fetchStories, markStoryViewed, removePost, toggleLike, type FeedAuthor, type StoryGroup } from '@/src/lib/feedApi';
 import { showAppError } from '@/src/lib/appNotice';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
@@ -92,6 +93,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
   const [deleting, setDeleting] = useState(false);
   const [readyId, setReadyId] = useState<string | null>(null);
   const [loadGen, setLoadGen] = useState(0);
+  const [localSrc, setLocalSrc] = useState<string | null>(null);
 
   const skipTap = useRef(false);
   const viewedRef = useRef(new Set<string>());
@@ -283,20 +285,40 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
 
   useEffect(() => {
     if (!item || mediaReady || insights || askDelete || leaving) return;
-    const retry = window.setTimeout(() => setLoadGen(g => (g === 0 ? 1 : g)), 3500);
-    const giveUp = window.setTimeout(() => finishForward(), 9000);
+    const retry = localSrc
+      ? window.setTimeout(() => setLoadGen(g => (g === 0 ? 1 : g)), 4000)
+      : 0;
+    const giveUp = window.setTimeout(() => finishForward(), item.mediaType === 'video' ? 28000 : 9000);
     return () => {
-      window.clearTimeout(retry);
+      if (retry) window.clearTimeout(retry);
       window.clearTimeout(giveUp);
     };
-  }, [askDelete, finishForward, insights, item?.id, leaving, loadGen, mediaReady]);
+  }, [askDelete, finishForward, insights, item?.id, item?.mediaType, leaving, loadGen, localSrc, mediaReady]);
 
   useEffect(() => {
+    const key = item?.mediaKey;
+    if (!key) {
+      setLocalSrc(null);
+      return;
+    }
+    let live = true;
+    setLocalSrc(null);
+    const release = pinMedia(key);
+    cachedMediaUrl(key)
+      .then(url => { if (live) setLocalSrc(url); })
+      .catch(() => { if (live) setLocalSrc(mediaUrl(key)); });
+    return () => {
+      live = false;
+      release();
+    };
+  }, [item?.mediaKey, loadGen]);
+
+  useEffect(() => {
+    if (!mediaReady) return;
     const nxt = nextUnseen(groups, gi, ii, viewedRef.current) ?? neighborOf(groups, gi, ii, 1);
-    if (!nxt || nxt.item.mediaType !== 'image') return;
-    const preload = new Image();
-    preload.src = mediaUrl(nxt.item.mediaKey);
-  }, [gi, groups, ii, item?.id]);
+    if (!nxt?.item.mediaKey || nxt.item.mediaKey === item?.mediaKey) return;
+    prefetchMedia(nxt.item.mediaKey);
+  }, [gi, groups, ii, item?.id, item?.mediaKey, mediaReady]);
 
   const playLikeLand = useCallback(() => {
     setLikeBurst(n => n + 1);
@@ -528,8 +550,6 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
 
   if (typeof document === 'undefined' || !group || !item) return null;
 
-  const srcBase = mediaUrl(item.mediaKey);
-  const src = loadGen > 0 ? `${srcBase}${srcBase.includes('?') ? '&' : '?'}r=${loadGen}` : srcBase;
   const playing = mediaReady && !paused && !insights && !leaving && !askDelete;
 
   const markReady = (id: string, ok = true) => {
@@ -550,10 +570,11 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
         onPointerCancel={onCardPointerUp}
       >
         <div key={item.id} className="absolute inset-0 bg-black">
-            {item.mediaType === 'video' ? (
+            {localSrc && item.mediaType === 'video' ? (
               <video
+                key={`${item.id}-${loadGen}`}
                 ref={videoRef}
-                src={src}
+                src={localSrc}
                 autoPlay
                 playsInline
                 muted={false}
@@ -567,13 +588,14 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
                 }}
                 onEnded={() => { if (!paused && !insights && !leaving) finishForward(); }}
                 onError={() => {
+                  void dropCachedMedia(item.mediaKey);
                   if (loadGen < 2) setLoadGen(g => g + 1);
                 }}
               />
-            ) : (
+            ) : localSrc ? (
               <img
-                key={src}
-                src={src}
+                key={`${item.id}-${loadGen}`}
+                src={localSrc}
                 alt={item.caption || ''}
                 draggable={false}
                 decoding="async"
@@ -588,13 +610,14 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
                   markReady(item.id);
                 }}
                 onError={() => {
+                  void dropCachedMedia(item.mediaKey);
                   if (loadGen < 2) setLoadGen(g => g + 1);
                 }}
                 ref={el => {
                   if (el?.complete && el.naturalWidth > 0) markReady(item.id);
                 }}
               />
-            )}
+            ) : null}
             {!mediaReady && (
               <div className="absolute inset-0 flex items-center justify-center bg-black/40">
                 <Loader2 size={28} className="animate-spin text-white/70" />
@@ -632,7 +655,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
           </div>
           <style>{`@keyframes story-bar { from { width: 0% } to { width: 100% } }`}</style>
           <div className="pointer-events-auto flex items-center gap-3">
-            <Avatar src={group.author.avatar} name={group.author.name} className="h-8 w-8 rounded-full" />
+            <Avatar src={group.author.avatar} userId={group.author.id} name={group.author.name} className="h-8 w-8 rounded-full" />
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-semibold">{group.author.name}</p>
               <p className="text-[11px] text-white/70">
@@ -821,6 +844,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
                           <Avatar
                             key={person.id}
                             src={person.avatar}
+                            userId={person.id}
                             name={person.name}
                             className="h-7 w-7 rounded-full ring-2 ring-white/20"
                           />
@@ -903,7 +927,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
                       key={person.id}
                       className="flex items-center gap-3 rounded-2xl px-2 py-2"
                     >
-                      <Avatar src={person.avatar} name={person.name} className="h-10 w-10 rounded-full" />
+                      <Avatar src={person.avatar} userId={person.id} name={person.name} className="h-10 w-10 rounded-full" />
                       <span className="min-w-0 flex-1 truncate text-sm font-semibold">{person.name}</span>
                       {likerIds.has(person.id) && (
                         <span className="inline-flex items-center gap-1 rounded-full bg-rose-500/15 px-2 py-1 text-[11px] font-semibold text-rose-300">

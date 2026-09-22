@@ -31,3 +31,26 @@ export function markSeenIds(kind: 'requests' | 'challenges', userId: string, cur
     /* ignore quota */
   }
 }
+
+function hintKey(kind: 'requests' | 'challenges', userId: string) {
+  return `pl-unseen-hint-${kind}:${userId}`;
+}
+
+/** Último estado conocido: para pintar el punto al instante, antes de que llegue la API. */
+export function readUnseenHint(kind: 'requests' | 'challenges', userId: string): boolean {
+  if (!userId) return false;
+  try {
+    return localStorage.getItem(hintKey(kind, userId)) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function writeUnseenHint(kind: 'requests' | 'challenges', userId: string, unseen: boolean) {
+  if (!userId) return;
+  try {
+    localStorage.setItem(hintKey(kind, userId), unseen ? '1' : '0');
+  } catch {
+    /* ignore quota */
+  }
+}

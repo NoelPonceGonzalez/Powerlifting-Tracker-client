@@ -383,7 +383,7 @@ function SearchPerson({
           )}
         >
           <span className="block h-10 w-10 overflow-hidden rounded-full bg-white">
-            <Avatar name={person.name} avatar={person.avatar || null} size={40} />
+            <Avatar name={person.name} avatar={person.avatar || null} userId={person.id} size={40} />
           </span>
         </span>
         <span className="min-w-0">

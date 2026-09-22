@@ -268,7 +268,7 @@ export async function getCameraStream(facing: 'user' | 'environment' = 'environm
     throw new DOMException('No hay cámara en este navegador.', 'NotFoundError');
   }
   const tries: MediaStreamConstraints[] = [
-    { audio: false, video: { facingMode: facing } },
+    { audio: false, video: { facingMode: facing, width: { ideal: 720 }, height: { ideal: 1280 } } },
     { audio: false, video: { facingMode: { ideal: facing } } },
     { audio: false, video: true },
   ];

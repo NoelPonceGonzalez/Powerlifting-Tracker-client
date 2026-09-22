@@ -145,6 +145,7 @@ function PeekColumn({
                   <Avatar
                     key={p.key}
                     src={p.avatar}
+                    userId={p.key}
                     name={p.name}
                     className="h-6 w-6 rounded-full border-2 border-white dark:border-slate-900"
                   />

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
-import { Image as ImageIcon, Loader2, RefreshCw, RotateCw, X } from 'lucide-react';
+import { Image as ImageIcon, Loader2, RefreshCw, RotateCw, Trash2, Volume2, VolumeX, X } from 'lucide-react';
 import { AudienceToggle } from '@/src/components/social/AudienceToggle';
 import type { Audience } from '@/src/lib/privacyApi';
 import { SLIME_FULLSCREEN_IN, SLIME_FULLSCREEN_OUT, SLIME_FULLSCREEN_SHOW, STICKY } from '@/src/lib/motionPresets';
@@ -9,18 +9,32 @@ import { publishMedia, type FeedPost } from '@/src/lib/feedApi';
 import {
   STORY_SOURCE_MAX_BYTES,
   STORY_UPLOAD_MAX_BYTES,
+  STORY_FONTS,
+  STORY_TEXT_COLORS,
   STORY_VIDEO_BITRATE,
+  STORY_TEXT_LINE,
+  STORY_TEXT_MAX_W,
   STORY_VIDEO_MAX_SEC,
   STORY_VIDEO_MIN_SEC,
+  clampStoryTextSize,
+  cleanMediaMime,
+  drawStoryTexts,
   estimateClipBytes,
   extractStoryThumbnails,
   formatStoryBytes,
   formatStoryTime,
+  isUploadableMedia,
   needsStoryPrepare,
   probeVideoDuration,
+  storyFont,
+  storyRecorderOptions,
+  storyStrokeColor,
+  storyTextsForExport,
   trimVideoFile,
+  withCleanMime,
+  type StoryTextOverlay,
 } from '@/src/lib/storyVideo';
-import { StoryTrimStrip } from '@/src/components/social/StoryTrimStrip';
+import { StoryTrimStrip, type TrimEdge } from '@/src/components/social/StoryTrimStrip';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 import {
   FILE_INPUT_VISUAL,
@@ -50,6 +64,8 @@ interface StoryCameraProps {
 
 const MIN_IMG = 72;
 const MAX_IMG_MUL = 8;
+const MAX_STORY_TEXTS = 8;
+const TEXT_TAP_PX = 8;
 
 type FrameXform = { x: number; y: number; w: number; h: number; rot: number; turns: number; tilt: number };
 const EMPTY_FRAME: FrameXform = { x: 0, y: 0, w: 0, h: 0, rot: 0, turns: 0, tilt: 0 };
@@ -136,8 +152,35 @@ function mediaLayerStyle(frame: FrameXform): React.CSSProperties {
   };
 }
 
+/** Mismo tipo de letra y mismo borde que el canvas del publicado: lo que se ve es lo que sube. */
+function storyTextStyle(size: number, fontId?: string | null, color?: string | null): React.CSSProperties {
+  const face = storyFont(fontId);
+  const fill = color || '#ffffff';
+  return {
+    fontFamily: face.family,
+    fontWeight: face.weight,
+    fontSize: size,
+    lineHeight: STORY_TEXT_LINE,
+    color: fill,
+    WebkitTextStrokeWidth: Math.max(1, size * 0.055),
+    WebkitTextStrokeColor: storyStrokeColor(fill),
+    paintOrder: 'stroke fill',
+  };
+}
+
+function newStoryTextId() {
+  return `st-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+/** Cada Aa se apila un poco más abajo para no tapar el anterior. */
+function nextTextOrigin(existing: StoryTextOverlay[]) {
+  const n = existing.length;
+  return { x: (n % 3 - 1) * 16, y: Math.min(140, n * 36) };
+}
+
 function keepFile(file: File) {
-  return new File([file], file.name || 'historia.jpg', { type: file.type || 'image/jpeg', lastModified: file.lastModified });
+  const type = cleanMediaMime(file.type) || 'image/jpeg';
+  return new File([file], file.name || 'historia.jpg', { type, lastModified: file.lastModified });
 }
 
 function pickRecorderMime(): string | undefined {
@@ -169,11 +212,42 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
   const fileRef = useRef<File | null>(null);
   const frameRef = useRef<FrameXform>(EMPTY_FRAME);
   const imgNatRef = useRef<{ w: number; h: number } | null>(null);
-  const pointers = useRef(new Map<number, { x: number; y: number }>());
-  const pinch = useRef<{ dist: number; w: number; h: number; angle: number; tilt: number } | null>(null);
+  const pointers = useRef(new Map<number, { x: number; y: number; type: string }>());
+  /** Dos dedos: distancia, punto medio y encuadre de partida. Un dedo en táctil no mueve la foto. */
+  const pinch = useRef<{
+    dist: number;
+    midX: number;
+    midY: number;
+    fx: number;
+    fy: number;
+    w: number;
+    h: number;
+    angle: number;
+    tilt: number;
+  } | null>(null);
   const pan = useRef<{ x: number; y: number; fx: number; fy: number } | null>(null);
+  /** Cada texto lleva sus propios dedos: un dedo lo mueve, dos dedos mueven la foto. */
+  const textPointers = useRef(new Map<number, { x: number; y: number }>());
+  const textPan = useRef<{
+    id: string;
+    x: number;
+    y: number;
+    tx: number;
+    ty: number;
+    tw: number;
+    th: number;
+    moved: number;
+  } | null>(null);
+  const textPinch = useRef<{ dist: number; size: number; angle: number; rot: number } | null>(null);
   const frameBoxRef = useRef<HTMLDivElement | null>(null);
+  const gestureSurfaceRef = useRef<HTMLDivElement | null>(null);
+  const trashRef = useRef<HTMLDivElement | null>(null);
+  const textsRef = useRef<StoryTextOverlay[]>([]);
+  const holdingRef = useRef<string | null>(null);
   const camGen = useRef(0);
+  const trimRef = useRef({ start: 0, end: STORY_VIDEO_MAX_SEC });
+  /** Dedo en la tira: la vista previa se queda quieta en el fotograma que se está eligiendo. */
+  const scrubbing = useRef(false);
 
   const [facing, setFacing] = useState<'user' | 'environment'>('environment');
   const [camReady, setCamReady] = useState(false);
@@ -203,8 +277,20 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
   const [audience, setAudience] = useState<Audience>('all');
   const [frame, setFrame] = useState<FrameXform>(EMPTY_FRAME);
   const [boxSize, setBoxSize] = useState({ w: 0, h: 0 });
+  /** Vídeo sin volumen: se quita la pista de audio al subirlo. */
+  const [muted, setMuted] = useState(false);
+  const [texts, setTexts] = useState<StoryTextOverlay[]>([]);
+  /** Distinto de null mientras se escribe: el teclado tapa la historia. */
+  const [textDraft, setTextDraft] = useState<{ id: string; value: string; font: string; color: string } | null>(null);
+  /** Texto pillado: la barra de audiencia se cambia por la papelera. */
+  const [holdingId, setHoldingId] = useState<string | null>(null);
+  const [overTrash, setOverTrash] = useState(false);
+  const [binningId, setBinningId] = useState<string | null>(null);
   frameRef.current = frame;
+  textsRef.current = texts;
+  holdingRef.current = holdingId;
   fileRef.current = file;
+  trimRef.current = { start: trimStart, end: trimEnd };
 
   const stopStream = useCallback(() => {
     camGen.current += 1;
@@ -469,6 +555,12 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     imgNatRef.current = null;
     setFrame(EMPTY_FRAME);
     setBoxSize({ w: 0, h: 0 });
+    setMuted(false);
+    setTexts([]);
+    setTextDraft(null);
+    setHoldingId(null);
+    setOverTrash(false);
+    setBinningId(null);
     dropPreviewUrl();
   }, [open, dropPreviewUrl]);
 
@@ -488,28 +580,49 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     return () => window.clearInterval(id);
   }, [recording]);
 
+  /** Con sonido el navegador puede negar la reproducción: se cae a silencio para no congelar la vista. */
+  const playPreview = useCallback((v: HTMLVideoElement) => {
+    v.play().catch(() => {
+      v.muted = true;
+      void v.play().catch(() => {});
+    });
+  }, []);
+
+  /** El icono de volumen manda en la vista previa, así se oye lo que se va a subir. */
+  useEffect(() => {
+    const v = previewRef.current;
+    if (!v || !file?.type.startsWith('video/')) return;
+    v.muted = muted;
+    if (v.paused && !scrubbing.current) playPreview(v);
+  }, [muted, file, previewUrl, playPreview]);
+
+  /**
+   * El bucle de la vista previa lee el recorte de una ref: si dependiera de trimStart/trimEnd
+   * se volvería a montar en cada movimiento del dedo y cada uno provocaba un `currentTime`
+   * nuevo, que es lo que hacía que la tira fuese a tirones.
+   */
   useEffect(() => {
     const v = previewRef.current;
     if (!v || !file?.type.startsWith('video/') || duration == null) return;
-    const end = Math.min(duration, trimEnd);
     const onTime = () => {
+      if (scrubbing.current) return;
       setPlayhead(v.currentTime);
-      if (v.currentTime >= end - 0.04) {
-        v.currentTime = trimStart;
-      }
+      const { start, end } = trimRef.current;
+      if (v.currentTime >= Math.min(duration, end) - 0.04) v.currentTime = start;
     };
     const kick = () => {
-      if (v.currentTime < trimStart || v.currentTime >= end) v.currentTime = trimStart;
+      const { start, end } = trimRef.current;
+      if (v.currentTime < start || v.currentTime >= Math.min(duration, end)) v.currentTime = start;
     };
     v.addEventListener('timeupdate', onTime);
     v.addEventListener('loadeddata', kick);
     kick();
-    void v.play().catch(() => {});
+    playPreview(v);
     return () => {
       v.removeEventListener('timeupdate', onTime);
       v.removeEventListener('loadeddata', kick);
     };
-  }, [file, previewUrl, trimStart, trimEnd, duration]);
+  }, [file, previewUrl, duration, playPreview]);
 
   useEffect(() => {
     if (!file?.type.startsWith('video/')) {
@@ -532,7 +645,14 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     };
   }, [file]);
 
-  useEscapeClose(open && !saving, onClose);
+  useEscapeClose(open && !saving, () => {
+    // Escribiendo, Escape solo cierra el teclado: no se pierde la historia.
+    if (textDraft != null) {
+      setTextDraft(null);
+      return;
+    }
+    onClose();
+  });
 
   const openGallery = () => {
     galleryRef.current?.click();
@@ -562,6 +682,12 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     setError(null);
     setJustPublished(false);
     setFrame(EMPTY_FRAME);
+    setMuted(false);
+    setTexts([]);
+    setTextDraft(null);
+    setHoldingId(null);
+    setOverTrash(false);
+    setBinningId(null);
     imgNatRef.current = null;
     const kept = keepFile(selected);
     if (!kept.type.startsWith('video/')) {
@@ -646,9 +772,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
       return;
     }
     const mime = pickRecorderMime();
-    const rec = mime
-      ? new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: STORY_VIDEO_BITRATE })
-      : new MediaRecorder(stream, { videoBitsPerSecond: STORY_VIDEO_BITRATE });
+    const rec = new MediaRecorder(stream, storyRecorderOptions(mime));
     chunksRef.current = [];
     rec.ondataavailable = e => {
       if (e.data.size > 0) chunksRef.current.push(e.data);
@@ -657,7 +781,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
       const type = rec.mimeType || 'video/webm';
       const blob = new Blob(chunksRef.current, { type });
       const ext = type.includes('mp4') ? 'mp4' : 'webm';
-      acceptFile(new File([blob], `historia.${ext}`, { type }));
+      acceptFile(withCleanMime(blob, `historia.${ext}`, `video/${ext}`));
       setRecording(false);
     };
     recorderRef.current = rec;
@@ -738,16 +862,42 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     setJustPublished(false);
     imgNatRef.current = null;
     setFrame(EMPTY_FRAME);
+    setMuted(false);
+    setTexts([]);
+    setTextDraft(null);
+    setHoldingId(null);
+    setOverTrash(false);
+    setBinningId(null);
     dropPreviewUrl();
     void startStream(facing);
   };
 
   const clipLen = Math.max(0, trimEnd - trimStart);
 
-  const onTrimChange = (start: number, end: number) => {
+  const onTrimDragStart = useCallback(() => {
+    scrubbing.current = true;
+    previewRef.current?.pause();
+  }, []);
+
+  /** Mientras se arrastra se busca el fotograma del asa, y solo si el vídeo no está ya buscando. */
+  const onTrimChange = useCallback((start: number, end: number, edge: TrimEdge) => {
     setTrimStart(start);
     setTrimEnd(end);
-  };
+    const v = previewRef.current;
+    if (!v || !scrubbing.current) return;
+    const at = edge === 'end' ? end : start;
+    setPlayhead(at);
+    if (!v.seeking && Math.abs(v.currentTime - at) > 0.05) v.currentTime = at;
+  }, []);
+
+  const onTrimCommit = useCallback((start: number) => {
+    scrubbing.current = false;
+    const v = previewRef.current;
+    if (!v) return;
+    v.currentTime = start;
+    setPlayhead(start);
+    playPreview(v);
+  }, [playPreview]);
 
   const publish = async () => {
     if (!file || saving) return;
@@ -770,7 +920,16 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
         const fw = box?.clientWidth || boxSize.w || 1;
         const fh = box?.clientHeight || boxSize.h || 1;
         const moved = !!(nat && frameDirty(f, fw, fh, nat.w, nat.h));
-        if (moved || needsStoryPrepare(file, duration, trimStart, clipLen)) {
+        const overlays = storyTextsForExport(texts);
+        // Un MKV o un 3GPP de la galería no lo admite el servidor: se recodifica aquí.
+        // El texto y el silencio también obligan a recodificar: van dentro del propio clip.
+        if (
+          moved ||
+          muted ||
+          overlays.length > 0 ||
+          !isUploadableMedia(file.type) ||
+          needsStoryPrepare(file, duration, trimStart, clipLen)
+        ) {
           toSend = await trimVideoFile(file, trimStart, trimStart + clipLen, {
             rotationDeg: frameAngle(f),
             x: f.x,
@@ -779,11 +938,16 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
             h: f.h,
             viewW: fw,
             viewH: fh,
+            mute: muted,
+            texts: overlays,
           });
         }
       }
       if (toSend.size > STORY_UPLOAD_MAX_BYTES) {
         throw new Error('Pesa más de lo que aguanta el servidor. Recorta a 1 min o menos.');
+      }
+      if (!isUploadableMedia(toSend.type)) {
+        throw new Error('Ese formato no se puede subir. Elige el vídeo desde la galería y recórtalo aquí.');
       }
       if (chatMode) {
         onPickImage?.(toSend);
@@ -811,6 +975,12 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     setDuration(null);
     imgNatRef.current = null;
     setFrame(EMPTY_FRAME);
+    setMuted(false);
+    setTexts([]);
+    setTextDraft(null);
+    setHoldingId(null);
+    setOverTrash(false);
+    setBinningId(null);
     dropPreviewUrl();
     void startStream(facing);
   };
@@ -857,6 +1027,24 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     return () => ro.disconnect();
   }, [file, previewUrl]);
 
+  /**
+   * Chrome (Android) y WebKit (iPhone): el pellizco del navegador se come el gesto
+   * si touchmove/gesturestart van en pasivo. touch-action:none no basta en Safari.
+   */
+  useEffect(() => {
+    const el = gestureSurfaceRef.current;
+    if (!el || !file) return;
+    const stop = (ev: Event) => ev.preventDefault();
+    el.addEventListener('touchmove', stop, { passive: false });
+    el.addEventListener('gesturestart', stop);
+    el.addEventListener('gesturechange', stop);
+    return () => {
+      el.removeEventListener('touchmove', stop);
+      el.removeEventListener('gesturestart', stop);
+      el.removeEventListener('gesturechange', stop);
+    };
+  }, [file, previewUrl]);
+
   const exportFramedPhoto = async (source: File, square: boolean) => {
     const url = previewUrlRef.current || URL.createObjectURL(source);
     const img = new Image();
@@ -893,10 +1081,30 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     ctx.rotate(((rot + (tilt || 0)) * Math.PI) / 180);
     ctx.drawImage(img, -(w * W / vw) / 2, -(h * H / vh) / 2, w * (W / vw), h * (H / vh));
     ctx.restore();
+    if (!square) drawStoryTexts(ctx, texts, W, H, vw, vh);
     const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92));
     if (!previewUrlRef.current) URL.revokeObjectURL(url);
     if (!blob) return source;
     return new File([blob], square ? 'perfil.jpg' : 'historia.jpg', { type: 'image/jpeg' });
+  };
+
+  const beginMediaPinch = () => {
+    const pts = [...pointers.current.values()];
+    if (pts.length < 2) return;
+    const [a, b] = pts;
+    const { visW, visH } = visOf(frameRef.current);
+    pinch.current = {
+      dist: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+      midX: (a.x + b.x) / 2,
+      midY: (a.y + b.y) / 2,
+      fx: frameRef.current.x,
+      fy: frameRef.current.y,
+      w: visW || 1,
+      h: visH || 1,
+      angle: Math.atan2(b.y - a.y, b.x - a.x),
+      tilt: frameRef.current.tilt || 0,
+    };
+    pan.current = null;
   };
 
   const onFramePointerDown = (e: React.PointerEvent) => {
@@ -904,42 +1112,66 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     e.stopPropagation();
     e.preventDefault();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointers.current.size === 1) {
-      pan.current = { x: e.clientX, y: e.clientY, fx: frame.x, fy: frame.y };
-      pinch.current = null;
-    } else if (pointers.current.size === 2) {
-      const [a, b] = [...pointers.current.values()];
-      const { visW, visH } = visOf(frame);
-      pinch.current = {
-        dist: Math.hypot(a.x - b.x, a.y - b.y),
-        w: visW || 1,
-        h: visH || 1,
-        angle: Math.atan2(b.y - a.y, b.x - a.x),
-        tilt: frame.tilt || 0,
-      };
-      pan.current = null;
+    // Un segundo dedo en la foto, con un texto pillado: se suelta el texto y se mueve el encuadre.
+    if (holdingRef.current && textPointers.current.size === 1) {
+      const [first] = [...textPointers.current.entries()];
+      textPointers.current.clear();
+      textPan.current = null;
+      textPinch.current = null;
+      setHoldingId(null);
+      setOverTrash(false);
+      pointers.current.set(first[0], { ...first[1], type: 'touch' });
     }
+    const type = e.pointerType || 'touch';
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY, type });
+    if (pointers.current.size >= 2) {
+      beginMediaPinch();
+      return;
+    }
+    // Chrome: en táctil un dedo no desplaza la foto (eso es el texto). El ratón sí.
+    pinch.current = null;
+    if (type === 'touch') {
+      pan.current = null;
+      return;
+    }
+    pan.current = { x: e.clientX, y: e.clientY, fx: frame.x, fy: frame.y };
   };
 
   const onFramePointerMove = (e: React.PointerEvent) => {
     if (!pointers.current.has(e.pointerId)) return;
-    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pinch.current && pointers.current.size >= 2) {
+    const prev = pointers.current.get(e.pointerId);
+    pointers.current.set(e.pointerId, {
+      x: e.clientX,
+      y: e.clientY,
+      type: prev?.type || e.pointerType || 'touch',
+    });
+    const zoom = pinch.current;
+    if (zoom && pointers.current.size >= 2) {
       const [a, b] = [...pointers.current.values()];
       const d = Math.hypot(a.x - b.x, a.y - b.y);
-      const ratio = d / Math.max(1, pinch.current.dist);
-      const deg = (Math.atan2(b.y - a.y, b.x - a.x) - pinch.current.angle) * (180 / Math.PI);
-      const tilt = pinch.current.tilt + deg;
+      const ratio = d / zoom.dist;
+      const deg = (Math.atan2(b.y - a.y, b.x - a.x) - zoom.angle) * (180 / Math.PI);
       const box = frameBoxRef.current;
       const fw = box?.clientWidth || boxSize.w || 1;
       const fh = box?.clientHeight || boxSize.h || 1;
-      const next = clampUniform(pinch.current.w * ratio, pinch.current.h * ratio, fw, fh);
-      setFrame(f => fromVis(next.visW, next.visH, f.rot, f.x, f.y, f.turns, tilt));
+      const next = clampUniform(zoom.w * ratio, zoom.h * ratio, fw, fh);
+      const midX = (a.x + b.x) / 2;
+      const midY = (a.y + b.y) / 2;
+      setFrame(f =>
+        fromVis(
+          next.visW,
+          next.visH,
+          f.rot,
+          zoom.fx + (midX - zoom.midX),
+          zoom.fy + (midY - zoom.midY),
+          f.turns,
+          zoom.tilt + deg
+        )
+      );
       return;
     }
     const start = pan.current;
-    if (!start) return;
+    if (!start || (prev?.type || e.pointerType) === 'touch') return;
     setFrame(f => ({
       ...f,
       x: start.fx + (e.clientX - start.x),
@@ -949,8 +1181,204 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
 
   const onFramePointerUp = (e: React.PointerEvent) => {
     pointers.current.delete(e.pointerId);
-    if (pointers.current.size < 2) pinch.current = null;
+    if (pointers.current.size >= 2) beginMediaPinch();
+    else pinch.current = null;
     if (pointers.current.size === 0) pan.current = null;
+    else if ([...pointers.current.values()].every(p => p.type === 'touch')) pan.current = null;
+  };
+
+  const patchText = (id: string, patch: Partial<StoryTextOverlay>) => {
+    setTexts(ts => ts.map(t => (t.id === id ? { ...t, ...patch } : t)));
+  };
+
+  const pointerOverTrash = (clientX: number, clientY: number) => {
+    const el = trashRef.current;
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    const pad = 36;
+    return clientX >= r.left - pad && clientX <= r.right + pad && clientY >= r.top - pad && clientY <= r.bottom + pad;
+  };
+
+  /** Fuera de la papelera el texto no se sale; hacia abajo se deja llegar a la papelera. */
+  const clampText = (x: number, y: number, tw: number, th: number, towardTrash: boolean) => {
+    const box = frameBoxRef.current;
+    const bw = box?.clientWidth || boxSize.w || 0;
+    const bh = box?.clientHeight || boxSize.h || 0;
+    if (!bw || !bh) return { x, y };
+    const lx = Math.max(16, (bw - tw) / 2 + tw * 0.28);
+    const ly = Math.max(16, (bh - th) / 2 + th * 0.2);
+    return {
+      x: Math.max(-lx, Math.min(lx, x)),
+      y: Math.max(-ly, Math.min(towardTrash ? ly + 220 : ly, y)),
+    };
+  };
+
+  const dropTextInTrash = (id: string) => {
+    textPointers.current.clear();
+    textPan.current = null;
+    textPinch.current = null;
+    setOverTrash(true);
+    setHoldingId(null);
+    setBinningId(id);
+    window.setTimeout(() => {
+      setTexts(ts => ts.filter(t => t.id !== id));
+      setBinningId(null);
+      setOverTrash(false);
+    }, 240);
+  };
+
+  const releaseTextHold = () => {
+    textPointers.current.clear();
+    textPan.current = null;
+    textPinch.current = null;
+    setHoldingId(null);
+    setOverTrash(false);
+  };
+
+  /** Aa siempre abre un texto nuevo. Un toque en uno ya escrito lo edita. */
+  const openTextEditor = (id?: string) => {
+    if (saving) return;
+    releaseTextHold();
+    if (id) {
+      const current = textsRef.current.find(t => t.id === id);
+      if (!current) return;
+      setTextDraft({ id, value: current.value, font: current.font || 'classic', color: current.color || '#ffffff' });
+      return;
+    }
+    if (textsRef.current.length >= MAX_STORY_TEXTS) return;
+    setTextDraft({ id: newStoryTextId(), value: '', font: 'classic', color: '#ffffff' });
+  };
+
+  const commitTextDraft = () => {
+    if (!textDraft) return;
+    const value = textDraft.value.replace(/\s+$/, '');
+    const { id } = textDraft;
+    setTextDraft(null);
+    if (!value.trim()) {
+      setTexts(ts => ts.filter(t => t.id !== id));
+      return;
+    }
+    const base = boxSize.w || frameBoxRef.current?.clientWidth || 360;
+    setTexts(ts => {
+      const i = ts.findIndex(t => t.id === id);
+      if (i >= 0) {
+        const next = ts.slice();
+        next[i] = { ...next[i], value, font: textDraft.font, color: textDraft.color };
+        return next;
+      }
+      const origin = nextTextOrigin(ts);
+      return [
+        ...ts,
+        {
+          id,
+          value,
+          x: origin.x,
+          y: origin.y,
+          size: clampStoryTextSize(Math.round(base * 0.1)),
+          rot: 0,
+          font: textDraft.font,
+          color: textDraft.color,
+        },
+      ];
+    });
+  };
+
+  /** Un dedo en el texto lo mueve; dos dedos en la foto mueven la foto. */
+  const onTextPointerDown = (e: React.PointerEvent, item: StoryTextOverlay) => {
+    if (saving || binningId) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    textPointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (textPointers.current.size === 1) {
+      textPan.current = {
+        id: item.id,
+        x: e.clientX,
+        y: e.clientY,
+        tx: item.x,
+        ty: item.y,
+        tw: el.offsetWidth,
+        th: el.offsetHeight,
+        moved: 0,
+      };
+      textPinch.current = null;
+      setHoldingId(item.id);
+      setOverTrash(false);
+      return;
+    }
+    // Dos dedos encima del mismo texto: se escala ese texto, no la foto.
+    if (textPointers.current.size === 2) {
+      const [a, b] = [...textPointers.current.values()];
+      const live = textsRef.current.find(t => t.id === item.id) || item;
+      textPinch.current = {
+        dist: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+        size: live.size,
+        angle: Math.atan2(b.y - a.y, b.x - a.x),
+        rot: live.rot,
+      };
+      textPan.current = null;
+      setOverTrash(false);
+    }
+  };
+
+  const onTextPointerMove = (e: React.PointerEvent) => {
+    // El primer dedo quedó en el texto y el segundo en la foto: el encuadre manda.
+    if (pointers.current.has(e.pointerId) && !textPointers.current.has(e.pointerId)) {
+      onFramePointerMove(e);
+      return;
+    }
+    if (!textPointers.current.has(e.pointerId)) return;
+    e.stopPropagation();
+    textPointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const zoom = textPinch.current;
+    const held = holdingRef.current;
+    if (zoom && textPointers.current.size >= 2 && held) {
+      const [a, b] = [...textPointers.current.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      const deg = (Math.atan2(b.y - a.y, b.x - a.x) - zoom.angle) * (180 / Math.PI);
+      patchText(held, { size: clampStoryTextSize(zoom.size * (d / zoom.dist)), rot: zoom.rot + deg });
+      return;
+    }
+    const start = textPan.current;
+    if (!start) return;
+    const dx = e.clientX - start.x;
+    const dy = e.clientY - start.y;
+    start.moved = Math.max(start.moved, Math.hypot(dx, dy));
+    const trash = pointerOverTrash(e.clientX, e.clientY);
+    setOverTrash(trash);
+    const next = clampText(start.tx + dx, start.ty + dy, start.tw, start.th, true);
+    patchText(start.id, { x: next.x, y: next.y });
+  };
+
+  const onTextPointerUp = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    if (pointers.current.has(e.pointerId) && !textPointers.current.has(e.pointerId)) {
+      onFramePointerUp(e);
+      return;
+    }
+    textPointers.current.delete(e.pointerId);
+    if (textPointers.current.size < 2) textPinch.current = null;
+    if (textPointers.current.size > 0) return;
+    const start = textPan.current;
+    const id = start?.id || holdingRef.current;
+    const tap = !!start && start.moved < TEXT_TAP_PX;
+    const trash = pointerOverTrash(e.clientX, e.clientY);
+    textPan.current = null;
+    if (id && trash && !tap) {
+      dropTextInTrash(id);
+      return;
+    }
+    if (id && !tap) {
+      const live = textsRef.current.find(t => t.id === id);
+      if (live) {
+        const snapped = clampText(live.x, live.y, start?.tw || 0, start?.th || 0, false);
+        patchText(id, snapped);
+      }
+    }
+    setHoldingId(null);
+    setOverTrash(false);
+    if (tap && id) openTextEditor(id);
   };
 
   const rotateMedia = () => {
@@ -998,9 +1426,14 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
 
   const isVideo = !!file?.type.startsWith('video/');
   const recSec = Math.min(STORY_VIDEO_MAX_SEC, Math.floor(recMs / 1000));
+  const editTextSize = clampStoryTextSize(Math.round(Math.max(56, (boxSize.w || 390) * 0.17)));
+  const overlaysReady = storyTextsForExport(texts);
+  /** Girar, silenciar o poner texto obliga a volver a codificar: el peso ya no es el del original. */
+  const reencodes = Math.abs(frameAngle(frame)) > 0.8 || muted || overlaysReady.length > 0;
+  const grabbingText = holdingId != null || binningId != null;
   const clipEstimate =
     isVideo && file && duration != null
-      ? Math.abs(frameAngle(frame)) > 0.8
+      ? reencodes
         ? Math.round((STORY_VIDEO_BITRATE / 8) * Math.max(0.4, clipLen))
         : estimateClipBytes(file, duration, trimStart, clipLen)
       : 0;
@@ -1170,7 +1603,9 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
 
       {file && previewUrl && (
           <div
-            className="absolute inset-0 touch-none bg-black"
+            ref={gestureSurfaceRef}
+            className="absolute inset-0 touch-none overscroll-none bg-black"
+            style={{ touchAction: 'none' }}
             onPointerDown={onFramePointerDown}
             onPointerMove={onFramePointerMove}
             onPointerUp={onFramePointerUp}
@@ -1207,7 +1642,6 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
                   <video
                     ref={previewRef}
                     src={previewUrl}
-                    muted
                     playsInline
                     onLoadedMetadata={onVideoMeta}
                     onError={revivePreview}
@@ -1226,9 +1660,137 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
                     style={mediaLayerStyle(frame)}
                   />
                 )}
+                {texts.map((item, i) => {
+                  if (textDraft?.id === item.id) return null;
+                  const held = holdingId === item.id;
+                  const binning = binningId === item.id;
+                  const shrink = (held && overTrash) || binning;
+                  return (
+                    <div
+                      key={item.id}
+                      onPointerDown={e => onTextPointerDown(e, item)}
+                      onPointerMove={onTextPointerMove}
+                      onPointerUp={onTextPointerUp}
+                      onPointerCancel={onTextPointerUp}
+                      onWheel={e => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        const ratio = e.deltaY > 0 ? 0.94 : 1.06;
+                        patchText(item.id, { size: clampStoryTextSize(item.size * ratio) });
+                      }}
+                      className="absolute left-1/2 top-1/2 w-max cursor-grab touch-none select-none px-4 py-3"
+                      style={{
+                        pointerEvents: holdingId && !held ? 'none' : undefined,
+                        zIndex: binning ? 40 : held ? 30 : 10 + i,
+                        transform: `translate(-50%, -50%) translate(${item.x}px, ${item.y}px) rotate(${item.rot}deg) scale(${binning ? 0.08 : held && overTrash ? 0.42 : 1})`,
+                        opacity: binning ? 0 : 1,
+                        transition: shrink
+                          ? 'transform 180ms ease, opacity 180ms ease'
+                          : undefined,
+                      }}
+                    >
+                      <p
+                        className="whitespace-pre-wrap break-words text-center"
+                        style={{
+                          ...storyTextStyle(item.size, item.font, item.color),
+                          maxWidth: boxSize.w ? boxSize.w * STORY_TEXT_MAX_W : `${STORY_TEXT_MAX_W * 100}%`,
+                        }}
+                      >
+                        {item.value}
+                      </p>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
+      )}
+
+      {textDraft != null && (
+        <div className="absolute inset-0 z-40 flex flex-col bg-gradient-to-b from-black/55 via-black/35 to-black/70">
+          <div className="flex items-center justify-between px-3 pt-[max(10px,env(safe-area-inset-top))]">
+            <button
+              type="button"
+              onClick={() => setTextDraft(null)}
+              className="rounded-full px-3 py-2 text-[15px] font-semibold text-white/90"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={commitTextDraft}
+              className="rounded-full bg-white px-5 py-2 text-[15px] font-semibold text-slate-900 shadow-lg shadow-black/20"
+            >
+              Listo
+            </button>
+          </div>
+          <div className="relative flex min-h-0 flex-1 items-center px-5 pr-16">
+            <textarea
+              autoFocus
+              rows={3}
+              spellCheck={false}
+              autoCorrect="off"
+              autoCapitalize="sentences"
+              value={textDraft.value}
+              onChange={e => setTextDraft(d => (d ? { ...d, value: e.target.value.slice(0, 220) } : d))}
+              placeholder="Escribe algo"
+              className="w-full resize-none bg-transparent text-center outline-none placeholder:text-white/40"
+              style={{
+                ...storyTextStyle(editTextSize, textDraft.font, textDraft.color),
+                caretColor: textDraft.color,
+                WebkitTextStrokeWidth: 0,
+                textShadow: '0 2px 18px rgba(0,0,0,0.65)',
+                maxWidth: boxSize.w ? boxSize.w * STORY_TEXT_MAX_W : undefined,
+              }}
+            />
+            <div className="absolute right-3 top-1/2 flex -translate-y-1/2 flex-col items-center gap-2 rounded-full bg-black/40 px-1.5 py-3 shadow-lg shadow-black/30 backdrop-blur-md">
+              {STORY_TEXT_COLORS.map(color => {
+                const on = textDraft.color.toLowerCase() === color;
+                return (
+                  <button
+                    key={color}
+                    type="button"
+                    aria-label={`Color ${color}`}
+                    aria-pressed={on}
+                    onClick={() => setTextDraft(d => (d ? { ...d, color } : d))}
+                    className="h-6 w-6 shrink-0 rounded-full transition-transform"
+                    style={{
+                      background: color,
+                      transform: on ? 'scale(1.18)' : undefined,
+                      boxShadow: on
+                        ? '0 0 0 2px #fff'
+                        : color === '#ffffff' || color === '#000000'
+                          ? 'inset 0 0 0 1px rgba(255,255,255,0.55)'
+                          : 'inset 0 0 0 1px rgba(0,0,0,0.15)',
+                    }}
+                  />
+                );
+              })}
+            </div>
+          </div>
+          <div className="px-3 pb-[max(12px,env(safe-area-inset-bottom))]">
+            <div className="flex gap-1.5 overflow-x-auto rounded-full bg-black/45 p-1.5 shadow-lg shadow-black/25 backdrop-blur-md [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {STORY_FONTS.map(face => {
+                const on = textDraft.font === face.id;
+                return (
+                  <button
+                    key={face.id}
+                    type="button"
+                    onClick={() => setTextDraft(d => (d ? { ...d, font: face.id } : d))}
+                    className={
+                      on
+                        ? 'shrink-0 rounded-full bg-white px-4 py-2 text-[16px] leading-none text-slate-900'
+                        : 'shrink-0 rounded-full px-4 py-2 text-[16px] leading-none text-white/90'
+                    }
+                    style={{ fontFamily: face.family, fontWeight: face.weight }}
+                  >
+                    {face.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
       )}
 
       {justPublished && (
@@ -1242,7 +1804,12 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
         </div>
       )}
 
-      <div className="absolute inset-x-0 top-0 z-30 flex items-center justify-between px-3 pt-[max(12px,env(safe-area-inset-top))]">
+      <div
+        className={cn(
+          'absolute inset-x-0 top-0 z-30 flex items-center justify-between px-3 pt-[max(12px,env(safe-area-inset-top))]',
+          (textDraft != null || grabbingText) && 'hidden'
+        )}
+      >
         <button
           type="button"
           onClick={() => (file ? discard() : onClose())}
@@ -1271,10 +1838,39 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
             <RefreshCw size={18} />
           </button>
         )}
+        {file && !avatarOnly && (
+          <div className="flex items-center gap-2">
+            {isVideo && (
+              <button
+                type="button"
+                onClick={() => setMuted(m => !m)}
+                className={cn(
+                  'app-icon-hit rounded-full',
+                  muted ? 'bg-white text-slate-900' : 'bg-black/35'
+                )}
+                aria-label={muted ? 'Subirla con sonido' : 'Subirla sin sonido'}
+                aria-pressed={muted}
+              >
+                {muted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => openTextEditor()}
+              className="app-icon-hit rounded-full bg-black/35"
+              aria-label="Añadir texto"
+            >
+              <span className="text-[15px] font-black leading-none tracking-tight">Aa</span>
+            </button>
+          </div>
+        )}
       </div>
 
       <div
-        className="absolute inset-x-0 bottom-0 z-30 px-5 pb-[max(20px,env(safe-area-inset-bottom))] pt-8"
+        className={cn(
+          'absolute inset-x-0 bottom-0 z-30 px-5 pb-[max(20px,env(safe-area-inset-bottom))] pt-8',
+          (textDraft != null || grabbingText) && 'hidden'
+        )}
         style={{ transform: pull ? `translateY(${-pull * 0.35}px)` : undefined }}
       >
         {justPublished ? (
@@ -1305,6 +1901,8 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
                 playhead={playhead}
                 sizeLabel={formatStoryBytes(clipEstimate)}
                 onChange={onTrimChange}
+                onDragStart={onTrimDragStart}
+                onCommit={onTrimCommit}
               />
             )}
             {!avatarOnly && !chatMode && (
@@ -1336,7 +1934,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
                   {saving || probing ? <Loader2 size={16} className="animate-spin" /> : 'Yo'}
                 </span>
                 {saving
-                  ? isVideo && duration != null && (Math.abs(frameAngle(frame)) > 0.8 || needsStoryPrepare(file, duration, trimStart, clipLen))
+                  ? isVideo && duration != null && (reencodes || needsStoryPrepare(file, duration, trimStart, clipLen))
                     ? 'Recortando…'
                     : 'Subiendo…'
                   : avatarOnly
@@ -1395,12 +1993,28 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
         {file && !justPublished && (
           <p className="mt-3 text-center text-[11px] text-white/50">
             {isVideo
-              ? 'Arrastra para mover · pellizca para tamaño · dos dedos o ↻ para girar · tira abajo para el tiempo'
-              : 'Arrastra para mover · pellizca para tamaño · dos dedos o ↻ para girar'}
+              ? 'Un dedo en el texto lo mueve · dos en la foto mueven la foto · suéltalo en la papelera para quitarlo'
+              : 'Un dedo en el texto lo mueve · dos en la foto mueven la foto · suéltalo en la papelera para quitarlo'}
           </p>
         )}
         {error && <p className="mt-2 text-center text-xs font-semibold text-rose-300">{error}</p>}
       </div>
+
+      {grabbingText && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-50 flex justify-center pb-[max(28px,env(safe-area-inset-bottom))] pt-10">
+          <div
+            ref={trashRef}
+            className={cn(
+              'flex items-center justify-center rounded-full text-white transition-all duration-150',
+              overTrash || binningId
+                ? 'h-16 w-16 scale-125 bg-rose-500 shadow-[0_0_0_8px_rgba(244,63,94,0.28)]'
+                : 'h-14 w-14 bg-black/55 ring-1 ring-white/30'
+            )}
+          >
+            <Trash2 size={overTrash || binningId ? 26 : 22} />
+          </div>
+        </div>
+      )}
     </motion.div>
     )}
     </AnimatePresence>,

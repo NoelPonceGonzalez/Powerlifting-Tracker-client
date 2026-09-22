@@ -2,7 +2,13 @@ import React, { useCallback, useState } from 'react';
 import { Bell, BellRing, Camera, Check, Download, Image as ImageIcon, Plus, Share, Smartphone } from 'lucide-react';
 import { Card } from '@/src/components/ui/Card';
 import { Button } from '@/src/components/ui/Button';
-import { isAndroid, isIOS, useInstallPrompt } from '@/src/pwa/installPrompt';
+import {
+  iosInstallSteps,
+  isAndroid,
+  isIOS,
+  permissionsCarryOverToInstalledApp,
+  useInstallPrompt,
+} from '@/src/pwa/installPrompt';
 import { useWebNotifications } from '@/src/pwa/notifications';
 import {
   cameraBlockedHint,
@@ -101,22 +107,22 @@ export const PwaSettingsSection: React.FC<{ embedded?: boolean }> = ({ embedded 
           <ol className="space-y-2 rounded-2xl bg-slate-50 p-4 text-xs font-medium text-slate-600 dark:bg-slate-900/70 dark:text-slate-300">
             {isIOS() ? (
               <>
-                <li className="flex items-center gap-2">
-                  <Share size={16} className="shrink-0 text-indigo-600 dark:text-indigo-400" />
-                  <span>
-                    1. Pulsa <strong className="font-black">Compartir</strong> en Safari.
-                  </span>
+                <li className="flex items-start gap-2">
+                  <Share size={16} className="mt-0.5 shrink-0 text-indigo-600 dark:text-indigo-400" />
+                  <span>1. {iosInstallSteps()}</span>
                 </li>
-                <li className="flex items-center gap-2">
-                  <Plus size={16} className="shrink-0 text-indigo-600 dark:text-indigo-400" />
+                <li className="flex items-start gap-2">
+                  <Plus size={16} className="mt-0.5 shrink-0 text-indigo-600 dark:text-indigo-400" />
                   <span>
-                    2. Elige <strong className="font-black">Añadir a pantalla de inicio</strong>.
+                    2. Si no ves <strong className="font-black">Añadir a pantalla de inicio</strong>, baja del
+                    todo en la lista de compartir: suele quedar por debajo de Copiar.
                   </span>
                 </li>
                 <li className="flex items-start gap-2">
                   <Bell size={16} className="mt-0.5 shrink-0 text-indigo-600 dark:text-indigo-400" />
                   <span>
-                    3. Ábrela desde el icono y activa los avisos. Lo pide Apple, no la app.
+                    3. Ábrela desde el icono nuevo y activa aquí avisos y cámara. En iPhone la app
+                    tiene sus propios permisos, así que hay que hacerlo dentro. Lo pide Apple.
                   </span>
                 </li>
               </>
@@ -137,6 +143,15 @@ export const PwaSettingsSection: React.FC<{ embedded?: boolean }> = ({ embedded 
               </>
             )}
           </ol>
+        )}
+
+        {/* Dónde vive el permiso: Chrome lo comparte con la app instalada, Apple no. */}
+        {!isInstalled && (
+          <p className="rounded-2xl bg-slate-50 p-4 text-xs leading-relaxed text-slate-600 dark:bg-slate-900/70 dark:text-slate-300">
+            {permissionsCarryOverToInstalledApp()
+              ? 'Puedes activar avisos y cámara ya desde el navegador: es el mismo permiso del sitio y la app instalada lo hereda, porque Chrome usa el mismo perfil para las dos.'
+              : 'En iPhone instálala primero: la app de la pantalla de inicio tiene sus propios permisos y no hereda los de Safari.'}
+          </p>
         )}
 
         {/* Notificaciones */}
@@ -164,8 +179,10 @@ export const PwaSettingsSection: React.FC<{ embedded?: boolean }> = ({ embedded 
                     : permission === 'granted'
                       ? 'Recibirás avisos de entrenos y actividad de amigos.'
                       : isIOS() && !isInstalled
-                        ? 'En iPhone hay que añadirla a la pantalla de inicio y dar permiso. Lo exige Apple, no la app.'
-                        : 'Da permiso para recibir avisos aunque la app esté cerrada.'}
+                        ? 'En iPhone hay que añadirla a la pantalla de inicio y dar permiso ahí dentro. Lo exige Apple, no la app.'
+                        : isInstalled
+                          ? 'Da permiso para recibir avisos aunque la app esté cerrada.'
+                          : 'Acéptalas aquí y la app instalada ya las tendrá.'}
               </p>
             </div>
           </div>
@@ -246,7 +263,9 @@ export const PwaSettingsSection: React.FC<{ embedded?: boolean }> = ({ embedded 
                           ? 'Ojo: el aviso se ha cerrado ya dos veces. Si vuelves a cerrarlo sin darle a Permitir, el navegador dejará de preguntar durante una semana.'
                           : cameraDenial === 'user'
                             ? 'Se ha cerrado sin aceptar. Pulsa Reintentar y dale a Permitir cuando salga el aviso.'
-                            : 'Pulsa Activar y acepta. Así la cámara se abre dentro de la app, sin salir a la del móvil.'}
+                            : isInstalled || !permissionsCarryOverToInstalledApp()
+                              ? 'Pulsa Activar y acepta. Así la cámara se abre dentro de la app, sin salir a la del móvil.'
+                              : 'Pulsa Activar y acepta: vale para el navegador y para la app instalada.'}
               </p>
             </div>
           </div>

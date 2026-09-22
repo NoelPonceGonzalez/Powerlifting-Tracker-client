@@ -52,6 +52,8 @@ interface InstagramCoverProps {
   onFriendsClick?: () => void;
   onFollowersClick?: () => void;
   onFollowingClick?: () => void;
+  /** El título del modal ya lleva el nombre: no lo repitas en la ficha. */
+  hideName?: boolean;
 }
 
 export function InstagramCover({
@@ -68,6 +70,7 @@ export function InstagramCover({
   onFriendsClick,
   onFollowersClick,
   onFollowingClick,
+  hideName,
 }: InstagramCoverProps) {
   const photo = (
     <span className="relative block">
@@ -96,13 +99,15 @@ export function InstagramCover({
           <ProfileStat value={following} label="seguidos" onClick={onFollowingClick ?? onFriendsClick} />
         </div>
       </div>
-      <div className="mt-3">
-        <p className="truncate text-[14px] font-semibold text-slate-900 dark:text-slate-100">{name}</p>
-        {username && <p className="truncate text-[12px] text-slate-400">@{username}</p>}
+      {!hideName || bio.trim() ? (
+      <div className={hideName ? 'mt-2' : 'mt-3'}>
+        {!hideName && <p className="truncate text-[14px] font-semibold text-slate-900 dark:text-slate-100">{name}</p>}
+        {!hideName && username && <p className="truncate text-[12px] text-slate-400">@{username}</p>}
         {bio.trim() ? (
-          <p className="mt-1 whitespace-pre-wrap text-[13px] leading-snug text-slate-600 dark:text-slate-300">{bio}</p>
+          <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-[13px] leading-snug text-slate-600 dark:text-slate-300">{bio}</p>
         ) : null}
       </div>
+      ) : null}
     </div>
   );
 }
@@ -162,9 +167,8 @@ export function ProgressMiniProfile({
         setFollowers(p.followerCount);
         setBio(p.bio || '');
         setSavedBio(p.bio || '');
-        if (hasRealAvatar(p.avatar)) {
+        if (hasRealAvatar(p.avatar, user.id)) {
           setFace(p.avatar || '');
-          if (p.avatar && p.avatar !== user.avatar) onUpdateUser?.({ avatar: p.avatar });
         }
         setStatsReady(true);
       })

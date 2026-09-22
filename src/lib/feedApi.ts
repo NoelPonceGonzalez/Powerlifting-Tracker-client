@@ -75,9 +75,12 @@ export interface PublicProfile {
   routineName: string | null;
   coach: FeedAuthor | null;
   trainingMaxes: { id?: string; name: string; value: number; mode: string }[];
-  /** Solo si le sigo: torneo activo o gym en la próxima hora. */
-  liveChallenge?: { title: string; exercise: string } | null;
-  liveGym?: { gymName: string; time: string } | null;
+  /** Día de hoy de su rutina activa. */
+  todayPlan?: { name: string; title: string; rest: boolean; lifts: string[]; more: number } | null;
+  /** Solo si esa persona me sigue. */
+  theyFollowMe?: boolean;
+  challenges?: { title: string; exercise: string }[];
+  gymPlans?: { gymName: string; time: string }[];
 }
 
 export interface ProfileTmHistory {
