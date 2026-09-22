@@ -97,6 +97,7 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
 }) => {
   const [notes, setNotes] = useState<AppNotification[]>([]);
   const [loadingNotes, setLoadingNotes] = useState(false);
+  const [justAccepted, setJustAccepted] = useState<FriendRequest[]>([]);
 
   useEffect(() => {
     if (!open) return;
@@ -110,8 +111,12 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
       .catch(() => {});
   }, [open, refreshTick, onNotificationsRead]);
 
+  useEffect(() => {
+    if (!open) setJustAccepted([]);
+  }, [open]);
+
   const inbox = pendingRequests.filter(r => !r.needsFollowBack);
-  const followBackInbox = pendingRequests.filter(r => r.needsFollowBack);
+  const followBackInbox = justAccepted;
   const requestCount = inbox.length + followBackInbox.length + chatAsks.length + groupInvites.length + coachRequests.length;
   const recent = notes.filter(isLiveActivityNote);
 
@@ -190,7 +195,23 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
                           <button
                             type="button"
                             disabled={acceptRejectLoadingId === req.id}
-                            onClick={() => onAcceptFriend(req.id)}
+                            onClick={() => {
+                              const uid = req.userId || req.id;
+                              setJustAccepted(prev => {
+                                if (prev.some(r => r.userId === uid || r.id === uid)) return prev;
+                                return [
+                                  ...prev,
+                                  {
+                                    ...req,
+                                    id: `followback-${uid}`,
+                                    userId: uid,
+                                    status: 'pending',
+                                    needsFollowBack: true,
+                                  },
+                                ];
+                              });
+                              onAcceptFriend(req.id);
+                            }}
                             className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-500 text-white"
                             aria-label="Aceptar"
                           >
@@ -204,16 +225,21 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
                         <Avatar src={req.avatar} userId={req.userId || req.id} name={req.name} className="h-10 w-10 shrink-0 rounded-full" />
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{req.name}</p>
-                          <p className="text-[11px] text-slate-400">Te sigue · envíale solicitud</p>
+                          <p className="text-[11px] text-slate-400">Aceptado · envíale solicitud de amistad</p>
                         </div>
                         <button
                           type="button"
                           disabled={!onSendFriendRequest || !req.userId || acceptRejectLoadingId === req.userId}
-                          onClick={() => req.userId && onSendFriendRequest && void onSendFriendRequest(req.userId)}
+                          onClick={() => {
+                            if (!req.userId || !onSendFriendRequest) return;
+                            void Promise.resolve(onSendFriendRequest(req.userId)).then(() => {
+                              setJustAccepted(prev => prev.filter(r => (r.userId || r.id) !== req.userId));
+                            });
+                          }}
                           className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-indigo-600 px-3 text-[12px] font-semibold text-white disabled:opacity-40"
                         >
                           {acceptRejectLoadingId === req.userId ? <Loader2 size={14} className="animate-spin" /> : <UserPlus size={14} />}
-                          Seguir
+                          Enviar solicitud
                         </button>
                       </div>
                     ))}

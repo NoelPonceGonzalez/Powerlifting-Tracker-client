@@ -121,9 +121,14 @@ export function ChatPeoplePanel({
     sent: ConnectionPerson[];
   }>({ following: [], followers: [], all: [], sent: [] });
   const sentIds = useMemo(() => new Set(connections.sent.map(p => p.id)), [connections.sent]);
+  const [justAccepted, setJustAccepted] = useState<FriendRequest[]>([]);
   const inbox = useMemo(() => pending.filter(r => !r.needsFollowBack), [pending]);
-  const followBackInbox = useMemo(() => pending.filter(r => r.needsFollowBack), [pending]);
-  const requestCount = inbox.length + followBackInbox.length;
+  const followBackInbox = justAccepted;
+  const requestCount = inbox.length;
+
+  useEffect(() => {
+    if (page !== 'requests') setJustAccepted([]);
+  }, [page]);
 
   useEffect(() => {
     setLoadingNotes(true);
@@ -312,6 +317,7 @@ export function ChatPeoplePanel({
       setSendingId(uid);
       try {
         await onSendRequest(uid);
+        setJustAccepted(prev => prev.filter(r => (r.userId || r.id) !== uid));
         setConnections(prev => {
           if (prev.sent.some(s => s.id === uid)) return prev;
           return {
@@ -326,7 +332,7 @@ export function ChatPeoplePanel({
 
     return (
       <div className="min-h-[28rem] space-y-4">
-        {requestCount === 0 ? (
+        {inbox.length === 0 && followBackInbox.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-5 py-14 text-center dark:border-slate-700 dark:bg-slate-900">
             <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">No tienes más solicitudes</p>
           </div>
@@ -364,7 +370,23 @@ export function ChatPeoplePanel({
                       <AcceptRow
                         busy={busyId === req.id}
                         onReject={() => onReject(req.id)}
-                        onAccept={() => onAccept(req.id)}
+                        onAccept={() => {
+                          setJustAccepted(prev => {
+                            const uid = req.userId || req.id;
+                            if (prev.some(r => r.userId === uid || r.id === uid)) return prev;
+                            return [
+                              ...prev,
+                              {
+                                ...req,
+                                id: `followback-${uid}`,
+                                userId: uid,
+                                status: 'pending',
+                                needsFollowBack: true,
+                              },
+                            ];
+                          });
+                          onAccept(req.id);
+                        }}
                       />
                     </motion.div>
                   ))}
@@ -374,7 +396,7 @@ export function ChatPeoplePanel({
             {followBackInbox.length > 0 && (
               <section>
                 <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                  Seguir de vuelta
+                  Enviar solicitud
                 </p>
                 <div className="rounded-3xl bg-white shadow-sm dark:bg-slate-900">
                   {followBackInbox.map((req, i) => {
@@ -398,7 +420,7 @@ export function ChatPeoplePanel({
                             <Avatar src={req.avatar} userId={uid} name={req.name} className="h-11 w-11 rounded-full" />
                             <span className="min-w-0">
                               <span className="block truncate text-[15px] font-semibold text-slate-900 dark:text-slate-100">{req.name}</span>
-                              <span className="text-[12px] text-slate-400">Te sigue · envíale solicitud</span>
+                              <span className="text-[12px] text-slate-400">Aceptado · envíale solicitud de amistad</span>
                             </span>
                           </span>
                         </button>
@@ -416,7 +438,7 @@ export function ChatPeoplePanel({
                             onClick={() => void sendFollowBack(req)}
                           >
                             {sendingId === uid ? <Loader2 size={14} className="animate-spin" /> : <UserPlus size={14} />}
-                            Seguir
+                            Enviar solicitud
                           </Button>
                         )}
                       </div>
