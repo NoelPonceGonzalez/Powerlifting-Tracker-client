@@ -248,7 +248,7 @@ function bindOfflineFlush() {
 bindOfflineFlush();
 
 /** Subida de archivos: el navegador pone el `Content-Type` con el separador del multipart. */
-export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
+export async function apiUpload<T>(path: string, form: FormData, signal?: AbortSignal): Promise<T> {
   const origin = requireApiOrigin(resolveOriginForUrl(path));
   const url = `${origin}${path.startsWith('/') ? path : `/${path}`}`;
   const token = typeof localStorage !== 'undefined' ? localStorage.getItem('auth_token') : null;
@@ -256,6 +256,7 @@ export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
     method: 'POST',
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     body: form,
+    signal,
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));

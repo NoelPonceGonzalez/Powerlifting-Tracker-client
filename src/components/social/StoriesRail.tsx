@@ -3,6 +3,7 @@ import { Plus } from 'lucide-react';
 import { Avatar } from '@/src/components/ui/Avatar';
 import { fetchOwnProfile, fetchStories, type StoryGroup } from '@/src/lib/feedApi';
 import { StoryViewer } from '@/src/components/social/StoryViewer';
+import { useStoryUpload } from '@/src/lib/storyUpload';
 import { cn } from '@/src/lib/utils';
 import { isRealtimeOpen } from '@/src/lib/chatRealtime';
 
@@ -28,6 +29,7 @@ function Bubble({
   userId,
   unseen,
   add,
+  uploading,
   items = [],
   onClick,
   onAdd,
@@ -38,6 +40,7 @@ function Bubble({
   userId?: string | null;
   unseen: boolean;
   add?: boolean;
+  uploading?: boolean;
   items?: Array<{ viewedByMe?: boolean }>;
   onClick: () => void;
   onAdd?: () => void;
@@ -47,12 +50,23 @@ function Bubble({
     <button type="button" onClick={onClick} className="w-[4.6rem] shrink-0 text-center">
       <span
         className={cn(
-          'mx-auto flex h-[4.35rem] w-[4.35rem] items-center justify-center rounded-full',
-          hasStory ? 'p-[3px]' : 'p-0',
-          hasStory && unseen && 'bg-gradient-to-tr from-amber-400 via-rose-500 to-fuchsia-600',
-          hasStory && !unseen && 'bg-slate-200 opacity-70 dark:bg-slate-700'
+          'relative mx-auto flex h-[4.35rem] w-[4.35rem] items-center justify-center rounded-full',
+          hasStory && !uploading ? 'p-[3px]' : 'p-0',
+          hasStory && !uploading && unseen && 'bg-gradient-to-tr from-amber-400 via-rose-500 to-fuchsia-600',
+          hasStory && !uploading && !unseen && 'bg-slate-200 opacity-70 dark:bg-slate-700'
         )}
       >
+        {uploading && (
+          <span
+            className="pointer-events-none absolute inset-0 animate-spin rounded-full"
+            style={{
+              background: 'conic-gradient(from 0deg, transparent 0 46%, #fb7185 78%, #fbbf24 100%)',
+              WebkitMask: 'radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px))',
+              mask: 'radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px))',
+            }}
+            aria-hidden
+          />
+        )}
         <span className="relative block h-full w-full rounded-full bg-[var(--app-bg)] p-[2px]">
           <Avatar src={avatar} userId={userId} name={avatarName || name} className="h-full w-full rounded-full" />
           {add && (
@@ -68,7 +82,7 @@ function Bubble({
         </span>
       </span>
       <span className="mt-1.5 block truncate px-0.5 text-[11px] font-medium leading-tight text-slate-700 dark:text-slate-300">
-        {name}
+        {uploading ? 'Subiendo…' : name}
       </span>
     </button>
   );
@@ -110,10 +124,6 @@ export function StoriesRail({ myId, myAvatar, myName, refreshTick = 0, onAddStor
   }, []);
 
   useEffect(() => {
-    void load();
-  }, [load, refreshTick]);
-
-  useEffect(() => {
     if (!pageActive) return;
     const tick = () => {
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
@@ -123,6 +133,12 @@ export function StoriesRail({ myId, myAvatar, myName, refreshTick = 0, onAddStor
     const id = window.setInterval(tick, 45000);
     return () => window.clearInterval(id);
   }, [load, pageActive]);
+
+  const upload = useStoryUpload();
+
+  useEffect(() => {
+    void load();
+  }, [load, refreshTick, upload.doneTick]);
 
   const mineRaw = groups.find(g => g.author.id === myId);
   const mine = mineRaw
@@ -179,13 +195,25 @@ export function StoriesRail({ myId, myAvatar, myName, refreshTick = 0, onAddStor
                 avatar={myFace || mine.author.avatar}
                 userId={myId}
                 unseen={groupUnseen(mine)}
-                add
+                add={!upload.uploading}
+                uploading={upload.uploading}
                 items={mine.items}
                 onClick={() => openGroup(myId)}
-                onAdd={onAddStory}
+                onAdd={upload.uploading ? undefined : onAddStory}
               />
             ) : (
-              <Bubble name="Tu historia" avatarName={myLabel} avatar={myFace} userId={myId} unseen={false} add onClick={onAddStory} />
+              <Bubble
+                name="Tu historia"
+                avatarName={myLabel}
+                avatar={myFace}
+                userId={myId}
+                unseen={false}
+                add={!upload.uploading}
+                uploading={upload.uploading}
+                onClick={() => {
+                  if (!upload.uploading) onAddStory();
+                }}
+              />
             )}
             {unseen.map(g => (
               <Bubble
@@ -218,6 +246,7 @@ export function StoriesRail({ myId, myAvatar, myName, refreshTick = 0, onAddStor
           groups={viewerGroups}
           startGroup={openAt}
           onAddStory={() => {
+            if (upload.uploading) return;
             closeViewer();
             onAddStory();
           }}

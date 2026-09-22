@@ -36,10 +36,10 @@ export function StoryReplyCard({
                   playsInline
                   loop
                   autoPlay
-                  className="h-full w-full object-cover"
+                  className="h-full w-full object-cover object-center"
                 />
               ) : (
-                <img src={src} alt="" className="h-full w-full object-cover" />
+                <img src={src} alt="" className="h-full w-full object-cover object-center" />
               )}
             </div>
           </div>

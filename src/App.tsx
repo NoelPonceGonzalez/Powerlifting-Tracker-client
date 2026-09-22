@@ -4,6 +4,7 @@ import { MotionConfig, motion } from 'motion/react';
 import { User as UserIcon, Users, Dumbbell, Plus, Trophy } from 'lucide-react';
 import { ComposeSheet } from '@/src/components/ComposeSheet';
 import { StoryCamera } from '@/src/components/social/StoryCamera';
+import { isStoryUploading } from '@/src/lib/storyUpload';
 import { AppNoticeHost } from '@/src/components/AppNoticeHost';
 import { showAppError, showAppOk } from '@/src/lib/appNotice';
 
@@ -4103,7 +4104,10 @@ export default function App() {
               onGoToDashboard={() => setView('dashboard')}
               socialBackTo={socialBackTo}
               onChatConversationChange={setChatConversationOpen}
-              onAddStory={() => setStoryComposerOpen(true)}
+              onAddStory={() => {
+                if (isStoryUploading()) return;
+                setStoryComposerOpen(true);
+              }}
               storyRefreshTick={storyRefreshTick}
               socialRefreshTick={socialRefreshTick}
               onSeeRequests={seeRequests}
@@ -4229,7 +4233,7 @@ export default function App() {
         onPublish={() => {
           setComposeOpen(false);
           goToSocial('chat');
-          setStoryComposerOpen(true);
+          if (!isStoryUploading()) setStoryComposerOpen(true);
         }}
         onGymNow={() => {
           setComposeOpen(false);

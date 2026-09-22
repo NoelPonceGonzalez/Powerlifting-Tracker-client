@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { MODAL_RISE, SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
 import { Dumbbell, GraduationCap, Heart, Loader2, MapPin, MessageCircle, Trophy, UserCheck, Users, UserX, X } from 'lucide-react';
 import { apiGet, apiPut } from '@/src/lib/api';
+import { useStoryUpload } from '@/src/lib/storyUpload';
 import { coachRequestCopy, coachRequestPerson, timeAgo, type ChatAsk, type ChatGroupInvite, type CoachRequest } from '@/src/lib/feedApi';
 import type { FriendRequest } from '@/src/types';
 import { Avatar } from '@/src/components/ui/Avatar';
@@ -110,6 +111,7 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
       .catch(() => {});
   }, [open, refreshTick, onNotificationsRead]);
 
+  const storyUpload = useStoryUpload();
   const inbox = pendingRequests.filter(r => !r.needsFollowBack);
   const requestCount = inbox.length + chatAsks.length + groupInvites.length + coachRequests.length;
   const recent = notes.filter(isLiveActivityNote);
@@ -302,14 +304,26 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
 
               <section className="space-y-2.5">
                 <p className="px-1 text-xs font-medium text-slate-400">Reciente</p>
-                {loadingNotes ? (
+                {loadingNotes && storyUpload.notices.length === 0 ? (
                   <LoadingBlock className="py-8" />
-                ) : recent.length === 0 ? (
+                ) : recent.length === 0 && storyUpload.notices.length === 0 ? (
                   <p className="rounded-2xl bg-white/60 px-4 py-6 text-center text-sm text-slate-400 dark:bg-slate-800/40">
                     Aún no hay likes, mensajes ni avisos.
                   </p>
                 ) : (
-                  recent.slice(0, 30).map(note => (
+                  <>
+                  {storyUpload.notices.map(note => (
+                    <div key={note.id} className="flex w-full items-center gap-3 rounded-2xl bg-white/70 px-3 py-2.5 text-left dark:bg-slate-800/50">
+                      <span className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 dark:bg-slate-800">
+                        <Loader2 size={14} className="text-rose-500" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium leading-snug text-slate-800 dark:text-slate-100">{note.message}</span>
+                        <span className="mt-0.5 block text-[11px] text-slate-400">{timeAgo(note.createdAt)}</span>
+                      </span>
+                    </div>
+                  ))}
+                  {recent.slice(0, 30).map(note => (
                     <button
                       key={note.id}
                       type="button"
@@ -345,7 +359,8 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
                       </span>
                       <span className="shrink-0">{notifIcon(note.type)}</span>
                     </button>
-                  ))
+                  ))}
+                  </>
                 )}
               </section>
             </motion.div>

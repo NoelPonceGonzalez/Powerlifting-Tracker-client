@@ -18,6 +18,7 @@ import { AddFriendsModal } from '@/src/components/social/AddFriendsModal';
 import { fetchFollowSuggestions, flattenFollowSuggestions } from '@/src/lib/followSuggestions';
 import { ChatPeoplePanel } from '@/src/components/social/ChatPeoplePanel';
 import { StoriesRail } from '@/src/components/social/StoriesRail';
+import { markStoryUploadNoticesSeen, useStoryUpload } from '@/src/lib/storyUpload';
 import { ListSkeleton } from '@/src/components/ui/Spinner';
 import { StoryReplyCard } from '@/src/components/social/StoryReplyCard';
 import {
@@ -490,10 +491,12 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   const [friendsFilter, setFriendsFilter] = useState<'all' | 'following' | 'followers'>('all');
   const [addFriendsOpen, setAddFriendsOpen] = useState(false);
   const [emptySuggest, setEmptySuggest] = useState<UserSearchResult[]>([]);
-  const heartBadge = Math.max(acceptCount ?? 0, pending.length);
+  const storyUpload = useStoryUpload();
+  const heartBadge = Math.max(acceptCount ?? 0, pending.length) + storyUpload.unseen;
   const goPeople = useCallback((page: 'activity' | 'requests' | 'friends') => {
     setPeoplePage(page);
     setPeopleOpen(true);
+    if (page === 'activity') markStoryUploadNoticesSeen();
     if (page === 'requests') onSeeRequests?.();
   }, [onSeeRequests]);
 
@@ -1535,7 +1538,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
                     <img
                       src={mediaUrl(line.mediaKey)}
                       alt=""
-                      className="max-h-56 max-w-full rounded-xl object-cover"
+                      className="max-h-56 max-w-full rounded-xl object-contain"
                     />
                   </a>
                 )}
@@ -1544,7 +1547,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
                     src={mediaUrl(line.mediaKey)}
                     controls
                     playsInline
-                    className="mb-1 max-h-56 max-w-full rounded-xl"
+                    className="mb-1 max-h-56 max-w-full rounded-xl object-contain"
                   />
                 )}
                 {line.mediaExpired && !line.mediaKey && (

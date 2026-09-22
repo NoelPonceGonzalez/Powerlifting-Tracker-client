@@ -155,11 +155,11 @@ export function AvatarCropModal({ image, onCancel, onConfirm }: AvatarCropModalP
                 <defs>
                   <mask id={maskId}>
                     <rect width="100%" height="100%" fill="white" />
-                    <circle cx="50%" cy="50%" r="46%" fill="black" />
+                    <circle cx="50%" cy="50%" r="50%" fill="black" />
                   </mask>
                 </defs>
                 <rect width="100%" height="100%" fill="rgba(0,0,0,0.55)" mask={`url(#${maskId})`} />
-                <circle cx="50%" cy="50%" r="46%" fill="none" stroke="white" strokeWidth="3" />
+                <circle cx="50%" cy="50%" r="49%" fill="none" stroke="white" strokeWidth="3" />
               </svg>
             </>
           )}

@@ -25,6 +25,7 @@ import {
   formatStoryTime,
   isUploadableMedia,
   needsStoryPrepare,
+  storyFrameSize,
   probeVideoDuration,
   storyFont,
   storyRecorderOptions,
@@ -54,6 +55,7 @@ import {
   isSecureCameraContext,
   readCameraPermission,
 } from '@/src/pwa/mediaAccess';
+import { beginStoryUpload, isStoryUploading } from '@/src/lib/storyUpload';
 import { cn } from '@/src/lib/utils';
 
 interface StoryCameraProps {
@@ -280,11 +282,11 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
   const [thumbs, setThumbs] = useState<string[]>([]);
   const [playhead, setPlayhead] = useState(0);
   const [probing, setProbing] = useState(false);
-  const [sessionCount, setSessionCount] = useState(0);
   const [justPublished, setJustPublished] = useState(false);
   const [audience, setAudience] = useState<Audience>('all');
   const [frame, setFrame] = useState<FrameXform>(EMPTY_FRAME);
   const [boxSize, setBoxSize] = useState({ w: 0, h: 0 });
+  const boxSizeRef = useRef({ w: 0, h: 0 });
   /** Vídeo sin volumen: se quita la pista de audio al subirlo. */
   const [muted, setMuted] = useState(false);
   const [texts, setTexts] = useState<StoryTextOverlay[]>([]);
@@ -617,7 +619,6 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     setThumbs([]);
     setPlayhead(0);
     setProbing(false);
-    setSessionCount(0);
     setJustPublished(false);
     imgNatRef.current = null;
     setFrame(EMPTY_FRAME);
@@ -1025,6 +1026,10 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
 
   const publish = async () => {
     if (!file || saving) return;
+    if (!avatarOnly && !chatMode && isStoryUploading()) {
+      setError('Espera a que termine de subirse la historia anterior.');
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -1034,79 +1039,71 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
         onClose();
         return;
       }
-      let toSend = file;
-      if (file.type.startsWith('image/')) {
-        toSend = await exportFramedPhoto(file, false);
-      } else if (file.type.startsWith('video/') && duration != null) {
-        const f = frameRef.current;
-        const box = frameBoxRef.current;
-        const nat = imgNatRef.current;
-        const fw = box?.clientWidth || boxSize.w || 1;
-        const fh = box?.clientHeight || boxSize.h || 1;
-        const moved = !!(nat && frameDirty(f, fw, fh, nat.w, nat.h));
-        const overlays = storyTextsForExport(texts);
-        // Un MKV o un 3GPP de la galería no lo admite el servidor: se recodifica aquí.
-        // El texto y el silencio también obligan a recodificar: van dentro del propio clip.
-        if (
-          moved ||
-          muted ||
-          overlays.length > 0 ||
-          !isUploadableMedia(file.type) ||
-          needsStoryPrepare(file, duration, trimStart, clipLen)
-        ) {
-          toSend = await trimVideoFile(file, trimStart, trimStart + clipLen, {
-            rotationDeg: frameAngle(f),
-            x: f.x,
-            y: f.y,
-            w: f.w,
-            h: f.h,
-            viewW: fw,
-            viewH: fh,
-            mute: muted,
-            texts: overlays,
-          });
+      const source = file;
+      const f = { ...frameRef.current };
+      const box = frameBoxRef.current;
+      const nat = imgNatRef.current;
+      const fw = box?.clientWidth || boxSize.w || 1;
+      const fh = box?.clientHeight || boxSize.h || 1;
+      const moved = !!(nat && frameDirty(f, fw, fh, nat.w, nat.h));
+      const overlays = storyTextsForExport(texts);
+      const clip = { start: trimStart, len: clipLen, duration, muted, audience, isImage: source.type.startsWith('image/'), isVideo: source.type.startsWith('video/') };
+      const prepare = async (signal: AbortSignal) => {
+        let toSend = source;
+        if (clip.isImage) {
+          toSend = await exportFramedPhoto(source, false, { frame: f, texts: overlays, viewW: fw, viewH: fh });
+        } else if (clip.isVideo && clip.duration != null) {
+          if (
+            moved ||
+            clip.muted ||
+            overlays.length > 0 ||
+            !isUploadableMedia(source.type) ||
+            needsStoryPrepare(source, clip.duration, clip.start, clip.len)
+          ) {
+            toSend = await trimVideoFile(source, clip.start, clip.start + clip.len, {
+              rotationDeg: frameAngle(f),
+              x: f.x,
+              y: f.y,
+              w: f.w,
+              h: f.h,
+              viewW: fw,
+              viewH: fh,
+              mute: clip.muted,
+              texts: overlays,
+              signal,
+            });
+          }
         }
-      }
-      if (toSend.size > STORY_UPLOAD_MAX_BYTES) {
-        throw new Error('Pesa más de lo que aguanta el servidor. Recorta a 1 min o menos.');
-      }
-      if (!isUploadableMedia(toSend.type)) {
-        throw new Error('Ese formato no se puede subir. Elige el vídeo desde la galería y recórtalo aquí.');
-      }
+        if (signal.aborted) throw new DOMException('La subida se ha cancelado.', 'AbortError');
+        if (toSend.size > STORY_UPLOAD_MAX_BYTES) {
+          throw new Error('Pesa más de lo que aguanta el servidor. Recorta a 1 min o menos.');
+        }
+        if (!isUploadableMedia(toSend.type)) {
+          throw new Error('Ese formato no se puede subir. Elige el vídeo desde la galería y recórtalo aquí.');
+        }
+        return toSend;
+      };
       if (chatMode) {
+        const toSend = await prepare(new AbortController().signal);
         onPickImage?.(toSend);
         onClose();
         return;
       }
-      const post = await publishMedia(toSend, { kind: 'story', audience });
-      onPublished?.(post);
-      setSessionCount(n => n + 1);
-      setJustPublished(true);
-      setFile(null);
-      setDuration(null);
-      dropPreviewUrl();
+      const started = beginStoryUpload(async signal => {
+        const toSend = await prepare(signal);
+        const post = await publishMedia(toSend, { kind: 'story', audience: clip.audience, signal });
+        onPublished?.(post);
+      });
+      if (!started) {
+        setError('Espera a que termine de subirse la historia anterior.');
+        return;
+      }
+      onClose();
     } catch (e: any) {
       setError(e?.message || 'No se ha podido subir');
     } finally {
       setSaving(false);
     }
-  };
-
-  const addAnother = () => {
-    setJustPublished(false);
-    setFile(null);
-    setError(null);
-    setDuration(null);
-    imgNatRef.current = null;
-    setFrame(EMPTY_FRAME);
-    setMuted(false);
-    setTexts([]);
-    setTextDraft(null);
-    setHoldingId(null);
-    setOverTrash(false);
-    setBinningId(null);
-    dropPreviewUrl();
-    void startStream(facing);
   };
 
   const onPreviewLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
@@ -1140,10 +1137,31 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     const sync = () => {
       const fw = el.clientWidth;
       const fh = el.clientHeight;
-      setBoxSize({ w: fw, h: fh });
-      if (imgNatRef.current && frameRef.current.w === 0 && fw > 2 && fh > 2) {
+      const prev = boxSizeRef.current;
+      if (
+        prev.w > 2 &&
+        prev.h > 2 &&
+        fw > 2 &&
+        fh > 2 &&
+        frameRef.current.w > 0 &&
+        (Math.abs(fw - prev.w) > 1 || Math.abs(fh - prev.h) > 1)
+      ) {
+        const s = fw / prev.w;
+        const f = frameRef.current;
+        setFrame({ ...f, x: f.x * s, y: f.y * s, w: f.w * s, h: f.h * s });
+        setTexts(
+          textsRef.current.map(t => ({
+            ...t,
+            x: t.x * s,
+            y: t.y * s,
+            size: clampStoryTextSize(t.size * s),
+          }))
+        );
+      } else if (imgNatRef.current && frameRef.current.w === 0 && fw > 2 && fh > 2) {
         setFrame(coverXform(fw, fh, imgNatRef.current.w, imgNatRef.current.h, frameRef.current.turns, frameRef.current.tilt));
       }
+      boxSizeRef.current = { w: fw, h: fh };
+      setBoxSize({ w: fw, h: fh });
     };
     sync();
     const ro = new ResizeObserver(sync);
@@ -1169,16 +1187,24 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     };
   }, [file, previewUrl]);
 
-  const exportFramedPhoto = async (source: File, square: boolean) => {
-    const url = previewUrlRef.current || URL.createObjectURL(source);
+  const exportFramedPhoto = async (
+    source: File,
+    square: boolean,
+    shot?: { frame: FrameXform; texts: StoryTextOverlay[]; viewW: number; viewH: number }
+  ) => {
+    const url = shot ? URL.createObjectURL(source) : (previewUrlRef.current || URL.createObjectURL(source));
     const img = new Image();
     img.src = url;
     await img.decode();
     const box = frameBoxRef.current;
-    const vw = box?.clientWidth || (typeof window === 'undefined' ? 390 : window.innerWidth);
-    const vh = box?.clientHeight || (typeof window === 'undefined' ? 844 : window.innerHeight);
-    const W = 1080;
-    const H = square ? 1080 : 1920;
+    const vw = shot?.viewW || box?.clientWidth || (typeof window === 'undefined' ? 390 : window.innerWidth);
+    const vh = shot?.viewH || box?.clientHeight || (typeof window === 'undefined' ? 844 : window.innerHeight);
+    const framedOut = square
+      ? { W: 1080, H: 1080, scale: 1080 / Math.max(1, Math.min(vw, vh)) }
+      : storyFrameSize(vw, vh, 1920);
+    const W = framedOut.W;
+    const H = framedOut.H;
+    const place = framedOut.scale;
     const canvas = document.createElement('canvas');
     canvas.width = W;
     canvas.height = H;
@@ -1190,7 +1216,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     ctx.filter = 'none';
     ctx.fillStyle = 'rgba(0,0,0,0.22)';
     ctx.fillRect(0, 0, W, H);
-    let { x, y, w, h, rot, turns, tilt } = frameRef.current;
+    let { x, y, w, h, rot, turns, tilt } = shot?.frame || frameRef.current;
     if (w <= 0 || h <= 0) {
       const filled = coverXform(vw, vh, img.width, img.height, turns, tilt);
       x = filled.x;
@@ -1201,13 +1227,13 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
       tilt = filled.tilt;
     }
     ctx.save();
-    ctx.translate(W / 2 + x * (W / vw), H / 2 + y * (H / vh));
+    ctx.translate(W / 2 + x * place, H / 2 + y * place);
     ctx.rotate(((rot + (tilt || 0)) * Math.PI) / 180);
-    ctx.drawImage(img, -(w * W / vw) / 2, -(h * H / vh) / 2, w * (W / vw), h * (H / vh));
+    ctx.drawImage(img, -(w * place) / 2, -(h * place) / 2, w * place, h * place);
     ctx.restore();
-    if (!square) drawStoryTexts(ctx, texts, W, H, vw, vh);
+    if (!square) drawStoryTexts(ctx, shot?.texts || texts, W, H, vw, vh);
     const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92));
-    if (!previewUrlRef.current) URL.revokeObjectURL(url);
+    if (shot || !previewUrlRef.current) URL.revokeObjectURL(url);
     if (!blob) return source;
     return new File([blob], square ? 'perfil.jpg' : 'historia.jpg', { type: 'image/jpeg' });
   };
@@ -1618,23 +1644,25 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
       />
       {!file && !justPublished && (
         <>
-          <video
-            ref={videoRef}
-            playsInline
-            autoPlay
-            muted
-            controls={false}
-            disablePictureInPicture
-            disableRemotePlayback
-            className="absolute inset-0 h-full w-full bg-black object-contain"
-            style={{
-              transform: hwZoom
-                ? facing === 'user' ? 'scaleX(-1)' : undefined
-                : facing === 'user'
-                  ? `scaleX(-1) scale(${zoomUi})`
-                  : `scale(${zoomUi})`,
-            }}
-          />
+          <div className="absolute inset-0">
+            <video
+              ref={videoRef}
+              playsInline
+              autoPlay
+              muted
+              controls={false}
+              disablePictureInPicture
+              disableRemotePlayback
+              className="h-full w-full bg-black object-contain"
+              style={{
+                transform: hwZoom
+                  ? facing === 'user' ? 'scaleX(-1)' : undefined
+                  : facing === 'user'
+                    ? `scaleX(-1) scale(${zoomUi})`
+                    : `scale(${zoomUi})`,
+              }}
+            />
+          </div>
           {camReady && (
             <div className="absolute right-3 top-1/2 z-20 flex -translate-y-1/2 flex-col items-center gap-2">
               <button
@@ -1792,7 +1820,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
               className={cn(
                 'absolute overflow-hidden',
                 avatarOnly
-                  ? 'left-1/2 top-1/2 aspect-square w-[min(78vw,20rem)] -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-white/85 ring-offset-2 ring-offset-black/30'
+                  ? 'left-1/2 top-1/2 aspect-square w-[min(78vw,70dvh,20rem)] max-h-[min(78vw,70dvh,20rem)] -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-white/85 ring-offset-2 ring-offset-black/30'
                   : 'inset-0'
               )}
             >
@@ -1952,17 +1980,6 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
         </div>
       )}
 
-      {justPublished && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-zinc-950 px-8 text-center">
-          <p className="text-lg font-black">Historia subida</p>
-          <p className="text-sm text-white/65">
-            {sessionCount > 1
-              ? `Llevas ${sessionCount} hoy. Cada una es un tramo de hasta 1 min y se borra a las 24 h.`
-              : `Se borra en 24 h. Puedes añadir otra: el + de tu círculo o aquí.`}
-          </p>
-        </div>
-      )}
-
       <div
         className={cn(
           'absolute inset-x-0 top-0 z-30 flex items-center justify-between px-3 pt-[max(12px,env(safe-area-inset-top))]',
@@ -2032,24 +2049,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
         )}
         style={{ transform: pull ? `translateY(${-pull * 0.35}px)` : undefined }}
       >
-        {justPublished ? (
-          <div className="flex flex-col items-center gap-3">
-            <button
-              type="button"
-              onClick={addAnother}
-              className="w-full rounded-full bg-white py-3 text-sm font-semibold text-slate-900"
-            >
-              Añadir otra
-            </button>
-            <button
-              type="button"
-              onClick={onClose}
-              className="text-sm font-semibold text-white/70"
-            >
-              Listo
-            </button>
-          </div>
-        ) : file ? (
+        {file ? (
           <div className="space-y-3">
             {isVideo && duration != null && (
               <StoryTrimStrip

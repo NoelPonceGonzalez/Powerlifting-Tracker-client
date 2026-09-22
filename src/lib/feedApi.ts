@@ -121,13 +121,16 @@ export function fetchUserPosts(userId: string) {
   return apiGet<{ posts: FeedPost[] }>(`/api/feed/users/${userId}/posts`);
 }
 
-export function publishMedia(file: File, opts: { kind: 'post' | 'story'; caption?: string; audience?: 'all' | 'close' }) {
+export function publishMedia(
+  file: File,
+  opts: { kind: 'post' | 'story'; caption?: string; audience?: 'all' | 'close'; signal?: AbortSignal }
+) {
   const form = new FormData();
   form.append('file', file);
   form.append('kind', opts.kind);
   if (opts.caption) form.append('caption', opts.caption);
   if (opts.audience) form.append('audience', opts.audience);
-  return apiUpload<FeedPost>('/api/feed/posts', form);
+  return apiUpload<FeedPost>('/api/feed/posts', form, opts.signal);
 }
 
 /** Avisar de que has visto una historia (el autor ve la lista de espectadores). */

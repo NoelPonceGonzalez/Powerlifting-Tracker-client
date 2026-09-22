@@ -579,7 +579,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
                 playsInline
                 muted={false}
                 draggable={false}
-                className="h-full w-full object-cover"
+                className="absolute inset-0 h-full w-full object-cover object-center"
                 onLoadedData={e => {
                   if (e.currentTarget.videoWidth > 0) markReady(item.id);
                 }}
@@ -599,7 +599,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
                 alt={item.caption || ''}
                 draggable={false}
                 decoding="async"
-                className="h-full w-full object-cover"
+                className="absolute inset-0 h-full w-full object-cover object-center"
                 onLoad={e => {
                   const el = e.currentTarget;
                   if (el.naturalWidth < 1) return;

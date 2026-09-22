@@ -7,6 +7,7 @@ import { Button } from '@/src/components/ui/Button';
 import { SlimeScroll } from '@/src/components/ui/SlimeScroll';
 import { apiGet, apiPut } from '@/src/lib/api';
 import { timeAgo } from '@/src/lib/feedApi';
+import { useStoryUpload } from '@/src/lib/storyUpload';
 import { EASE_OUT } from '@/src/lib/motionPresets';
 import { useLongPress } from '@/src/lib/useLongPress';
 import { cn } from '@/src/lib/utils';
@@ -156,6 +157,7 @@ export function ChatPeoplePanel({
     setQ('');
   }, [page, friendsFilter]);
 
+  const storyUpload = useStoryUpload();
   const recent = notes.filter(isLiveActivity);
 
   if (page === 'friends') {
@@ -393,15 +395,28 @@ export function ChatPeoplePanel({
           <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Esta semana</p>
           <p className="text-[11px] text-slate-400">Se borra a los 7 días</p>
         </div>
-        {loadingNotes ? (
+        {loadingNotes && storyUpload.notices.length === 0 ? (
           <LoadingBlock className="py-10" />
-        ) : recent.length === 0 ? (
+        ) : recent.length === 0 && storyUpload.notices.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-200/80 bg-transparent px-5 py-10 text-center">
             <p className="text-sm font-medium text-slate-500 dark:text-slate-400">Sin avisos esta semana</p>
             <p className="mt-1 text-xs text-slate-400">Likes, follows y entrenos aparecerán aquí.</p>
           </div>
         ) : (
           <ol className="space-y-2">
+            {storyUpload.notices.map(note => (
+              <li key={note.id}>
+                <div className="flex items-start gap-3 rounded-2xl bg-slate-100/80 px-3 py-2.5 dark:bg-slate-800/55">
+                  <span className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-white dark:bg-slate-900">
+                    <Clock size={16} className="text-rose-500" />
+                  </span>
+                  <span className="min-w-0 flex-1 pt-0.5">
+                    <span className="block text-[13px] leading-snug text-slate-700 dark:text-slate-200">{note.message}</span>
+                    <span className="mt-1 block text-[11px] tabular-nums text-slate-400">{timeAgo(note.createdAt)}</span>
+                  </span>
+                </div>
+              </li>
+            ))}
             {recent.map(note => {
               const uid = note.relatedUserId;
               const followBack =

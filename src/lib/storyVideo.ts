@@ -13,6 +13,22 @@ export const STORY_SOURCE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
  */
 export const STORY_OUT_W = 720;
 export const STORY_OUT_H = 1280;
+
+/**
+ * Lienzo con la proporción de la pantalla de edición.
+ * Una sola escala, como object-fit: cover: llena sin estirar y sin franjas.
+ */
+export function storyFrameSize(viewW: number, viewH: number, longEdge: number): { W: number; H: number; scale: number } {
+  const vw = Math.max(1, viewW);
+  const vh = Math.max(1, viewH);
+  const edge = Math.max(2, longEdge);
+  const raw = vh >= vw ? edge / vh : edge / vw;
+  let W = Math.max(2, Math.round(vw * raw));
+  let H = Math.max(2, Math.round(vh * raw));
+  if (W % 2) W += 1;
+  if (H % 2) H += 1;
+  return { W, H, scale: Math.min(W / vw, H / vh) };
+}
 export const STORY_VIDEO_BITRATE = 3_200_000;
 export const STORY_AUDIO_BITRATE = 64_000;
 export const STORY_THUMB_COUNT = 10;
@@ -197,9 +213,8 @@ export function drawStoryText(
 ): void {
   const value = text.value.replace(/\s+$/, '');
   if (!value.trim()) return;
-  const sx = W / Math.max(1, viewW);
-  const sy = H / Math.max(1, viewH);
-  const px = Math.max(8, text.size * sx);
+  const s = Math.min(W / Math.max(1, viewW), H / Math.max(1, viewH));
+  const px = Math.max(8, text.size * s);
   const fill = text.color || '#ffffff';
   ctx.save();
   ctx.font = storyTextFont(px, text.font);
@@ -209,7 +224,7 @@ export function drawStoryText(
   ctx.miterLimit = 2;
   const lines = wrapStoryText(ctx, value, W * STORY_TEXT_MAX_W);
   const lh = px * STORY_TEXT_LINE;
-  ctx.translate(W / 2 + text.x * sx, H / 2 + text.y * sy);
+  ctx.translate(W / 2 + text.x * s, H / 2 + text.y * s);
   ctx.rotate((text.rot * Math.PI) / 180);
   ctx.lineWidth = Math.max(1.25, px * 0.055);
   ctx.strokeStyle = storyStrokeColor(fill);
@@ -270,6 +285,22 @@ type CapturableVideo = HTMLVideoElement & {
   mozCaptureStream?: (frameRequestRate?: number) => MediaStream;
 };
 
+/**
+ * El audio sale por Web Audio, no por `video.captureStream()`.
+ * En Chrome, capturar el vídeo y a la vez pintarlo en un canvas deja
+ * los fotogramas en negro: se oye el audio y el texto flota sobre negro.
+ */
+function pipeElementAudio(video: HTMLVideoElement, into: MediaStream, audio: AudioContext): () => void {
+  const source = audio.createMediaElementSource(video);
+  const dest = audio.createMediaStreamDestination();
+  source.connect(dest);
+  dest.stream.getAudioTracks().forEach(track => into.addTrack(track));
+  return () => {
+    try { source.disconnect(); } catch { /* ya cerrado */ }
+    void audio.close();
+  };
+}
+
 function pickRecorderMime(): string | undefined {
   if (typeof MediaRecorder === 'undefined') return undefined;
   for (const type of ['video/mp4', 'video/webm;codecs=vp9', 'video/webm']) {
@@ -297,6 +328,7 @@ export async function trimVideoFile(
     /** Sube el clip sin pista de audio. */
     mute?: boolean;
     texts?: StoryTextOverlay[] | null;
+    signal?: AbortSignal;
   }
 ): Promise<File> {
   const from = Math.max(0, startSec);
@@ -306,22 +338,48 @@ export async function trimVideoFile(
   const overlays = storyTextsForExport(opts?.texts);
   const mute = !!opts?.mute;
   const bakeRotate = (rotation > 0.8 && rotation < 359.2) || framed || overlays.length > 0;
+  const AudioCtor = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  const audioCtx = !mute && bakeRotate && AudioCtor ? new AudioCtor() : null;
+  if (audioCtx) void audioCtx.resume();
   const url = URL.createObjectURL(file);
   const video = document.createElement('video') as CapturableVideo;
   video.muted = mute;
+  video.volume = mute ? 0 : 1;
   video.playsInline = true;
   video.preload = 'auto';
+  video.setAttribute('playsinline', 'true');
+  // Fuera de pantalla, pero con tamaño: si opacity es 0 Chrome no decodifica fotogramas.
+  video.style.cssText = 'position:fixed;left:0;top:0;width:8px;height:8px;opacity:0.02;pointer-events:none;z-index:-1';
+  document.body.appendChild(video);
   video.src = url;
   let stopDraw: (() => void) | null = null;
+  let releaseAudio: (() => void) | null = null;
+  let rec: MediaRecorder | null = null;
+  const signal = opts?.signal;
+  const cancel = () => {
+    if (signal?.aborted) throw new DOMException('La subida se ha cancelado.', 'AbortError');
+  };
+  const until = <T,>(work: Promise<T>): Promise<T> => {
+    if (!signal) return work;
+    return Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        if (signal.aborted) reject(new DOMException('La subida se ha cancelado.', 'AbortError'));
+        else signal.addEventListener('abort', () => reject(new DOMException('La subida se ha cancelado.', 'AbortError')), { once: true });
+      }),
+    ]);
+  };
 
   try {
-    await new Promise<void>((resolve, reject) => {
+    await until(new Promise<void>((resolve, reject) => {
       video.onloadeddata = () => resolve();
       video.onerror = () => reject(new Error('No se ha podido abrir el vídeo para recortar.'));
-    });
+    }));
+    cancel();
 
     const capture = video.captureStream?.bind(video) ?? video.mozCaptureStream?.bind(video);
-    if (!capture || typeof MediaRecorder === 'undefined') {
+    const canPaint = typeof HTMLCanvasElement !== 'undefined' && 'captureStream' in HTMLCanvasElement.prototype;
+    if (typeof MediaRecorder === 'undefined' || (bakeRotate ? !canPaint : !capture)) {
       throw new Error(
         'Este móvil no puede recortar aquí. En Fotos/Galería recorta el vídeo a 1 min y elige ese clip.'
       );
@@ -338,8 +396,12 @@ export async function trimVideoFile(
 
     let stream: MediaStream;
     if (bakeRotate) {
-      const W = STORY_OUT_W;
-      const H = STORY_OUT_H;
+      const viewW = opts?.viewW && opts.viewW > 8 ? opts.viewW : STORY_OUT_W;
+      const viewH = opts?.viewH && opts.viewH > 8 ? opts.viewH : STORY_OUT_H;
+      const framedOut = storyFrameSize(viewW, viewH, STORY_OUT_H);
+      const W = framedOut.W;
+      const H = framedOut.H;
+      const s = framedOut.scale;
       const canvas = document.createElement('canvas');
       canvas.width = W;
       canvas.height = H;
@@ -355,12 +417,10 @@ export async function trimVideoFile(
         ctx.fillRect(0, 0, W, H);
         ctx.save();
         if (framed && opts) {
-          const viewW = opts.viewW || W;
-          const viewH = opts.viewH || H;
-          ctx.translate(W / 2 + (opts.x || 0) * (W / viewW), H / 2 + (opts.y || 0) * (H / viewH));
+          ctx.translate(W / 2 + (opts.x || 0) * s, H / 2 + (opts.y || 0) * s);
           ctx.rotate(rad);
-          const dw = (opts.w || vw) * (W / viewW);
-          const dh = (opts.h || vh) * (H / viewH);
+          const dw = (opts.w || vw) * s;
+          const dh = (opts.h || vh) * s;
           ctx.drawImage(video, -dw / 2, -dh / 2, dw, dh);
         } else {
           ctx.translate(W / 2, H / 2);
@@ -371,20 +431,41 @@ export async function trimVideoFile(
           ctx.drawImage(video, -(vw * s) / 2, -(vh * s) / 2, vw * s, vh * s);
         }
         ctx.restore();
-        if (overlays.length) drawStoryTexts(ctx, overlays, W, H, opts?.viewW || W, opts?.viewH || H);
+        if (overlays.length) drawStoryTexts(ctx, overlays, W, H, viewW, viewH);
       };
       let raf = 0;
       const loop = () => {
         paint();
         raf = requestAnimationFrame(loop);
       };
+      stopDraw = () => cancelAnimationFrame(raf);
+      await video.play();
+      await new Promise<void>(resolve => {
+        const v = video as HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number };
+        if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(() => resolve());
+        else requestAnimationFrame(() => resolve());
+      });
+      video.pause();
+      video.currentTime = from;
+      await new Promise<void>(resolve => {
+        if (Math.abs(video.currentTime - from) < 0.08) {
+          resolve();
+          return;
+        }
+        video.onseeked = () => resolve();
+        window.setTimeout(resolve, 700);
+      });
       paint();
       raf = requestAnimationFrame(loop);
-      stopDraw = () => cancelAnimationFrame(raf);
       const visual = canvas.captureStream(30);
-      if (!mute) capture(30).getAudioTracks().forEach(t => visual.addTrack(t));
+      if (audioCtx) releaseAudio = pipeElementAudio(video, visual, audioCtx);
       stream = visual;
     } else {
+      if (!capture) {
+        throw new Error(
+          'Este móvil no puede recortar aquí. En Fotos/Galería recorta el vídeo a 1 min y elige ese clip.'
+        );
+      }
       const captured = capture(30);
       if (mute) {
         captured.getAudioTracks().forEach(t => {
@@ -396,7 +477,7 @@ export async function trimVideoFile(
     }
 
     const mime = pickRecorderMime();
-    const rec = new MediaRecorder(stream, storyRecorderOptions(mime));
+    rec = new MediaRecorder(stream, storyRecorderOptions(mime));
     const chunks: Blob[] = [];
     rec.ondataavailable = e => {
       if (e.data.size > 0) chunks.push(e.data);
@@ -406,11 +487,12 @@ export async function trimVideoFile(
       rec.onerror = () => reject(new Error('No se ha podido recortar el vídeo.'));
     });
 
+    cancel();
     rec.start(80);
     await video.play();
 
     const clipMs = (to - from) * 1000;
-    await new Promise<void>(resolve => {
+    await until(new Promise<void>(resolve => {
       const hard = window.setTimeout(() => resolve(), clipMs + 350);
       const tick = () => {
         if (video.currentTime >= to - 0.04 || video.ended) {
@@ -421,13 +503,16 @@ export async function trimVideoFile(
         requestAnimationFrame(tick);
       };
       tick();
-    });
+    }));
+    cancel();
 
     video.pause();
     if (rec.state !== 'inactive') rec.stop();
-    stopDraw?.();
-    stream.getTracks().forEach(t => t.stop());
     const blob = await finished;
+    stopDraw?.();
+    releaseAudio?.();
+    releaseAudio = null;
+    stream.getTracks().forEach(t => t.stop());
     if (blob.size > STORY_UPLOAD_MAX_BYTES) {
       throw new Error('El recorte sigue siendo muy pesado para el servidor. Elige un tramo más corto.');
     }
@@ -435,6 +520,12 @@ export async function trimVideoFile(
     return withCleanMime(blob, `historia.${ext}`, `video/${ext}`);
   } finally {
     stopDraw?.();
+    releaseAudio?.();
+    try {
+      if (rec && rec.state !== 'inactive') rec.stop();
+    } catch {
+      /* ya parado */
+    }
     URL.revokeObjectURL(url);
     video.src = '';
     video.remove();
