@@ -467,6 +467,8 @@ export const ChatTab: React.FC<ChatTabProps> = ({
   const [waitingPeer, setWaitingPeer] = useState(false);
   const [incomingPeer, setIncomingPeer] = useState(false);
   const [blockedPeer, setBlockedPeer] = useState<'you' | 'them' | null>(null);
+  const [peerFollow, setPeerFollow] = useState<'unknown' | 'can-send' | 'sent' | 'following'>('unknown');
+  const [peerFollowBusy, setPeerFollowBusy] = useState(false);
   const [incomingRequestId, setIncomingRequestId] = useState<string | null>(null);
   const [incomingBusy, setIncomingBusy] = useState(false);
   const [prefs, setPrefs] = useState<Record<string, ChatPref>>(() => readPrefs(myId));
@@ -731,6 +733,16 @@ export const ChatTab: React.FC<ChatTabProps> = ({
     setWaitingPeer(false);
     setIncomingPeer(false);
     setIncomingRequestId(null);
+    setPeerFollow(friends.some(f => f.id === author.id) ? 'following' : 'unknown');
+    setPeerFollowBusy(false);
+    void fetchProfile(author.id)
+      .then(p => {
+        if (!stillThisChat(seq, id)) return;
+        if (p.canSendRequest || p.friendshipStatus === 'follower') setPeerFollow('can-send');
+        else if (p.friendshipStatus === 'pending' && p.friendshipDirection === 'outgoing') setPeerFollow('sent');
+        else setPeerFollow('following');
+      })
+      .catch(() => {});
     try {
       const res = await fetchChatMessages(author.id);
       if (!stillThisChat(seq, id)) return;
@@ -751,7 +763,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
     } finally {
       if (stillThisChat(seq, id)) setThreadBusy(false);
     }
-  }, [markThreadRead, stillThisChat]);
+  }, [friends, markThreadRead, stillThisChat]);
 
   const openGroup = useCallback(async (group: ChatGroupCard) => {
     const seq = ++chatSeq.current;
@@ -1277,6 +1289,34 @@ export const ChatTab: React.FC<ChatTabProps> = ({
               </span>
               <Pencil size={14} className="shrink-0 text-slate-400" />
             </button>
+          )}
+          {open.kind === 'dm' && peerFollow === 'can-send' && (
+            <button
+              type="button"
+              disabled={peerFollowBusy || !onSendRequest}
+              onClick={() => {
+                if (!onSendRequest) return;
+                setPeerFollowBusy(true);
+                void onSendRequest(open.peer.id)
+                  .then(() => setPeerFollow('sent'))
+                  .catch(() => {})
+                  .finally(() => setPeerFollowBusy(false));
+              }}
+              className="rounded-xl p-2 text-indigo-600 hover:bg-indigo-50 disabled:opacity-40 dark:text-indigo-300 dark:hover:bg-indigo-950/40"
+              aria-label="Enviar solicitud de amistad"
+              title="Enviar solicitud de amistad"
+            >
+              {peerFollowBusy ? <Loader2 size={18} className="animate-spin" /> : <UserPlus size={18} />}
+            </button>
+          )}
+          {open.kind === 'dm' && peerFollow === 'sent' && (
+            <span
+              className="rounded-xl p-2 text-amber-500 dark:text-amber-300"
+              title="Solicitud enviada"
+              aria-label="Solicitud enviada"
+            >
+              <Check size={18} />
+            </span>
           )}
           <button
             type="button"
