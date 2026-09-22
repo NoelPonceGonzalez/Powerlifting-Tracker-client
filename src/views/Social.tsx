@@ -848,7 +848,6 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [joinSubmitting, setJoinSubmitting] = useState(false);
 
   const pendingRequests = requests.filter(r => r.status === 'pending' && !r.needsFollowBack);
-  const [justAccepted, setJustAccepted] = useState<FriendRequest[]>([]);
 
   /** Quién te ha pedido ser su entrenador: se acepta o se rechaza desde Actividad. */
   const [coachRequests, setCoachRequests] = useState<CoachRequest[]>([]);
@@ -1259,10 +1258,6 @@ export const SocialView: React.FC<SocialViewProps> = ({
     return myRoutines.find((r) => r.name === expectedName) ?? null;
   }, [friendRoutine, friendProfile?.name, showFriendModal?.name, myRoutines]);
 
-  useEffect(() => {
-    if (activeTab !== 'friends') setJustAccepted([]);
-  }, [activeTab]);
-
   const handleRequestAction = useCallback(async (id: string, action: (id: string) => void | Promise<void>) => {
     setAcceptRejectLoadingId(id);
     setFriendActionError(null);
@@ -1580,42 +1575,16 @@ export const SocialView: React.FC<SocialViewProps> = ({
               </motion.div>
             )}
 
-            {(pendingRequests.length > 0 || justAccepted.length > 0 || groupInvites.length > 0 || chatAsks.length > 0) && (
+            {(pendingRequests.length > 0 || groupInvites.length > 0 || chatAsks.length > 0) && (
               <section>
                 <div className="flex items-center gap-2 mb-4">
                   <h2 className="text-xl font-black text-slate-800 uppercase tracking-tight dark:text-slate-100">Solicitudes pendientes</h2>
                   <span className="bg-indigo-100 text-indigo-600 dark:bg-indigo-950/60 dark:text-indigo-300 px-2 py-0.5 rounded-full text-xs font-bold">
-                    {pendingRequests.length + justAccepted.length + groupInvites.length + chatAsks.length}
+                    {pendingRequests.length + groupInvites.length + chatAsks.length}
                   </span>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {justAccepted.map(req => (
-                    <Card key={req.id} padding="md" rounded="xl" className="flex items-center justify-between">
-                      <div className="flex items-center gap-4">
-                        <Avatar src={req.avatar} userId={req.userId || req.id} name={req.name} className="w-12 h-12 rounded-full border-2 border-slate-100 dark:border-slate-700" />
-                        <div>
-                          <h3 className="font-bold text-slate-900 dark:text-slate-100">{req.name}</h3>
-                          <p className="text-xs text-slate-500">Aceptado · envíale solicitud de amistad</p>
-                        </div>
-                      </div>
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        disabled={!onSendFriendRequest || !req.userId || acceptRejectLoadingId === req.userId}
-                        onClick={() => {
-                          if (!req.userId || !onSendFriendRequest) return;
-                          void handleRequestAction(req.userId, async uid => {
-                            await onSendFriendRequest(uid);
-                            setJustAccepted(prev => prev.filter(r => (r.userId || r.id) !== uid));
-                          });
-                        }}
-                        className="rounded-full px-3"
-                      >
-                        {acceptRejectLoadingId === req.userId ? <Loader2 size={16} className="animate-spin" /> : 'Enviar solicitud'}
-                      </Button>
-                    </Card>
-                  ))}
                   {pendingRequests.map(req => (
                     <Card key={req.id} padding="md" rounded="xl" className="flex items-center justify-between">
                       <div className="flex items-center gap-4">
@@ -1639,23 +1608,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                           variant="primary" 
                           size="sm" 
                           disabled={acceptRejectLoadingId === req.id}
-                          onClick={() => {
-                            const uid = req.userId || req.id;
-                            setJustAccepted(prev => {
-                              if (prev.some(r => r.userId === uid || r.id === uid)) return prev;
-                              return [
-                                ...prev,
-                                {
-                                  ...req,
-                                  id: `followback-${uid}`,
-                                  userId: uid,
-                                  status: 'pending',
-                                  needsFollowBack: true,
-                                },
-                              ];
-                            });
-                            handleRequestAction(req.id, onAccept);
-                          }}
+                          onClick={() => handleRequestAction(req.id, onAccept)}
                           className="w-10 h-10 p-0 rounded-full bg-emerald-500 hover:bg-emerald-600 shadow-emerald-100"
                         >
                           {acceptRejectLoadingId === req.id ? <Loader2 size={18} className="animate-spin" /> : <UserCheck size={18} />}

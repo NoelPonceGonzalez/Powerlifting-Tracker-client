@@ -899,6 +899,16 @@ export const ChatTab: React.FC<ChatTabProps> = ({
         const at = event.at || new Date().toISOString();
         setMessages(prev => prev.map(m => (m.mine && !m.readAt ? { ...m, readAt: at } : m)));
       }
+      if (event.type === 'chat_wipe') {
+        const wiped =
+          current?.kind === 'dm' &&
+          (event.peerId === current.peer.id || event.otherId === current.peer.id);
+        if (wiped) {
+          setOpen(null);
+          setMessages([]);
+        }
+        void loadInbox();
+      }
     });
   }, [loadInbox, markThreadRead]);
 
@@ -1122,11 +1132,11 @@ export const ChatTab: React.FC<ChatTabProps> = ({
     }
   };
 
-  const confirmDelete = async (forEveryone = false) => {
+  const confirmDelete = async () => {
     if (!pendingDelete || deleting) return;
     setDeleting(true);
     try {
-      if (pendingDelete.kind === 'dm') await deleteChat(pendingDelete.peerId, forEveryone);
+      if (pendingDelete.kind === 'dm') await deleteChat(pendingDelete.peerId, true);
       else await deleteGroupChat(pendingDelete.groupId);
       const closed =
         (open?.kind === 'dm' && pendingDelete.kind === 'dm' && open.peer.id === pendingDelete.peerId) ||
@@ -1191,21 +1201,11 @@ export const ChatTab: React.FC<ChatTabProps> = ({
             variant="danger"
             className="flex-1 rounded-xl"
             disabled={deleting}
-            onClick={() => void confirmDelete(false)}
+            onClick={() => void confirmDelete()}
           >
             {deleting ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
-            {deleting ? 'Eliminando…' : pendingDelete?.kind === 'dm' ? 'Solo yo' : 'Eliminar'}
+            {deleting ? 'Eliminando…' : 'Eliminar'}
           </Button>
-          {pendingDelete?.kind === 'dm' && (
-            <Button
-              variant="danger"
-              className="flex-1 rounded-xl"
-              disabled={deleting}
-              onClick={() => void confirmDelete(true)}
-            >
-              Los dos
-            </Button>
-          )}
         </div>
       }
     >
@@ -1214,7 +1214,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({
           ? pendingDelete.team
             ? 'Sales del equipo y desaparece de tu lista. Los demás siguen.'
             : 'Sales del grupo y desaparece de tu lista. Los demás siguen.'
-          : 'Solo yo: se quita de tu lista. Los dos: se borra el chat para ambos.'}
+          : 'Se borra el chat para los dos. Desaparece de las dos listas.'}
       </p>
     </GlassModal>
   );

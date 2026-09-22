@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { MODAL_RISE, SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
-import { Dumbbell, GraduationCap, Heart, Loader2, MapPin, MessageCircle, Trophy, UserCheck, UserPlus, Users, UserX, X } from 'lucide-react';
+import { Dumbbell, GraduationCap, Heart, Loader2, MapPin, MessageCircle, Trophy, UserCheck, Users, UserX, X } from 'lucide-react';
 import { apiGet, apiPut } from '@/src/lib/api';
 import { coachRequestCopy, coachRequestPerson, timeAgo, type ChatAsk, type ChatGroupInvite, type CoachRequest } from '@/src/lib/feedApi';
 import type { FriendRequest } from '@/src/types';
@@ -97,7 +97,6 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
 }) => {
   const [notes, setNotes] = useState<AppNotification[]>([]);
   const [loadingNotes, setLoadingNotes] = useState(false);
-  const [justAccepted, setJustAccepted] = useState<FriendRequest[]>([]);
 
   useEffect(() => {
     if (!open) return;
@@ -111,13 +110,8 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
       .catch(() => {});
   }, [open, refreshTick, onNotificationsRead]);
 
-  useEffect(() => {
-    if (!open) setJustAccepted([]);
-  }, [open]);
-
   const inbox = pendingRequests.filter(r => !r.needsFollowBack);
-  const followBackInbox = justAccepted;
-  const requestCount = inbox.length + followBackInbox.length + chatAsks.length + groupInvites.length + coachRequests.length;
+  const requestCount = inbox.length + chatAsks.length + groupInvites.length + coachRequests.length;
   const recent = notes.filter(isLiveActivityNote);
 
   if (typeof document === 'undefined') return null;
@@ -195,52 +189,13 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
                           <button
                             type="button"
                             disabled={acceptRejectLoadingId === req.id}
-                            onClick={() => {
-                              const uid = req.userId || req.id;
-                              setJustAccepted(prev => {
-                                if (prev.some(r => r.userId === uid || r.id === uid)) return prev;
-                                return [
-                                  ...prev,
-                                  {
-                                    ...req,
-                                    id: `followback-${uid}`,
-                                    userId: uid,
-                                    status: 'pending',
-                                    needsFollowBack: true,
-                                  },
-                                ];
-                              });
-                              onAcceptFriend(req.id);
-                            }}
+                            onClick={() => onAcceptFriend(req.id)}
                             className="flex h-9 w-9 items-center justify-center rounded-full bg-emerald-500 text-white"
                             aria-label="Aceptar"
                           >
                             {acceptRejectLoadingId === req.id ? <Loader2 size={16} className="animate-spin" /> : <UserCheck size={16} />}
                           </button>
                         </div>
-                      </div>
-                    ))}
-                    {followBackInbox.map(req => (
-                      <div key={req.id} className="flex items-center gap-3 rounded-2xl bg-white/70 px-3 py-2.5 dark:bg-slate-800/50">
-                        <Avatar src={req.avatar} userId={req.userId || req.id} name={req.name} className="h-10 w-10 shrink-0 rounded-full" />
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{req.name}</p>
-                          <p className="text-[11px] text-slate-400">Aceptado · envíale solicitud de amistad</p>
-                        </div>
-                        <button
-                          type="button"
-                          disabled={!onSendFriendRequest || !req.userId || acceptRejectLoadingId === req.userId}
-                          onClick={() => {
-                            if (!req.userId || !onSendFriendRequest) return;
-                            void Promise.resolve(onSendFriendRequest(req.userId)).then(() => {
-                              setJustAccepted(prev => prev.filter(r => (r.userId || r.id) !== req.userId));
-                            });
-                          }}
-                          className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-indigo-600 px-3 text-[12px] font-semibold text-white disabled:opacity-40"
-                        >
-                          {acceptRejectLoadingId === req.userId ? <Loader2 size={14} className="animate-spin" /> : <UserPlus size={14} />}
-                          Enviar solicitud
-                        </button>
                       </div>
                     ))}
                     {chatAsks.map(ask => (

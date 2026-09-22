@@ -32,6 +32,11 @@ export type ChatRealtimeEvent =
       peerId?: string;
       groupId?: string;
       at?: string;
+    }
+  | {
+      type: 'chat_wipe';
+      peerId?: string;
+      otherId?: string;
     };
 
 const EVENT = 'pl-chat';

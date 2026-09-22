@@ -121,14 +121,8 @@ export function ChatPeoplePanel({
     sent: ConnectionPerson[];
   }>({ following: [], followers: [], all: [], sent: [] });
   const sentIds = useMemo(() => new Set(connections.sent.map(p => p.id)), [connections.sent]);
-  const [justAccepted, setJustAccepted] = useState<FriendRequest[]>([]);
   const inbox = useMemo(() => pending.filter(r => !r.needsFollowBack), [pending]);
-  const followBackInbox = justAccepted;
   const requestCount = inbox.length;
-
-  useEffect(() => {
-    if (page !== 'requests') setJustAccepted([]);
-  }, [page]);
 
   useEffect(() => {
     setLoadingNotes(true);
@@ -311,143 +305,50 @@ export function ChatPeoplePanel({
   }
 
   if (page === 'requests') {
-    const sendFollowBack = async (req: FriendRequest) => {
-      const uid = req.userId || req.id;
-      if (!onSendRequest || !uid || sentIds.has(uid)) return;
-      setSendingId(uid);
-      try {
-        await onSendRequest(uid);
-        setJustAccepted(prev => prev.filter(r => (r.userId || r.id) !== uid));
-        setConnections(prev => {
-          if (prev.sent.some(s => s.id === uid)) return prev;
-          return {
-            ...prev,
-            sent: [{ id: uid, name: req.name, avatar: req.avatar, canSendRequest: false }, ...prev.sent],
-          };
-        });
-      } finally {
-        setSendingId(null);
-      }
-    };
-
     return (
-      <div className="min-h-[28rem] space-y-4">
-        {inbox.length === 0 && followBackInbox.length === 0 ? (
+      <div className="min-h-[28rem]">
+        {inbox.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-5 py-14 text-center dark:border-slate-700 dark:bg-slate-900">
             <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">No tienes más solicitudes</p>
           </div>
         ) : (
-          <>
-            {inbox.length > 0 && (
-              <div className="rounded-3xl bg-white shadow-sm dark:bg-slate-900">
-                <AnimatePresence initial={false}>
-                  {inbox.map((req, i) => (
-                    <motion.div
-                      key={req.id}
-                      layout
-                      initial={{ opacity: 1, height: 'auto' }}
-                      exit={{ opacity: 0, height: 0 }}
-                      transition={{ duration: 0.22, ease: EASE_OUT }}
-                      className={
-                        i > 0
-                          ? 'flex items-center gap-3 overflow-hidden border-t border-slate-100 px-3.5 py-3 dark:border-slate-800'
-                          : 'flex items-center gap-3 overflow-hidden px-3.5 py-3'
-                      }
-                    >
-                      <button
-                        type="button"
-                        onClick={() => onOpenPerson?.({ id: req.userId || req.id, name: req.name, avatar: req.avatar })}
-                        className="min-w-0 flex-1 text-left"
-                      >
-                        <span className="flex items-center gap-3">
-                          <Avatar src={req.avatar} userId={req.userId || req.id} name={req.name} className="h-11 w-11 rounded-full" />
-                          <span className="min-w-0">
-                            <span className="block truncate text-[15px] font-semibold text-slate-900 dark:text-slate-100">{req.name}</span>
-                            <span className="text-[12px] text-slate-400">Quiere seguirte</span>
-                          </span>
-                        </span>
-                      </button>
-                      <AcceptRow
-                        busy={busyId === req.id}
-                        onReject={() => onReject(req.id)}
-                        onAccept={() => {
-                          setJustAccepted(prev => {
-                            const uid = req.userId || req.id;
-                            if (prev.some(r => r.userId === uid || r.id === uid)) return prev;
-                            return [
-                              ...prev,
-                              {
-                                ...req,
-                                id: `followback-${uid}`,
-                                userId: uid,
-                                status: 'pending',
-                                needsFollowBack: true,
-                              },
-                            ];
-                          });
-                          onAccept(req.id);
-                        }}
-                      />
-                    </motion.div>
-                  ))}
-                </AnimatePresence>
-              </div>
-            )}
-            {followBackInbox.length > 0 && (
-              <section>
-                <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                  Enviar solicitud
-                </p>
-                <div className="rounded-3xl bg-white shadow-sm dark:bg-slate-900">
-                  {followBackInbox.map((req, i) => {
-                    const uid = req.userId || req.id;
-                    const sent = sentIds.has(uid);
-                    return (
-                      <div
-                        key={req.id}
-                        className={
-                          i > 0
-                            ? 'flex items-center gap-3 border-t border-slate-100 px-3.5 py-3 dark:border-slate-800'
-                            : 'flex items-center gap-3 px-3.5 py-3'
-                        }
-                      >
-                        <button
-                          type="button"
-                          onClick={() => onOpenPerson?.({ id: uid, name: req.name, avatar: req.avatar })}
-                          className="min-w-0 flex-1 text-left"
-                        >
-                          <span className="flex items-center gap-3">
-                            <Avatar src={req.avatar} userId={uid} name={req.name} className="h-11 w-11 rounded-full" />
-                            <span className="min-w-0">
-                              <span className="block truncate text-[15px] font-semibold text-slate-900 dark:text-slate-100">{req.name}</span>
-                              <span className="text-[12px] text-slate-400">Aceptado · envíale solicitud de amistad</span>
-                            </span>
-                          </span>
-                        </button>
-                        {sent ? (
-                          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
-                            <Clock size={12} />
-                            Enviada
-                          </span>
-                        ) : (
-                          <Button
-                            variant="primary"
-                            size="sm"
-                            className="h-9 shrink-0 rounded-full px-3 text-[12px]"
-                            disabled={sendingId === uid || !onSendRequest}
-                            onClick={() => void sendFollowBack(req)}
-                          >
-                            {sendingId === uid ? <Loader2 size={14} className="animate-spin" /> : <UserPlus size={14} />}
-                            Enviar solicitud
-                          </Button>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </section>
-            )}
-          </>
+          <div className="rounded-3xl bg-white shadow-sm dark:bg-slate-900">
+            <AnimatePresence initial={false}>
+              {inbox.map((req, i) => (
+                <motion.div
+                  key={req.id}
+                  layout
+                  initial={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.22, ease: EASE_OUT }}
+                  className={
+                    i > 0
+                      ? 'flex items-center gap-3 overflow-hidden border-t border-slate-100 px-3.5 py-3 dark:border-slate-800'
+                      : 'flex items-center gap-3 overflow-hidden px-3.5 py-3'
+                  }
+                >
+                  <button
+                    type="button"
+                    onClick={() => onOpenPerson?.({ id: req.userId || req.id, name: req.name, avatar: req.avatar })}
+                    className="min-w-0 flex-1 text-left"
+                  >
+                    <span className="flex items-center gap-3">
+                      <Avatar src={req.avatar} userId={req.userId || req.id} name={req.name} className="h-11 w-11 rounded-full" />
+                      <span className="min-w-0">
+                        <span className="block truncate text-[15px] font-semibold text-slate-900 dark:text-slate-100">{req.name}</span>
+                        <span className="text-[12px] text-slate-400">Quiere seguirte</span>
+                      </span>
+                    </span>
+                  </button>
+                  <AcceptRow
+                    busy={busyId === req.id}
+                    onReject={() => onReject(req.id)}
+                    onAccept={() => onAccept(req.id)}
+                  />
+                </motion.div>
+              ))}
+            </AnimatePresence>
+          </div>
         )}
       </div>
     );
