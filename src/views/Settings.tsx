@@ -29,6 +29,7 @@ import { Avatar } from '@/src/components/ui/Avatar';
 import { Button } from '@/src/components/ui/Button';
 import { Input } from '@/src/components/ui/Input';
 import { AvatarCropModal } from '@/src/components/AvatarCropModal';
+import { StoryCamera } from '@/src/components/social/StoryCamera';
 import { User } from '@/src/types';
 import type { AccountSummary } from '@/src/lib/savedAccounts';
 import { cn } from '@/src/lib/utils';
@@ -102,7 +103,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onRemoveSavedAccount,
 }) => {
   const galleryInputRef = React.useRef<HTMLInputElement | null>(null);
-  const cameraInputRef = React.useRef<HTMLInputElement | null>(null);
+  const [avatarCam, setAvatarCam] = useState(false);
   const photoMenuRef = React.useRef<HTMLDivElement | null>(null);
   const [photoMenuOpen, setPhotoMenuOpen] = React.useState(false);
 
@@ -381,7 +382,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       role="menuitem"
                       className="flex w-full items-center gap-2 px-4 py-3 text-left text-sm font-semibold text-slate-800 hover:bg-slate-50 dark:text-slate-100 dark:hover:bg-slate-700/80"
                       onClick={() => {
-                        cameraInputRef.current?.click();
+                        setAvatarCam(true);
                         setPhotoMenuOpen(false);
                       }}
                     >
@@ -409,17 +410,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   type="file"
                   accept="image/*,.heic,.heif,.jpg,.jpeg,.png,.webp,.gif"
                   className="pointer-events-none absolute h-px w-px overflow-hidden opacity-0"
-                  onChange={(e) => {
-                    handleAvatarFile(e.target.files?.[0]);
-                    e.target.value = '';
-                  }}
-                />
-                <input
-                  ref={cameraInputRef}
-                  type="file"
-                  accept="image/*"
-                  capture="user"
-                  className="hidden"
                   onChange={(e) => {
                     handleAvatarFile(e.target.files?.[0]);
                     e.target.value = '';
@@ -614,6 +604,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
       <CloseFriendsModal open={closeFriendsOpen} onClose={() => setCloseFriendsOpen(false)} />
       <BlockedUsersModal open={blockedOpen} onClose={() => setBlockedOpen(false)} />
+
+      <StoryCamera
+        open={avatarCam}
+        mode="avatar"
+        onClose={() => setAvatarCam(false)}
+        onPickImage={file => {
+          setAvatarCam(false);
+          void handleAvatarFile(file);
+        }}
+      />
 
       <AvatarCropModal
         image={cropImage}

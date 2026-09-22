@@ -251,24 +251,37 @@ export function cameraPromptIsLastChance(): boolean {
 }
 
 /**
- * MDN / WebKit: facingMode como string (ideal). Sin width/height: iOS falla el prompt.
+ * El sensor del móvil es 4:3. Pedir 9:16 (720×1280) obliga a Chrome y a Safari a
+ * recortar y ampliar (`resizeMode: crop-and-scale`): eso es el zoom de más.
+ * `resizeMode: none` pide el sensor entero; Safari a veces lo ignora, por eso el
+ * tamaño pedido ya es 4:3 y, si falla, se reintenta sin él.
+ *
+ * MDN / WebKit: facingMode como string. Sin width/height iOS a veces no enseña el aviso.
  * No uses `exact`: si no hay esa cámara, ni siquiera pregunta.
+ *
+ * Safari no implementa el zoom de la pista (`getCapabilities().zoom` viene vacío).
+ * El pellizco en pantalla lo hace la vista; aquí solo se abre la cámara lo más abierta.
  *
  * Los reintentos son SOLO para cuando la cámara pedida no encaja (iOS, tablets con una
  * sola cámara). Si el fallo es de permiso hay que parar en seco: cada getUserMedia
  * rechazado cuenta como descarte y a los 3 Chrome mete el origen en cuarentena una
  * semana, y entonces ya no vuelve a preguntar ni pulsando Activar.
- *
- * Único punto por el que pasan todas las peticiones de cámara, así que la cuenta de
- * descartes se lleva aquí y vale para Ajustes y para la pantalla de historias.
  */
 export async function getCameraStream(facing: 'user' | 'environment' = 'environment'): Promise<MediaStream> {
   const devices = ensureMediaDevices();
   if (!devices?.getUserMedia) {
     throw new DOMException('No hay cámara en este navegador.', 'NotFoundError');
   }
+  const wide = {
+    facingMode: facing,
+    width: { ideal: 1280 },
+    height: { ideal: 960 },
+    aspectRatio: { ideal: 4 / 3 },
+    resizeMode: 'none',
+  } as MediaTrackConstraints;
   const tries: MediaStreamConstraints[] = [
-    { audio: false, video: { facingMode: facing, width: { ideal: 720 }, height: { ideal: 1280 } } },
+    { audio: false, video: wide },
+    { audio: false, video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 960 } } },
     { audio: false, video: { facingMode: { ideal: facing } } },
     { audio: false, video: true },
   ];
@@ -289,6 +302,44 @@ export async function getCameraStream(facing: 'user' | 'environment' = 'environm
     }
   }
   throw last instanceof Error ? last : new DOMException('No se ha podido abrir la cámara.', 'NotAllowedError');
+}
+
+export interface CameraZoomRange {
+  min: number;
+  max: number;
+  step: number;
+}
+
+/**
+ * Zoom óptico/digital de la pista. Chrome Android lo trae; Safari en iPhone no
+ * (la capacidad no aparece). Si devuelve null, el zoom se hace en la vista.
+ */
+export function cameraZoomRange(track: MediaStreamTrack): CameraZoomRange | null {
+  try {
+    const caps = track.getCapabilities?.() as MediaTrackCapabilities & {
+      zoom?: { min?: number; max?: number; step?: number };
+    };
+    const zoom = caps?.zoom;
+    if (!zoom || typeof zoom.min !== 'number' || typeof zoom.max !== 'number' || !(zoom.max > zoom.min)) {
+      return null;
+    }
+    return {
+      min: zoom.min,
+      max: zoom.max,
+      step: zoom.step && zoom.step > 0 ? zoom.step : 0.1,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function applyCameraZoom(track: MediaStreamTrack, zoom: number): Promise<void> {
+  const withZoom = { advanced: [{ zoom }] } as unknown as MediaTrackConstraints;
+  try {
+    await track.applyConstraints(withZoom);
+  } catch {
+    await track.applyConstraints({ zoom } as unknown as MediaTrackConstraints);
+  }
 }
 
 /**

@@ -40,8 +40,11 @@ import {
   FILE_INPUT_VISUAL,
   GALLERY_MEDIA_ACCEPT,
   GALLERY_PHOTOS_ACCEPT,
+  applyCameraZoom,
+  cameraZoomRange,
   getCameraStream,
   markCameraGranted,
+  type CameraZoomRange,
   markGalleryReady,
   cameraBlockedHint,
   cameraFallbackHint,
@@ -197,6 +200,9 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
   const videoRef = useRef<HTMLVideoElement>(null);
   const previewRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const zoomRef = useRef(1);
+  const zoomRangeRef = useRef<CameraZoomRange | null>(null);
+  const zoomLoopRef = useRef(0);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const holdTimer = useRef<number | null>(null);
@@ -251,6 +257,8 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
 
   const [facing, setFacing] = useState<'user' | 'environment'>('environment');
   const [camReady, setCamReady] = useState(false);
+  const [zoomUi, setZoomUi] = useState(1);
+  const [hwZoom, setHwZoom] = useState(false);
   const [camDenied, setCamDenied] = useState(false);
   /** Safari necesita que el getUserMedia salga de un toque: pedimos confirmación. */
   const [needTap, setNeedTap] = useState(false);
@@ -294,10 +302,28 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
 
   const stopStream = useCallback(() => {
     camGen.current += 1;
+    if (zoomLoopRef.current) cancelAnimationFrame(zoomLoopRef.current);
+    zoomLoopRef.current = 0;
     streamRef.current?.getTracks().forEach(t => t.stop());
     streamRef.current = null;
+    zoomRangeRef.current = null;
+    zoomRef.current = 1;
+    setHwZoom(false);
+    setZoomUi(1);
     if (videoRef.current) videoRef.current.srcObject = null;
     setCamReady(false);
+  }, []);
+
+  const setZoomLevel = useCallback((n: number) => {
+    const range = zoomRangeRef.current;
+    const min = range?.min ?? 1;
+    const max = range?.max ?? 3;
+    const next = Math.min(max, Math.max(min, n));
+    zoomRef.current = next;
+    setZoomUi(next);
+    const track = streamRef.current?.getVideoTracks()[0];
+    if (!track || !range) return;
+    void applyCameraZoom(track, next).catch(() => undefined);
   }, []);
 
   const startStream = useCallback(async (mode: 'user' | 'environment') => {
@@ -360,6 +386,14 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
         return false;
       }
       markCameraGranted();
+      const track = stream.getVideoTracks()[0];
+      const range = track ? cameraZoomRange(track) : null;
+      zoomRangeRef.current = range;
+      setHwZoom(!!range);
+      const widest = range?.min ?? 1;
+      zoomRef.current = widest;
+      setZoomUi(widest);
+      if (track && range) void applyCameraZoom(track, widest).catch(() => undefined);
       setCamReady(true);
       setCamDenied(false);
       return true;
@@ -457,6 +491,39 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
       }, 600);
     };
   }, [open, facing, startStream, stopStream, file, justPublished]);
+
+  useEffect(() => {
+    const el = videoRef.current;
+    if (!open || !camReady || file || justPublished || !el) return;
+    const gap = (touches: TouchList) => {
+      const a = touches[0];
+      const b = touches[1];
+      return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    };
+    let pinch: { dist: number; zoom: number } | null = null;
+    const onStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) pinch = { dist: gap(e.touches), zoom: zoomRef.current };
+    };
+    const onMove = (e: TouchEvent) => {
+      if (!pinch || e.touches.length < 2) return;
+      e.preventDefault();
+      const ratio = gap(e.touches) / pinch.dist;
+      setZoomLevel(pinch.zoom * ratio);
+    };
+    const onEnd = () => {
+      pinch = null;
+    };
+    el.addEventListener('touchstart', onStart, { passive: true });
+    el.addEventListener('touchmove', onMove, { passive: false });
+    el.addEventListener('touchend', onEnd);
+    el.addEventListener('touchcancel', onEnd);
+    return () => {
+      el.removeEventListener('touchstart', onStart);
+      el.removeEventListener('touchmove', onMove);
+      el.removeEventListener('touchend', onEnd);
+      el.removeEventListener('touchcancel', onEnd);
+    };
+  }, [open, camReady, file, justPublished, setZoomLevel]);
 
   const dropPreviewUrl = useCallback(() => {
     if (previewUrlRef.current) {
@@ -724,15 +791,20 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
       return;
     }
     const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    const z = zoomRangeRef.current ? 1 : Math.max(1, zoomRef.current);
+    const sw = video.videoWidth / z;
+    const sh = video.videoHeight / z;
+    const sx = (video.videoWidth - sw) / 2;
+    const sy = (video.videoHeight - sh) / 2;
+    canvas.width = Math.max(1, Math.round(sw));
+    canvas.height = Math.max(1, Math.round(sh));
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     if (facing === 'user') {
       ctx.translate(canvas.width, 0);
       ctx.scale(-1, 1);
     }
-    ctx.drawImage(video, 0, 0);
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
     canvas.toBlob(blob => {
       if (!blob) return;
       acceptFile(new File([blob], 'historia.jpg', { type: 'image/jpeg' }));
@@ -766,18 +838,68 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
 
   const startRecording = () => {
     const stream = streamRef.current;
-    if (!stream) return;
+    const video = videoRef.current;
+    if (!stream || !video) return;
     if (typeof MediaRecorder === 'undefined') {
       setError('Este móvil no puede grabar aquí. Elige un vídeo de la galería.');
       return;
     }
+    const softwareZoom = !zoomRangeRef.current && zoomRef.current > 1.04 && video.videoWidth > 0;
+    let recordStream = stream;
+    if (softwareZoom && typeof HTMLCanvasElement !== 'undefined' && 'captureStream' in HTMLCanvasElement.prototype) {
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        const draw = () => {
+          const z = Math.max(1, zoomRef.current);
+          const sw = video.videoWidth / z;
+          const sh = video.videoHeight / z;
+          const sx = (video.videoWidth - sw) / 2;
+          const sy = (video.videoHeight - sh) / 2;
+          ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+          zoomLoopRef.current = requestAnimationFrame(draw);
+        };
+        draw();
+        try {
+          const painted = canvas.captureStream(30);
+          stream.getAudioTracks().forEach(t => {
+            if (t.readyState === 'live') painted.addTrack(t);
+          });
+          recordStream = painted;
+        } catch {
+          if (zoomLoopRef.current) cancelAnimationFrame(zoomLoopRef.current);
+          zoomLoopRef.current = 0;
+          recordStream = stream;
+        }
+      }
+    }
     const mime = pickRecorderMime();
-    const rec = new MediaRecorder(stream, storyRecorderOptions(mime));
+    let rec: MediaRecorder;
+    try {
+      rec = new MediaRecorder(recordStream, storyRecorderOptions(mime));
+    } catch {
+      if (zoomLoopRef.current) cancelAnimationFrame(zoomLoopRef.current);
+      zoomLoopRef.current = 0;
+      if (recordStream === stream) {
+        setError('No se ha podido grabar. Prueba de nuevo o elige un vídeo de la galería.');
+        return;
+      }
+      try {
+        rec = new MediaRecorder(stream, storyRecorderOptions(mime));
+      } catch {
+        setError('No se ha podido grabar. Prueba de nuevo o elige un vídeo de la galería.');
+        return;
+      }
+    }
     chunksRef.current = [];
     rec.ondataavailable = e => {
       if (e.data.size > 0) chunksRef.current.push(e.data);
     };
     rec.onstop = () => {
+      if (zoomLoopRef.current) cancelAnimationFrame(zoomLoopRef.current);
+      zoomLoopRef.current = 0;
       const type = rec.mimeType || 'video/webm';
       const blob = new Blob(chunksRef.current, { type });
       const ext = type.includes('mp4') ? 'mp4' : 'webm';
@@ -788,6 +910,8 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     try {
       rec.start();
     } catch {
+      if (zoomLoopRef.current) cancelAnimationFrame(zoomLoopRef.current);
+      zoomLoopRef.current = 0;
       setError('No se ha podido grabar. Prueba de nuevo o elige un vídeo de la galería.');
       return;
     }
@@ -1502,11 +1626,46 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
             controls={false}
             disablePictureInPicture
             disableRemotePlayback
-            className={cn(
-              'absolute inset-0 h-full w-full object-cover',
-              facing === 'user' && 'scale-x-[-1]'
-            )}
+            className="absolute inset-0 h-full w-full bg-black object-contain"
+            style={{
+              transform: hwZoom
+                ? facing === 'user' ? 'scaleX(-1)' : undefined
+                : facing === 'user'
+                  ? `scaleX(-1) scale(${zoomUi})`
+                  : `scale(${zoomUi})`,
+            }}
           />
+          {camReady && (
+            <div className="absolute right-3 top-1/2 z-20 flex -translate-y-1/2 flex-col items-center gap-2">
+              <button
+                type="button"
+                aria-label="Acercar"
+                onClick={() => {
+                  const range = zoomRangeRef.current;
+                  const step = range ? Math.max(range.step, (range.max - range.min) / 8) : 0.25;
+                  setZoomLevel(zoomRef.current + step);
+                }}
+                className="flex h-10 w-10 items-center justify-center rounded-full bg-black/45 text-lg font-semibold text-white ring-1 ring-white/25 backdrop-blur-md"
+              >
+                +
+              </button>
+              <span className="min-w-10 rounded-full bg-black/45 px-2 py-1 text-center text-[11px] font-semibold tabular-nums text-white ring-1 ring-white/20">
+                {zoomUi < 10 ? `${zoomUi.toFixed(1)}×` : `${Math.round(zoomUi)}×`}
+              </span>
+              <button
+                type="button"
+                aria-label="Alejar"
+                onClick={() => {
+                  const range = zoomRangeRef.current;
+                  const step = range ? Math.max(range.step, (range.max - range.min) / 8) : 0.25;
+                  setZoomLevel(zoomRef.current - step);
+                }}
+                className="flex h-10 w-10 items-center justify-center rounded-full bg-black/45 text-lg font-semibold text-white ring-1 ring-white/25 backdrop-blur-md"
+              >
+                −
+              </button>
+            </div>
+          )}
           {needTap && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-8 text-center">
               <p className="text-lg font-bold text-white">
@@ -1984,10 +2143,10 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
         {!file && !justPublished && !chooser && !needTap && (
           <p className="mt-3 text-center text-[11px] text-white/55">
             {avatarOnly
-              ? 'Solo foto · luego la encuadras en círculo'
+              ? 'Pellizca o usa +/− para el zoom · luego la encuadras en círculo'
               : chatMode
-                ? 'Toca para foto · mantén pulsado para vídeo · se borra en 24 h'
-                : 'Toca para foto · mantén pulsado para vídeo · máximo 1 min'}
+                ? 'Pellizca para el zoom · toca para foto · mantén para vídeo'
+                : 'Pellizca para el zoom · toca para foto · mantén para vídeo · 1 min'}
           </p>
         )}
         {file && !justPublished && (
