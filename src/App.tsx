@@ -1711,16 +1711,29 @@ export default function App() {
   };
 
   const handleAcceptFriend = async (id: string) => {
-    const req = friends.find(f => f.id === id);
     try {
-      const res = await apiPut<{ friend?: Friend }>(`/api/social/requests/${id}/accept`, {});
-      setFriends(prev => prev.filter(f => f.id !== id));
-      const friend = res?.friend || (req
-        ? { id: req.userId || req.id, name: req.name, avatar: req.avatar }
-        : null);
-      if (friend?.id && friend.id !== user?.id) {
-        setFriendsList(prev => (prev.some(f => f.id === friend.id) ? prev : [friend, ...prev]));
-      }
+      const acceptRes = await apiPut<{
+        id: string;
+        canSendRequest?: boolean;
+        friend?: { id: string; name: string; avatar?: string };
+      }>(`/api/social/requests/${id}/accept`, {});
+      setFriends(prev => {
+        const next = prev.filter(f => f.id !== id);
+        if (acceptRes.canSendRequest && acceptRes.friend?.id) {
+          const uid = acceptRes.friend.id;
+          if (!next.some(r => r.userId === uid || r.id === uid)) {
+            next.push({
+              id: acceptRes.id || `followback-${uid}`,
+              userId: uid,
+              name: acceptRes.friend.name,
+              avatar: acceptRes.friend.avatar,
+              status: 'pending',
+              needsFollowBack: true,
+            });
+          }
+        }
+        return next;
+      });
       const [friendsRes, requestsRes] = await Promise.all([
         apiGet<Friend[]>('/api/social/friends'),
         apiGet<FriendRequest[]>('/api/social/requests'),

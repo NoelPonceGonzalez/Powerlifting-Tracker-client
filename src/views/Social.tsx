@@ -458,7 +458,7 @@ function ChallengeDetailBody({
                 )}>
                   {rank}
                 </span>
-                <Avatar src={p.avatar} userId={p.id} name={p.name} className="h-9 w-9 shrink-0 rounded-full border border-white/80 dark:border-slate-700" />
+                <Avatar src={p.avatar} userId={p.userId} name={p.name} className="h-9 w-9 shrink-0 rounded-full border border-white/80 dark:border-slate-700" />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
                     {p.name}{isMe ? ' (tú)' : ''}
@@ -848,6 +848,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [joinSubmitting, setJoinSubmitting] = useState(false);
 
   const pendingRequests = requests.filter(r => r.status === 'pending' && !r.needsFollowBack);
+  const followBackRequests = requests.filter(r => r.needsFollowBack);
 
   /** Quién te ha pedido ser su entrenador: se acepta o se rechaza desde Actividad. */
   const [coachRequests, setCoachRequests] = useState<CoachRequest[]>([]);
@@ -862,7 +863,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [friendsFromProfile, setFriendsFromProfile] = useState(false);
   const [friendsPageTick, setFriendsPageTick] = useState(0);
   const [friendsFilter, setFriendsFilter] = useState<'all' | 'following' | 'followers'>('all');
-  const activityBadge = pendingRequests.length + coachRequests.length + groupInvites.length + chatAsks.length;
+  const activityBadge =
+    pendingRequests.length + followBackRequests.length + coachRequests.length + groupInvites.length + chatAsks.length;
   const markHomeNotifsRead = useCallback(() => {}, []);
 
   const loadCoachRequests = useCallback(() => {
@@ -1524,7 +1526,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
               myName={user.name}
               friends={friendsList}
               startWith={chatPeerId}
-              pending={pendingRequests}
+              pending={requests.filter(r => r.status === 'pending')}
               acceptCount={activityBadge}
               onOpened={() => setChatPeerId(null)}
               onOpenMini={person => openFriendModal({ id: person.id, name: person.name, avatar: person.avatar ?? undefined })}
@@ -1575,38 +1577,45 @@ export const SocialView: React.FC<SocialViewProps> = ({
               </motion.div>
             )}
 
-            {(pendingRequests.length > 0 || groupInvites.length > 0 || chatAsks.length > 0) && (
+            {(pendingRequests.length > 0 || followBackRequests.length > 0 || groupInvites.length > 0 || chatAsks.length > 0) && (
               <section>
                 <div className="flex items-center gap-2 mb-4">
                   <h2 className="text-xl font-black text-slate-800 uppercase tracking-tight dark:text-slate-100">Solicitudes pendientes</h2>
                   <span className="bg-indigo-100 text-indigo-600 dark:bg-indigo-950/60 dark:text-indigo-300 px-2 py-0.5 rounded-full text-xs font-bold">
-                    {pendingRequests.length + groupInvites.length + chatAsks.length}
+                    {pendingRequests.length + followBackRequests.length + groupInvites.length + chatAsks.length}
                   </span>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {followBackRequests.map(req => (
+                    <Card key={req.id} padding="md" rounded="xl" className="flex items-center justify-between">
+                      <div className="flex items-center gap-4">
+                        <Avatar src={req.avatar} userId={req.userId || req.id} name={req.name} className="w-12 h-12 rounded-full border-2 border-slate-100 dark:border-slate-700" />
+                        <div>
+                          <h3 className="font-bold text-slate-900 dark:text-slate-100">{req.name}</h3>
+                          <p className="text-xs text-slate-500">Te sigue · envíale solicitud para ser amigos</p>
+                        </div>
+                      </div>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        disabled={!onSendFriendRequest || !req.userId || acceptRejectLoadingId === req.userId}
+                        onClick={() => req.userId && onSendFriendRequest && void handleRequestAction(req.userId, onSendFriendRequest)}
+                        className="rounded-full px-3"
+                      >
+                        {acceptRejectLoadingId === req.userId ? <Loader2 size={16} className="animate-spin" /> : 'Enviar solicitud'}
+                      </Button>
+                    </Card>
+                  ))}
                   {pendingRequests.map(req => (
                     <Card key={req.id} padding="md" rounded="xl" className="flex items-center justify-between">
                       <div className="flex items-center gap-4">
                         <Avatar src={req.avatar} userId={req.userId || req.id} name={req.name} className="w-12 h-12 rounded-full border-2 border-slate-100 dark:border-slate-700" />
                         <div>
                           <h3 className="font-bold text-slate-900 dark:text-slate-100">{req.name}</h3>
-                          <p className="text-xs text-slate-500">
-                            {req.needsFollowBack ? 'Te sigue · envíale solicitud para ser amigos' : 'Quiere ser tu amigo'}
-                          </p>
+                          <p className="text-xs text-slate-500">Quiere ser tu amigo</p>
                         </div>
                       </div>
-                      {req.needsFollowBack ? (
-                        <Button
-                          variant="primary"
-                          size="sm"
-                          disabled={!onSendFriendRequest || !req.userId || acceptRejectLoadingId === req.userId}
-                          onClick={() => req.userId && onSendFriendRequest && void handleRequestAction(req.userId, onSendFriendRequest)}
-                          className="rounded-full px-3"
-                        >
-                          {acceptRejectLoadingId === req.userId ? <Loader2 size={16} className="animate-spin" /> : 'Enviar solicitud'}
-                        </Button>
-                      ) : (
                       <div className="flex gap-2">
                         <Button 
                           variant="outline" 
@@ -1627,7 +1636,6 @@ export const SocialView: React.FC<SocialViewProps> = ({
                           {acceptRejectLoadingId === req.id ? <Loader2 size={18} className="animate-spin" /> : <UserCheck size={18} />}
                         </Button>
                       </div>
-                      )}
                     </Card>
                   ))}
                   {chatAsks.map(ask => (
@@ -1935,7 +1943,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                       onClick={() => void openFriendModal({ id: ask.from.id, name: ask.from.name, avatar: ask.from.avatar ?? undefined })}
                       className="flex min-w-0 flex-1 items-center gap-3 text-left"
                     >
-                      <FeedAvatar name={ask.from.name} avatar={ask.from.avatar} size={42} />
+                      <FeedAvatar name={ask.from.name} avatar={ask.from.avatar} userId={ask.from.id} size={42} />
                       <span className="min-w-0">
                         <span className="block truncate text-sm font-bold text-slate-900 dark:text-slate-100">
                           {ask.from.name}
@@ -1989,7 +1997,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                       onClick={() => void openFriendModal({ id: inv.from.id, name: inv.from.name, avatar: inv.from.avatar ?? undefined })}
                       className="flex min-w-0 flex-1 items-center gap-3 text-left"
                     >
-                      <FeedAvatar name={inv.from.name} avatar={inv.from.avatar} size={42} />
+                      <FeedAvatar name={inv.from.name} avatar={inv.from.avatar} userId={inv.from.id} size={42} />
                       <span className="min-w-0">
                         <span className="block truncate text-sm font-bold text-slate-900 dark:text-slate-100">
                           {inv.from.name}
@@ -2046,7 +2054,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                       onClick={() => void openFriendModal({ id: person.id, name: person.name, avatar: person.avatar ?? undefined })}
                       className="flex min-w-0 flex-1 items-center gap-3 text-left"
                     >
-                      <FeedAvatar name={person.name} avatar={person.avatar} size={42} />
+                      <FeedAvatar name={person.name} avatar={person.avatar} userId={person.id} size={42} />
                       <span className="min-w-0">
                         <span className="block truncate text-sm font-bold text-slate-900 dark:text-slate-100">
                           {person.name}
@@ -3038,9 +3046,17 @@ export const SocialView: React.FC<SocialViewProps> = ({
                       setFriendRequestBusy(true);
                       try {
                         await handleRequestAction(req.id, onAccept);
+                        const fresh = await fetchProfile(showFriendModal.id).catch(() => null);
                         setFriendProfile(prev =>
                           prev
-                            ? { ...prev, friendshipStatus: 'accepted', friendshipDirection: null, canSendRequest: false }
+                            ? {
+                                ...prev,
+                                friendshipStatus: fresh?.friendshipStatus ?? 'follower',
+                                friendshipDirection: fresh?.friendshipDirection ?? 'incoming',
+                                canSendRequest: fresh?.canSendRequest ?? true,
+                                followerCount: fresh?.followerCount ?? prev.followerCount,
+                                followingCount: fresh?.followingCount ?? prev.followingCount,
+                              }
                             : prev
                         );
                       } finally {
@@ -3049,7 +3065,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                     }}
                   >
                     {friendRequestBusy ? <Loader2 size={16} className="animate-spin" /> : <UserCheck size={16} />}
-                    Amigos
+                    Aceptar
                   </Button>
                 </div>
               ) : friendProfile?.canSendRequest || friendProfile?.friendshipStatus === 'follower' ? (
@@ -3078,9 +3094,21 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   Enviar solicitud
                 </Button>
               ) : friendProfile?.friendshipStatus === 'pending' || friendProfile?.friendshipStatus === 'following' ? (
-                <Button variant="outline" className="flex-1 rounded-xl" disabled>
-                  {friendProfile?.friendshipStatus === 'following' ? 'Siguiendo' : 'Solicitud enviada'}
-                </Button>
+                <>
+                  {friendProfile?.friendshipStatus === 'following' && onUnfriend && (
+                    <Button
+                      variant="outline"
+                      className="rounded-xl"
+                      aria-label="Dejar de ser amigo"
+                      onClick={() => setUnfriendConfirmFriend(showFriendModal)}
+                    >
+                      <UserMinus size={16} />
+                    </Button>
+                  )}
+                  <Button variant="outline" className="flex-1 rounded-xl" disabled>
+                    {friendProfile?.friendshipStatus === 'following' ? 'Siguiendo' : 'Solicitud enviada'}
+                  </Button>
+                </>
               ) : (
                 <>
               {onUnfriend && (
@@ -3295,7 +3323,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
         open={showHomeActivity}
         refreshTick={storyRefreshTick + socialRefreshTick + socialNavTick}
         onClose={() => setShowHomeActivity(false)}
-        pendingRequests={pendingRequests}
+        pendingRequests={requests.filter(r => r.status === 'pending')}
         chatAsks={chatAsks}
         groupInvites={groupInvites}
         coachRequests={coachRequests}
@@ -3371,7 +3399,7 @@ function SearchHitRow({
       }}
       className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left transition-colors hover:bg-slate-50 dark:hover:bg-slate-800"
     >
-      <FeedAvatar name={u.name} avatar={u.avatar ?? null} size={36} />
+      <FeedAvatar name={u.name} avatar={u.avatar ?? null} userId={u.id} size={36} />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm font-bold text-slate-800 dark:text-slate-100">{u.name}</span>
         <span className="block text-[11px] text-slate-400">{searchHitLabel(u)}</span>

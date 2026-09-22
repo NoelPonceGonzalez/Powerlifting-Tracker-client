@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { MODAL_RISE, SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
-import { Dumbbell, GraduationCap, Heart, Loader2, MapPin, MessageCircle, Trophy, UserCheck, Users, UserX, X } from 'lucide-react';
+import { Dumbbell, GraduationCap, Heart, Loader2, MapPin, MessageCircle, Trophy, UserCheck, UserPlus, Users, UserX, X } from 'lucide-react';
 import { apiGet, apiPut } from '@/src/lib/api';
 import { coachRequestCopy, coachRequestPerson, timeAgo, type ChatAsk, type ChatGroupInvite, type CoachRequest } from '@/src/lib/feedApi';
 import type { FriendRequest } from '@/src/types';
@@ -111,7 +111,8 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
   }, [open, refreshTick, onNotificationsRead]);
 
   const inbox = pendingRequests.filter(r => !r.needsFollowBack);
-  const requestCount = inbox.length + chatAsks.length + groupInvites.length + coachRequests.length;
+  const followBackInbox = pendingRequests.filter(r => r.needsFollowBack);
+  const requestCount = inbox.length + followBackInbox.length + chatAsks.length + groupInvites.length + coachRequests.length;
   const recent = notes.filter(isLiveActivityNote);
 
   if (typeof document === 'undefined') return null;
@@ -169,7 +170,7 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
                   <>
                     {inbox.map(req => (
                       <div key={req.id} className="flex items-center gap-3 rounded-2xl bg-white/70 px-3 py-2.5 dark:bg-slate-800/50">
-                        <Avatar src={req.avatar} name={req.name} className="h-10 w-10 shrink-0 rounded-full" />
+                        <Avatar src={req.avatar} userId={req.userId || req.id} name={req.name} className="h-10 w-10 shrink-0 rounded-full" />
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{req.name}</p>
                           <p className="text-[11px] text-slate-400">
@@ -198,10 +199,28 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
                         </div>
                       </div>
                     ))}
+                    {followBackInbox.map(req => (
+                      <div key={req.id} className="flex items-center gap-3 rounded-2xl bg-white/70 px-3 py-2.5 dark:bg-slate-800/50">
+                        <Avatar src={req.avatar} userId={req.userId || req.id} name={req.name} className="h-10 w-10 shrink-0 rounded-full" />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{req.name}</p>
+                          <p className="text-[11px] text-slate-400">Te sigue · envíale solicitud</p>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={!onSendFriendRequest || !req.userId || acceptRejectLoadingId === req.userId}
+                          onClick={() => req.userId && onSendFriendRequest && void onSendFriendRequest(req.userId)}
+                          className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-indigo-600 px-3 text-[12px] font-semibold text-white disabled:opacity-40"
+                        >
+                          {acceptRejectLoadingId === req.userId ? <Loader2 size={14} className="animate-spin" /> : <UserPlus size={14} />}
+                          Seguir
+                        </button>
+                      </div>
+                    ))}
                     {chatAsks.map(ask => (
                       <div key={ask.id} className="flex items-center gap-3 rounded-2xl bg-white/70 px-3 py-2.5 dark:bg-slate-800/50">
                         <button type="button" onClick={() => onOpenProfile(ask.from.id)} className="shrink-0">
-                          <Avatar src={ask.from.avatar || undefined} name={ask.from.name} className="h-10 w-10 rounded-full" />
+                          <Avatar src={ask.from.avatar || undefined} userId={ask.from.id} name={ask.from.name} className="h-10 w-10 rounded-full" />
                         </button>
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{ask.from.name}</p>
@@ -232,7 +251,7 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
                     {groupInvites.map(inv => (
                       <div key={inv.id} className="flex items-center gap-3 rounded-2xl bg-white/70 px-3 py-2.5 dark:bg-slate-800/50">
                         <button type="button" onClick={() => onOpenProfile(inv.from.id)} className="shrink-0">
-                          <Avatar src={inv.from.avatar || undefined} name={inv.from.name} className="h-10 w-10 rounded-full" />
+                          <Avatar src={inv.from.avatar || undefined} userId={inv.from.id} name={inv.from.name} className="h-10 w-10 rounded-full" />
                         </button>
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{inv.from.name}</p>
@@ -267,7 +286,7 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
                       return (
                       <div key={req.id} className="flex items-center gap-3 rounded-2xl bg-white/70 px-3 py-2.5 dark:bg-slate-800/50">
                         <button type="button" onClick={() => onOpenProfile(person.id)} className="shrink-0">
-                          <Avatar src={person.avatar || undefined} name={person.name} className="h-10 w-10 rounded-full" />
+                          <Avatar src={person.avatar || undefined} userId={person.id} name={person.name} className="h-10 w-10 rounded-full" />
                         </button>
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">{person.name}</p>
@@ -331,7 +350,7 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
                       className="flex w-full items-center gap-3 rounded-2xl bg-white/70 px-3 py-2.5 text-left dark:bg-slate-800/50"
                     >
                       {note.relatedUser ? (
-                        <Avatar src={note.relatedUser.avatar} name={note.relatedUser.name} className="h-10 w-10 rounded-full" />
+                        <Avatar src={note.relatedUser.avatar} userId={note.relatedUserId} name={note.relatedUser.name} className="h-10 w-10 rounded-full" />
                       ) : (
                         <span className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 dark:bg-slate-800">
                           {notifIcon(note.type)}
