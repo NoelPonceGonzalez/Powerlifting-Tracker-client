@@ -290,6 +290,15 @@ export async function getCameraStream(facing: 'user' | 'environment' = 'environm
   for (const cons of tries) {
     try {
       const stream = await devices.getUserMedia(cons);
+      const track = stream.getVideoTracks()[0];
+      if (track) {
+        try {
+          // 30 fps: los 3,2 Mbps caen en la mitad de fotogramas que a 60, y se ve más estable.
+          await track.applyConstraints({ frameRate: { ideal: 30, max: 30 } });
+        } catch {
+          /* el móvil se queda en los fps que ya daba */
+        }
+      }
       resetCameraPrompts();
       return stream;
     } catch (err) {

@@ -6,10 +6,10 @@ export const STORY_UPLOAD_MAX_BYTES = 40 * 1024 * 1024;
 /** Tope al abrir de la galería: se recorta aquí; no hace falta bajar de 200 MB en Fotos. */
 export const STORY_SOURCE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 /**
- * Historia en vertical 720×1280. En el teléfono se ve más nítida que un 1080
- * a pocos bits por píxel, y un minuto pesa ~24 MB.
- * Verla 1.000 veces son unos 24 GB de salida: el almacenamiento de 24 h es barato,
- * lo que cuesta es cada reproducción, así que no subimos de aquí.
+ * Historia con el lado largo a 1280. Un 1080 a los mismos bits se ve más blando.
+ * Un minuto pesa ~24 MB. Verla 1.000 veces son ~24 GB de salida de S3/EC2:
+ * guardar 24 h es barato, cada reproducción es lo que se paga. El bitrate no sube.
+ * docs/costes-almacenamiento.md
  */
 export const STORY_OUT_W = 720;
 export const STORY_OUT_H = 1280;
@@ -301,9 +301,21 @@ function pipeElementAudio(video: HTMLVideoElement, into: MediaStream, audio: Aud
   };
 }
 
-function pickRecorderMime(): string | undefined {
+/**
+ * Mismo 3,2 Mbps. H.264 High aprovecha esos bits mejor que Baseline
+ * (MDN: avc1.640028 es High@L4.0). Si el móvil no lo tiene, se queda el mp4
+ * que el navegador acelera por hardware.
+ */
+export function storyRecorderMime(): string | undefined {
   if (typeof MediaRecorder === 'undefined') return undefined;
-  for (const type of ['video/mp4', 'video/webm;codecs=vp9', 'video/webm']) {
+  const types = [
+    'video/mp4;codecs=avc1.640028,mp4a.40.2',
+    'video/mp4;codecs="avc1.640028,mp4a.40.2"',
+    'video/mp4',
+    'video/webm;codecs=vp9,opus',
+    'video/webm',
+  ];
+  for (const type of types) {
     if (MediaRecorder.isTypeSupported(type)) return type;
   }
   return undefined;
@@ -409,7 +421,10 @@ export async function trimVideoFile(
       const ctx = canvas.getContext('2d', { alpha: false });
       if (!ctx) throw new Error('No se ha podido girar el vídeo.');
       ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'low';
+      const srcLong = Math.max(video.videoWidth || 0, video.videoHeight || 0);
+      const outLong = Math.max(W, H);
+      // Al bajar de 4K, 'high' conserva detalle. Al ampliar, 'medium' no lo emborrona más.
+      ctx.imageSmoothingQuality = srcLong > outLong * 1.15 ? 'high' : 'medium';
       const rad = (rotation * Math.PI) / 180;
       const textLayer = document.createElement('canvas');
       textLayer.width = W;
@@ -513,7 +528,7 @@ export async function trimVideoFile(
     }
 
     if (!stream) throw new Error('No se ha podido preparar el vídeo.');
-    const mime = pickRecorderMime();
+    const mime = storyRecorderMime();
     rec = new MediaRecorder(stream, storyRecorderOptions(mime));
     const chunks: Blob[] = [];
     rec.ondataavailable = e => {
@@ -525,7 +540,7 @@ export async function trimVideoFile(
     });
 
     cancel();
-    rec.start(80);
+    rec.start();
     await video.play();
 
     const clipMs = (to - from) * 1000;

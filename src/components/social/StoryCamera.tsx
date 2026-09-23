@@ -28,6 +28,7 @@ import {
   storyFrameSize,
   probeVideoDuration,
   storyFont,
+  storyRecorderMime,
   storyRecorderOptions,
   storyStrokeColor,
   storyTextsForExport,
@@ -193,14 +194,6 @@ function nextTextOrigin(existing: StoryTextOverlay[]) {
 function keepFile(file: File) {
   const type = cleanMediaMime(file.type) || 'image/jpeg';
   return new File([file], file.name || 'historia.jpg', { type, lastModified: file.lastModified });
-}
-
-function pickRecorderMime(): string | undefined {
-  if (typeof MediaRecorder === 'undefined') return undefined;
-  for (const type of ['video/mp4', 'video/webm;codecs=vp9', 'video/webm']) {
-    if (MediaRecorder.isTypeSupported(type)) return type;
-  }
-  return undefined;
 }
 
 export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPickImage }: StoryCameraProps) {
@@ -883,7 +876,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
         }
       }
     }
-    const mime = pickRecorderMime();
+    const mime = storyRecorderMime();
     let rec: MediaRecorder;
     try {
       rec = new MediaRecorder(recordStream, storyRecorderOptions(mime));
