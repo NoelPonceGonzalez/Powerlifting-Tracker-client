@@ -274,6 +274,33 @@ html.dark .app-tabbar::before {
   display: none;
 }
 
+/*
+ * El vídeo llena el móvil (cover) y en un monitor se queda a su tamaño (contain).
+ * Sin transform, opacity ni overflow en los padres: si no, Chrome no usa el plano
+ * de vídeo y se salta fotogramas.
+ * https://www.chromium.org/developers/design-documents/video-playback-and-compositor/
+ */
+.story-play {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  background: #000;
+}
+
+@media (min-width: 800px) {
+  .story-play {
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: 100%;
+    margin: auto;
+    object-fit: contain;
+  }
+}
+
 .app-row {
   display: flex;
   min-width: 0;

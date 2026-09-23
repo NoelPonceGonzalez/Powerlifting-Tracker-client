@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { animate, motion, useMotionValue, useTransform } from 'motion/react';
+import { animate, motion, useMotionValue } from 'motion/react';
 import { EASE_OUT } from '@/src/lib/motionPresets';
 import { Eye, Heart, Loader2, Plus, Search, Send, Trash2, X } from 'lucide-react';
 import { Avatar } from '@/src/components/ui/Avatar';
@@ -122,10 +122,54 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
 
   const x = useMotionValue(0);
   const y = useMotionValue(0);
-  const pullY = useTransform(y, v => Math.max(0, v) * 0.38);
-  const scale = useTransform(y, [0, 420], [1, 0.72]);
-  const radius = useTransform(y, [0, 70], [0, 28]);
-  const veil = useTransform(y, [0, 240], [1, 0]);
+  const mediaRef = useRef<HTMLDivElement | null>(null);
+  const chromeRef = useRef<HTMLDivElement | null>(null);
+  const veilRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const apply = () => {
+      const media = mediaRef.current;
+      const chrome = chromeRef.current;
+      const veil = veilRef.current;
+      const xx = x.get();
+      const yy = y.get();
+      const idle = Math.abs(xx) < 0.5 && yy < 0.5;
+      if (idle) {
+        if (media) {
+          media.style.transform = '';
+          media.style.borderRadius = '';
+          media.style.overflow = '';
+        }
+        if (chrome) {
+          chrome.style.transform = '';
+          chrome.style.borderRadius = '';
+        }
+        if (veil) veil.style.opacity = '1';
+        return;
+      }
+      const py = Math.max(0, yy) * 0.38;
+      const sc = 1 - (Math.min(Math.max(yy, 0), 420) / 420) * 0.28;
+      const rad = (Math.min(Math.max(yy, 0), 70) / 70) * 28;
+      const shift = `translate3d(${xx}px, ${py}px, 0) scale(${sc})`;
+      if (media) {
+        media.style.transform = shift;
+        media.style.borderRadius = `${rad}px`;
+        media.style.overflow = 'hidden';
+      }
+      if (chrome) {
+        chrome.style.transform = shift;
+        chrome.style.borderRadius = `${rad}px`;
+      }
+      if (veil) veil.style.opacity = String(Math.max(0, 1 - Math.min(yy, 240) / 240));
+    };
+    const unx = x.on('change', apply);
+    const uny = y.on('change', apply);
+    apply();
+    return () => {
+      unx();
+      uny();
+    };
+  }, [x, y]);
 
   const group = groups[gi];
   const item = group?.items[ii];
@@ -558,18 +602,10 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
   };
 
   return createPortal(
-    <div className="fixed inset-0 z-[130000] overflow-hidden text-white">
-      <motion.div className="absolute inset-0 bg-black" style={{ opacity: veil }} />
+    <div className="fixed inset-0 z-[130000] text-white">
+      <div ref={veilRef} className="pointer-events-none absolute inset-0 bg-black" />
 
-      <motion.div
-        style={{ x, y: pullY, scale, borderRadius: radius }}
-        className="absolute inset-0 origin-center touch-none select-none overflow-hidden bg-black"
-        onPointerDown={onCardPointerDown}
-        onPointerMove={onCardPointerMove}
-        onPointerUp={onCardPointerUp}
-        onPointerCancel={onCardPointerUp}
-      >
-        <div key={item.id} className="absolute inset-0 bg-black">
+      <div ref={mediaRef} key={item.id} className="absolute inset-0 bg-black">
             {localSrc && item.mediaType === 'video' ? (
               <video
                 key={`${item.id}-${loadGen}`}
@@ -577,9 +613,10 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
                 src={localSrc}
                 autoPlay
                 playsInline
+                preload="auto"
                 muted={false}
                 draggable={false}
-                className="absolute inset-0 h-full w-full object-cover object-center"
+                className="story-play"
                 onLoadedData={e => {
                   if (e.currentTarget.videoWidth > 0) markReady(item.id);
                 }}
@@ -599,7 +636,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
                 alt={item.caption || ''}
                 draggable={false}
                 decoding="async"
-                className="absolute inset-0 h-full w-full object-cover object-center"
+                className="story-play"
                 onLoad={e => {
                   const el = e.currentTarget;
                   if (el.naturalWidth < 1) return;
@@ -625,6 +662,14 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
             )}
         </div>
 
+      <div
+        ref={chromeRef}
+        className="absolute inset-0 z-10 origin-center touch-none select-none"
+        onPointerDown={onCardPointerDown}
+        onPointerMove={onCardPointerMove}
+        onPointerUp={onCardPointerUp}
+        onPointerCancel={onCardPointerUp}
+      >
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 bg-gradient-to-b from-black/55 to-transparent px-3 pb-8 pt-[max(0.75rem,env(safe-area-inset-top))]">
           <div className="mb-2 flex gap-1">
             {group.items.map((s, idx) => (
@@ -777,7 +822,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
             </span>
           </button>
         )}
-      </motion.div>
+      </div>
 
       {askDelete && item.mine && (
         <div

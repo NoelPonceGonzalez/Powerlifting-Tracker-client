@@ -5,7 +5,7 @@ import { mediaUrl } from '@/src/lib/api';
  * La clave del archivo no cambia, así que la copia vale las 24 h que vive la historia.
  * Tope de memoria: unos pocos vídeos, para no llenar el teléfono.
  */
-const CACHE_NAME = 'pl-story-media-v1';
+const CACHE_NAME = 'pl-story-media-v2';
 const INDEX_KEY = 'pl-story-media-index';
 const MAX_BYTES = 80 * 1024 * 1024;
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;

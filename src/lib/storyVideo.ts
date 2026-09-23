@@ -23,10 +23,10 @@ export function storyFrameSize(viewW: number, viewH: number, longEdge: number): 
   const vh = Math.max(1, viewH);
   const edge = Math.max(2, longEdge);
   const raw = vh >= vw ? edge / vh : edge / vw;
-  let W = Math.max(2, Math.round(vw * raw));
-  let H = Math.max(2, Math.round(vh * raw));
-  if (W % 2) W += 1;
-  if (H % 2) H += 1;
+  // Múltiplo de 16: el decodificador de hardware y el plano de vídeo de Chrome
+  // rechazan anchos sueltos (p. ej. 606) y pasan a un camino que tira fotogramas.
+  let W = Math.max(16, Math.round((vw * raw) / 16) * 16);
+  let H = Math.max(16, Math.round((vh * raw) / 16) * 16);
   return { W, H, scale: Math.min(W / vw, H / vh) };
 }
 export const STORY_VIDEO_BITRATE = 3_200_000;
@@ -349,7 +349,8 @@ export async function trimVideoFile(
   video.preload = 'auto';
   video.setAttribute('playsinline', 'true');
   // Fuera de pantalla, pero con tamaño: si opacity es 0 Chrome no decodifica fotogramas.
-  video.style.cssText = 'position:fixed;left:0;top:0;width:8px;height:8px;opacity:0.02;pointer-events:none;z-index:-1';
+  // Tamaño real y fuera de la pantalla: a 8 px Chrome se salta fotogramas y el clip sale a tirones.
+  video.style.cssText = 'position:fixed;left:0;top:0;width:480px;height:854px;opacity:0.02;pointer-events:none;z-index:-1;transform:translateX(-120vw)';
   document.body.appendChild(video);
   video.src = url;
   let stopDraw: (() => void) | null = null;
@@ -394,7 +395,7 @@ export async function trimVideoFile(
       video.onseeked = () => resolve();
     });
 
-    let stream: MediaStream;
+    let stream: MediaStream | null = null;
     if (bakeRotate) {
       const viewW = opts?.viewW && opts.viewW > 8 ? opts.viewW : STORY_OUT_W;
       const viewH = opts?.viewH && opts.viewH > 8 ? opts.viewH : STORY_OUT_H;
@@ -408,8 +409,15 @@ export async function trimVideoFile(
       const ctx = canvas.getContext('2d', { alpha: false });
       if (!ctx) throw new Error('No se ha podido girar el vídeo.');
       ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
+      ctx.imageSmoothingQuality = 'low';
       const rad = (rotation * Math.PI) / 180;
+      const textLayer = document.createElement('canvas');
+      textLayer.width = W;
+      textLayer.height = H;
+      if (overlays.length) {
+        const textCtx = textLayer.getContext('2d');
+        if (textCtx) drawStoryTexts(textCtx, overlays, W, H, viewW, viewH);
+      }
       const paint = () => {
         const vw = video.videoWidth || 1;
         const vh = video.videoHeight || 1;
@@ -427,23 +435,51 @@ export async function trimVideoFile(
           ctx.rotate(rad);
           const cover = Math.max(W / vw, H / vh);
           const coverSwap = Math.max(W / vh, H / vw);
-          const s = Math.abs(Math.cos(rad)) * cover + Math.abs(Math.sin(rad)) * coverSwap;
-          ctx.drawImage(video, -(vw * s) / 2, -(vh * s) / 2, vw * s, vh * s);
+          const coverScale = Math.abs(Math.cos(rad)) * cover + Math.abs(Math.sin(rad)) * coverSwap;
+          ctx.drawImage(video, -(vw * coverScale) / 2, -(vh * coverScale) / 2, vw * coverScale, vh * coverScale);
         }
         ctx.restore();
-        if (overlays.length) drawStoryTexts(ctx, overlays, W, H, viewW, viewH);
+        if (overlays.length) ctx.drawImage(textLayer, 0, 0);
       };
-      let raf = 0;
-      const loop = () => {
+      let drawing = true;
+      let timer = 0;
+      let frameCallback = 0;
+      let lastPaint = -1;
+      const visual = canvas.captureStream(0);
+      const track = visual.getVideoTracks()[0] as CanvasCaptureMediaStreamTrack | undefined;
+      const manual = typeof track?.requestFrame === 'function';
+      let active: MediaStream = visual;
+      if (!manual) {
+        visual.getTracks().forEach(t => t.stop());
+        active = canvas.captureStream(30);
+      }
+      const schedule = () => {
+        const v = video as HTMLVideoElement & { requestVideoFrameCallback?: (cb: (now: number, meta: { mediaTime: number }) => void) => number };
+        if (v.requestVideoFrameCallback) frameCallback = v.requestVideoFrameCallback((now, meta) => pump(meta.mediaTime));
+        else timer = window.setTimeout(() => pump(video.currentTime), 33);
+      };
+      const pump = (mediaTime: number) => {
+        if (!drawing) return;
+        if (mediaTime - lastPaint < 0.028) {
+          schedule();
+          return;
+        }
+        lastPaint = mediaTime;
         paint();
-        raf = requestAnimationFrame(loop);
+        if (manual) track?.requestFrame();
+        schedule();
       };
-      stopDraw = () => cancelAnimationFrame(raf);
+      stopDraw = () => {
+        drawing = false;
+        if (timer) window.clearTimeout(timer);
+        const v = video as HTMLVideoElement & { cancelVideoFrameCallback?: (id: number) => void };
+        if (frameCallback && v.cancelVideoFrameCallback) v.cancelVideoFrameCallback(frameCallback);
+      };
       await video.play();
       await new Promise<void>(resolve => {
         const v = video as HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number };
         if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(() => resolve());
-        else requestAnimationFrame(() => resolve());
+        else window.setTimeout(resolve, 80);
       });
       video.pause();
       video.currentTime = from;
@@ -456,10 +492,10 @@ export async function trimVideoFile(
         window.setTimeout(resolve, 700);
       });
       paint();
-      raf = requestAnimationFrame(loop);
-      const visual = canvas.captureStream(30);
-      if (audioCtx) releaseAudio = pipeElementAudio(video, visual, audioCtx);
-      stream = visual;
+      if (manual) track?.requestFrame();
+      if (audioCtx) releaseAudio = pipeElementAudio(video, active, audioCtx);
+      stream = active;
+      pump(from);
     } else {
       if (!capture) {
         throw new Error(
@@ -476,6 +512,7 @@ export async function trimVideoFile(
       stream = captured;
     }
 
+    if (!stream) throw new Error('No se ha podido preparar el vídeo.');
     const mime = pickRecorderMime();
     rec = new MediaRecorder(stream, storyRecorderOptions(mime));
     const chunks: Blob[] = [];
