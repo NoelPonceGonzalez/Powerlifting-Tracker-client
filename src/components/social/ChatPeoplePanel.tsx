@@ -166,24 +166,6 @@ export function ChatPeoplePanel({
     const needle = q.trim().toLowerCase();
     const shown = needle ? pool.filter(p => p.name.toLowerCase().includes(needle)) : pool;
 
-    const sendTo = async (person: ConnectionPerson) => {
-      if (!onSendRequest || sentIds.has(person.id) || !person.canSendRequest) return;
-      setSendingId(person.id);
-      try {
-        await onSendRequest(person.id);
-        setConnections(prev => {
-          const mark = (list: ConnectionPerson[]) =>
-            list.map(p => (p.id === person.id ? { ...p, canSendRequest: false } : p));
-          const sent = prev.sent.some(s => s.id === person.id)
-            ? prev.sent
-            : [{ id: person.id, name: person.name, avatar: person.avatar, canSendRequest: false }, ...prev.sent];
-          return { following: mark(prev.following), followers: mark(prev.followers), all: mark(prev.all), sent };
-        });
-      } finally {
-        setSendingId(null);
-      }
-    };
-
     return (
       <SlimeScroll embed evenIfShort scrollFrom="parent" contentClassName="space-y-4">
         <div className="relative">
@@ -203,77 +185,6 @@ export function ChatPeoplePanel({
             <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
               {needle ? 'Nadie con ese nombre' : isFollowers ? 'Aún no tienes seguidores' : 'Aún no sigues a nadie'}
             </p>
-          </div>
-        ) : isFollowers ? (
-          <div className="rounded-3xl bg-white shadow-sm dark:bg-slate-900">
-            {[...shown]
-              .sort((a, b) => Number(!!b.canSendRequest && !sentIds.has(b.id)) - Number(!!a.canSendRequest && !sentIds.has(a.id)))
-              .map((person, i) => {
-                const canAsk = !!person.canSendRequest && !sentIds.has(person.id);
-                const sent = !canAsk && (sentIds.has(person.id) || person.kind === 'follower');
-                return (
-                  <div
-                    key={person.id}
-                    className={i > 0
-                      ? 'flex items-center gap-3 border-t border-slate-100 px-3.5 py-3 dark:border-slate-800'
-                      : 'flex items-center gap-3 px-3.5 py-3'}
-                  >
-                    <HoldPerson
-                      person={{ id: person.id, name: person.name, avatar: person.avatar }}
-                      onHold={onHoldPerson}
-                      onClick={() => onOpenPerson?.({ id: person.id, name: person.name, avatar: person.avatar })}
-                      className="min-w-0 flex-1 text-left"
-                      aria-label={person.name}
-                    >
-                      <span className="flex items-center gap-3">
-                        <span className="relative h-12 w-12 shrink-0">
-                          <span
-                            className={cn(
-                              'flex h-full w-full items-center justify-center rounded-full p-[2.5px]',
-                              canAsk
-                                ? 'bg-gradient-to-tr from-amber-400 via-rose-500 to-fuchsia-600'
-                                : sent
-                                  ? 'bg-amber-400/90'
-                                  : 'ring-2 ring-slate-200 dark:ring-slate-700'
-                            )}
-                          >
-                            <Avatar src={person.avatar} userId={person.id} name={person.name} className="h-full w-full rounded-full" />
-                          </span>
-                          {canAsk && (
-                            <span className="pointer-events-none absolute -bottom-0.5 -right-0.5 flex h-6 w-6 items-center justify-center rounded-full bg-indigo-600 text-white shadow ring-2 ring-white dark:ring-slate-900">
-                              <UserPlus size={12} />
-                            </span>
-                          )}
-                        </span>
-                        <span className="min-w-0">
-                          <span className="block truncate text-[15px] font-semibold text-slate-900 dark:text-slate-100">{person.name}</span>
-                          <span className="text-[12px] text-slate-400">
-                            {canAsk ? 'Te sigue · aún no le sigues' : sent ? 'Solicitud enviada' : 'Ya os seguís'}
-                          </span>
-                        </span>
-                      </span>
-                    </HoldPerson>
-                    {canAsk ? (
-                      <button
-                        type="button"
-                        disabled={sendingId === person.id || !onSendRequest}
-                        onClick={() => void sendTo(person)}
-                        className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-indigo-600 px-3 text-[12px] font-semibold text-white disabled:opacity-40"
-                      >
-                        {sendingId === person.id ? <Loader2 size={14} className="animate-spin" /> : <UserPlus size={14} />}
-                        Seguir
-                      </button>
-                    ) : sent ? (
-                      <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
-                        <Clock size={12} />
-                        Enviada
-                      </span>
-                    ) : (
-                      <CloseFriendButton userId={person.id} />
-                    )}
-                  </div>
-                );
-              })}
           </div>
         ) : (
           <div className="flex flex-wrap gap-x-3 gap-y-4 px-0.5">

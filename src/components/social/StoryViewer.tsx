@@ -51,6 +51,28 @@ function nextUnseen(
   return null;
 }
 
+/**
+ * Al acabar una historia: el resto de esa persona, y luego solo gente
+ * con alguna historia sin ver. Si no queda ninguna, se cierra el visor.
+ */
+function advanceAfter(
+  groups: StoryGroup[],
+  gi: number,
+  ii: number,
+  seen: Set<string>,
+) {
+  const group = groups[gi];
+  if (group && ii + 1 < group.items.length) {
+    return { gi, ii: ii + 1, group, item: group.items[ii + 1] };
+  }
+  for (let g = gi + 1; g < groups.length; g++) {
+    const nextGroup = groups[g];
+    const idx = nextGroup.items.findIndex(s => !isSeen(s, seen));
+    if (idx >= 0) return { gi: g, ii: idx, group: nextGroup, item: nextGroup.items[idx] };
+  }
+  return null;
+}
+
 function neighborOf(groups: StoryGroup[], gi: number, ii: number, dir: number) {
   const group = groups[gi];
   if (!group) return null;
@@ -102,6 +124,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
   const giRef = useRef(gi);
   const iiRef = useRef(ii);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const videoBarRef = useRef<HTMLDivElement | null>(null);
   const openedAt = useRef(Date.now());
   const pointer = useRef<{
     id: number;
@@ -113,12 +136,14 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
   const itemRef = useRef<StoryGroup['items'][number] | undefined>(undefined);
   const likeCountRef = useRef(0);
   const insightsRef = useRef(insights);
+  const askDeleteRef = useRef(askDelete);
   const remainRef = useRef(STORY_MS);
   const stepping = useRef(false);
   giRef.current = gi;
   iiRef.current = ii;
   likeCountRef.current = likeCount;
   insightsRef.current = insights;
+  askDeleteRef.current = askDelete;
 
   const x = useMotionValue(0);
   const y = useMotionValue(0);
@@ -212,7 +237,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
 
   const finishForward = useCallback(() => {
     if (stepping.current || busy.current || leaving) return;
-    const next = neighborOf(groups, giRef.current, iiRef.current, 1);
+    const next = advanceAfter(groups, giRef.current, iiRef.current, viewedRef.current);
     if (!next) {
       void dismiss('left');
       return;
@@ -280,6 +305,29 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
     if (paused || insights || leaving || askDelete) video.pause();
     else void video.play().catch(() => {});
   }, [paused, insights, leaving, askDelete, item?.id, item?.mediaType]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || item?.mediaType !== 'video' || !mediaReady) return;
+    let raf = 0;
+    const tick = () => {
+      const v = videoRef.current;
+      const bar = videoBarRef.current;
+      if (!v) return;
+      const dur = v.duration;
+      if (bar && Number.isFinite(dur) && dur > 0) {
+        bar.style.transform = `scaleX(${Math.min(1, Math.max(0, v.currentTime / dur))})`;
+      }
+      const finished = v.ended || (!v.paused && Number.isFinite(dur) && dur > 0.4 && v.currentTime >= dur - 0.05);
+      if (finished && !insightsRef.current && !askDeleteRef.current && !leaving) {
+        finishForward();
+        return;
+      }
+      raf = window.requestAnimationFrame(tick);
+    };
+    raf = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(raf);
+  }, [finishForward, item?.id, item?.mediaType, mediaReady]);
 
   useEffect(() => {
     const onVis = () => {
@@ -676,6 +724,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
               <div key={s.id} className="h-0.5 flex-1 overflow-hidden rounded-full bg-white/25">
                 <div
                   key={`${s.id}-${idx === ii && mediaReady ? 'run' : 'wait'}`}
+                  ref={idx === ii && item.mediaType === 'video' ? videoBarRef : undefined}
                   className="h-full bg-white"
                   onAnimationEnd={e => {
                     if (idx !== ii || e.animationName !== 'story-bar') return;
@@ -687,7 +736,7 @@ export function StoryViewer({ groups, startGroup, onClose, onAddStory, onDeleted
                       : idx > ii || (idx === ii && !mediaReady)
                         ? { width: '0%' }
                         : item.mediaType === 'video'
-                          ? { width: '100%' }
+                          ? { width: '100%', transform: 'scaleX(0)', transformOrigin: 'left center' }
                           : {
                               width: '100%',
                               animation: `story-bar ${STORY_MS}ms linear forwards`,

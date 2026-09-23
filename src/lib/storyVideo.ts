@@ -302,15 +302,12 @@ function pipeElementAudio(video: HTMLVideoElement, into: MediaStream, audio: Aud
 }
 
 /**
- * Mismo 3,2 Mbps. H.264 High aprovecha esos bits mejor que Baseline
- * (MDN: avc1.640028 es High@L4.0). Si el móvil no lo tiene, se queda el mp4
- * que el navegador acelera por hardware.
+ * Mismo 3,2 Mbps. `video/mp4` a secas: Chrome elige el H.264 de hardware.
+ * Pedir `avc1.640028` deja el mp4 cortado y la historia se queda en un fotograma.
  */
 export function storyRecorderMime(): string | undefined {
   if (typeof MediaRecorder === 'undefined') return undefined;
   const types = [
-    'video/mp4;codecs=avc1.640028,mp4a.40.2',
-    'video/mp4;codecs="avc1.640028,mp4a.40.2"',
     'video/mp4',
     'video/webm;codecs=vp9,opus',
     'video/webm',
@@ -362,7 +359,8 @@ export async function trimVideoFile(
   video.setAttribute('playsinline', 'true');
   // Fuera de pantalla, pero con tamaño: si opacity es 0 Chrome no decodifica fotogramas.
   // Tamaño real y fuera de la pantalla: a 8 px Chrome se salta fotogramas y el clip sale a tirones.
-  video.style.cssText = 'position:fixed;left:0;top:0;width:480px;height:854px;opacity:0.02;pointer-events:none;z-index:-1;transform:translateX(-120vw)';
+  // En pantalla (tapado por el editor). Si se saca del todo, Chrome deja de decodificar y el clip se queda parado.
+  video.style.cssText = 'position:fixed;left:0;top:0;width:480px;height:854px;opacity:0.02;pointer-events:none;z-index:-1';
   document.body.appendChild(video);
   video.src = url;
   let stopDraw: (() => void) | null = null;
@@ -458,6 +456,7 @@ export async function trimVideoFile(
       };
       let drawing = true;
       let timer = 0;
+      let beat = 0;
       let frameCallback = 0;
       let lastPaint = -1;
       const visual = canvas.captureStream(0);
@@ -487,9 +486,15 @@ export async function trimVideoFile(
       stopDraw = () => {
         drawing = false;
         if (timer) window.clearTimeout(timer);
+        if (beat) window.clearInterval(beat);
         const v = video as HTMLVideoElement & { cancelVideoFrameCallback?: (id: number) => void };
         if (frameCallback && v.cancelVideoFrameCallback) v.cancelVideoFrameCallback(frameCallback);
       };
+      // Si el aviso de fotograma se calla, se sigue pintando con el reloj del vídeo.
+      beat = window.setInterval(() => {
+        if (!drawing || video.paused || video.ended) return;
+        pump(video.currentTime);
+      }, 40);
       await video.play();
       await new Promise<void>(resolve => {
         const v = video as HTMLVideoElement & { requestVideoFrameCallback?: (cb: () => void) => number };

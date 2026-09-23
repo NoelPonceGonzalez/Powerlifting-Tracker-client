@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { AnimatePresence, motion } from 'motion/react';
+import { AnimatePresence, motion, useAnimationControls } from 'motion/react';
 import { 
   Search, 
   UserCheck, 
@@ -43,7 +43,6 @@ import { cn } from '@/src/lib/utils';
 import { apiGet, apiPut } from '@/src/lib/api';
 import { PAGE_ENTER_ITEM, PAGE_ENTER_ROOT, VIEW_TRANSITION } from '@/src/lib/motionPresets';
 import { useLongPress } from '@/src/lib/useLongPress';
-import { usePageEnter } from '@/src/lib/usePageEnter';
 import { equitySummary, suggestBodyWeightScoring } from '@/src/lib/challengeEquity';
 import { GlassModal } from '@/src/components/ui/GlassModal';
 import { CoverSkeleton, LoadingBlock } from '@/src/components/ui/Spinner';
@@ -745,7 +744,13 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [search, setSearch] = useState('');
   const [challengeSearch, setChallengeSearch] = useState('');
   const [activeTab, setActiveTab] = useState<SocialTab>(() => normalizeSocialTab(initialTab));
-  const pageEnter = usePageEnter(pageActive);
+  /** La misma entrada que Perfil: la pantalla funde y los bloques suben. */
+  const pageEnter = useAnimationControls();
+  useEffect(() => {
+    if (!pageActive) return;
+    pageEnter.set('hidden');
+    void pageEnter.start('show');
+  }, [pageActive, pageEnter]);
   const prevInitialTabPropRef = useRef(initialTab);
   const [challengeSubTab, setChallengeSubTab] = useState<'active' | 'finished' | 'progress'>('active');
   const [checkInSaving, setCheckInSaving] = useState(false);

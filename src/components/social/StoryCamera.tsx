@@ -185,6 +185,12 @@ function newStoryTextId() {
   return `st-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+/** Tamaño al crear el texto: cabe en el móvil, sin ocupar la historia. */
+function storyTextStartPx(boxW: number, boxH: number) {
+  const short = Math.min(boxW > 8 ? boxW : 390, boxH > 8 ? boxH : 700);
+  return clampStoryTextSize(Math.round(short * 0.068));
+}
+
 /** Cada Aa se apila un poco más abajo para no tapar el anterior. */
 function nextTextOrigin(existing: StoryTextOverlay[]) {
   const n = existing.length;
@@ -1257,20 +1263,33 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     pan.current = null;
   };
 
+  const startTextPinch = (id: string) => {
+    const pts = [...textPointers.current.values()];
+    if (pts.length < 2) return;
+    const [a, b] = pts;
+    const live = textsRef.current.find(t => t.id === id);
+    if (!live) return;
+    textPinch.current = {
+      dist: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+      size: live.size,
+      angle: Math.atan2(b.y - a.y, b.x - a.x),
+      rot: live.rot,
+    };
+    textPan.current = null;
+    setOverTrash(false);
+  };
+
   const onFramePointerDown = (e: React.PointerEvent) => {
     if (saving) return;
     e.stopPropagation();
     e.preventDefault();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    // Un segundo dedo en la foto, con un texto pillado: se suelta el texto y se mueve el encuadre.
-    if (holdingRef.current && textPointers.current.size === 1) {
-      const [first] = [...textPointers.current.entries()];
-      textPointers.current.clear();
-      textPan.current = null;
-      textPinch.current = null;
-      setHoldingId(null);
-      setOverTrash(false);
-      pointers.current.set(first[0], { ...first[1], type: 'touch' });
+    // Texto pulsado: el otro dedo cambia el tamaño del texto, no de la foto.
+    const heldId = holdingRef.current;
+    if (heldId) {
+      textPointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (textPointers.current.size >= 2) startTextPinch(heldId);
+      return;
     }
     const type = e.pointerType || 'touch';
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY, type });
@@ -1288,6 +1307,10 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
   };
 
   const onFramePointerMove = (e: React.PointerEvent) => {
+    if (textPointers.current.has(e.pointerId) && !pointers.current.has(e.pointerId)) {
+      onTextPointerMove(e);
+      return;
+    }
     if (!pointers.current.has(e.pointerId)) return;
     const prev = pointers.current.get(e.pointerId);
     pointers.current.set(e.pointerId, {
@@ -1330,6 +1353,10 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
   };
 
   const onFramePointerUp = (e: React.PointerEvent) => {
+    if (textPointers.current.has(e.pointerId) && !pointers.current.has(e.pointerId)) {
+      onTextPointerUp(e);
+      return;
+    }
     pointers.current.delete(e.pointerId);
     if (pointers.current.size >= 2) beginMediaPinch();
     else pinch.current = null;
@@ -1424,7 +1451,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
           value,
           x: origin.x,
           y: origin.y,
-          size: clampStoryTextSize(Math.round(base * 0.1)),
+          size: storyTextStartPx(base, boxSize.h || frameBoxRef.current?.clientHeight || 700),
           rot: 0,
           font: textDraft.font,
           color: textDraft.color,
@@ -1433,7 +1460,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     });
   };
 
-  /** Un dedo en el texto lo mueve; dos dedos en la foto mueven la foto. */
+  /** Un dedo mueve el texto. Si sigue pulsado, el pellizco cambia su tamaño. */
   const onTextPointerDown = (e: React.PointerEvent, item: StoryTextOverlay) => {
     if (saving || binningId) return;
     e.stopPropagation();
@@ -1457,19 +1484,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
       setOverTrash(false);
       return;
     }
-    // Dos dedos encima del mismo texto: se escala ese texto, no la foto.
-    if (textPointers.current.size === 2) {
-      const [a, b] = [...textPointers.current.values()];
-      const live = textsRef.current.find(t => t.id === item.id) || item;
-      textPinch.current = {
-        dist: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
-        size: live.size,
-        angle: Math.atan2(b.y - a.y, b.x - a.x),
-        rot: live.rot,
-      };
-      textPan.current = null;
-      setOverTrash(false);
-    }
+    if (textPointers.current.size >= 2) startTextPinch(item.id);
   };
 
   const onTextPointerMove = (e: React.PointerEvent) => {
@@ -1509,7 +1524,24 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
     }
     textPointers.current.delete(e.pointerId);
     if (textPointers.current.size < 2) textPinch.current = null;
-    if (textPointers.current.size > 0) return;
+    if (textPointers.current.size > 0) {
+      const id = holdingRef.current;
+      const live = id ? textsRef.current.find(t => t.id === id) : undefined;
+      const [only] = [...textPointers.current.values()];
+      if (id && live && only) {
+        textPan.current = {
+          id,
+          x: only.x,
+          y: only.y,
+          tx: live.x,
+          ty: live.y,
+          tw: 0,
+          th: 0,
+          moved: TEXT_TAP_PX + 1,
+        };
+      }
+      return;
+    }
     const start = textPan.current;
     const id = start?.id || holdingRef.current;
     const tap = !!start && start.moved < TEXT_TAP_PX;
@@ -1576,7 +1608,7 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
 
   const isVideo = !!file?.type.startsWith('video/');
   const recSec = Math.min(STORY_VIDEO_MAX_SEC, Math.floor(recMs / 1000));
-  const editTextSize = clampStoryTextSize(Math.round(Math.max(56, (boxSize.w || 390) * 0.17)));
+  const editTextSize = storyTextStartPx(boxSize.w, boxSize.h);
   const overlaysReady = storyTextsForExport(texts);
   /** Girar, silenciar o poner texto obliga a volver a codificar: el peso ya no es el del original. */
   const reencodes = Math.abs(frameAngle(frame)) > 0.8 || muted || overlaysReady.length > 0;
@@ -1846,6 +1878,9 @@ export function StoryCamera({ open, onClose, onPublished, mode = 'story', onPick
                         pointerEvents: holdingId && !held ? 'none' : undefined,
                         zIndex: binning ? 40 : held ? 30 : 10 + i,
                         transform: `translate(-50%, -50%) translate(${item.x}px, ${item.y}px) rotate(${item.rot}deg) scale(${binning ? 0.08 : held && overTrash ? 0.42 : 1})`,
+                        outline: held && !shrink ? '2px solid rgba(255,255,255,0.92)' : undefined,
+                        outlineOffset: 6,
+                        borderRadius: 10,
                         opacity: binning ? 0 : 1,
                         transition: shrink
                           ? 'transform 180ms ease, opacity 180ms ease'
