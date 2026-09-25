@@ -27,12 +27,37 @@ if (typeof window !== 'undefined') {
   }
 }
 
-try {
-  if (localStorage.getItem('pl-mobile-frame') === '1') {
-    document.documentElement.classList.add('mobile-frame');
+function isPhoneEmbed(): boolean {
+  try {
+    return new URLSearchParams(window.location.search).get('phone') === '1';
+  } catch {
+    return false;
   }
-} catch {
-  /* incógnito */
+}
+
+function lockPhoneViewport() {
+  try {
+    if (!isPhoneEmbed()) return;
+    const meta = document.querySelector('meta[name="viewport"]');
+    if (meta) meta.setAttribute('content', 'width=390, initial-scale=1, maximum-scale=1, viewport-fit=cover');
+    document.documentElement.classList.add('phone-preview');
+  } catch {
+    /* incógnito */
+  }
+}
+
+lockPhoneViewport();
+
+function wantsMobilePreviewShell(): boolean {
+  try {
+    if (isPhoneEmbed() || window.parent !== window) return false;
+    if (localStorage.getItem('pl-mobile-frame') !== '1') return false;
+    if (window.matchMedia?.('(display-mode: standalone)').matches) return false;
+    if (window.matchMedia?.('(display-mode: fullscreen)').matches) return false;
+    return (window.navigator as Navigator & { standalone?: boolean }).standalone !== true;
+  } catch {
+    return false;
+  }
 }
 
 // Antes de montar React: `beforeinstallprompt` puede dispararse durante la carga inicial.
@@ -62,8 +87,23 @@ function Root() {
   );
 }
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <Root />
-  </StrictMode>,
-);
+if (wantsMobilePreviewShell()) {
+  const host = document.createElement('div');
+  host.id = 'mobile-preview-host';
+  const bezel = document.createElement('div');
+  bezel.className = 'mobile-preview-bezel';
+  const frame = document.createElement('iframe');
+  frame.title = 'Versión móvil';
+  const embed = new URL(window.location.href);
+  embed.searchParams.set('phone', '1');
+  frame.src = embed.toString();
+  bezel.appendChild(frame);
+  host.appendChild(bezel);
+  document.body.appendChild(host);
+} else {
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <Root />
+    </StrictMode>,
+  );
+}

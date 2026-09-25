@@ -2,7 +2,7 @@
  * Sin dependencias: se sirve tal cual desde /sw.js.
  * Cambia CACHE_VERSION al tocar este archivo para invalidar las cachés antiguas. */
 
-const CACHE_VERSION = 'v3';
+const CACHE_VERSION = 'v4';
 const SHELL_CACHE = `pl-shell-${CACHE_VERSION}`;
 const ASSET_CACHE = `pl-assets-${CACHE_VERSION}`;
 
@@ -133,7 +133,7 @@ self.addEventListener('fetch', (event) => {
   if (isApiRequest(url)) return;
   if (isDevModule(url)) return;
 
-  if (request.mode === 'navigate') {
+  if (request.mode === 'navigate' && request.destination !== 'iframe') {
     event.respondWith(handleNavigation(event));
     return;
   }

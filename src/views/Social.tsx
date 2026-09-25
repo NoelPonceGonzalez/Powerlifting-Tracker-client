@@ -109,6 +109,7 @@ interface SocialViewProps {
   onReject: (id: string) => void;
   onSendFriendRequest?: (userId: string) => Promise<void>;
   onCreateChallenge: (data: {
+    meet?: boolean;
     title: string;
     description?: string;
     type: ChallengeType;
@@ -123,7 +124,7 @@ interface SocialViewProps {
   }) => Promise<void> | void;
   onJoinChallenge: (
     id: string,
-    payload: { value?: number; lifts?: { exercise: string; value: number }[]; password?: string }
+    payload: { value?: number; lifts?: { exercise: string; value: number }[]; password?: string; attempts?: { squat: number[]; bench: number[]; deadlift: number[] } }
   ) => Promise<void> | void;
   onDeleteChallenge?: (id: string) => Promise<void> | void;
   onCheckIn: (gymName: string, time: string, audience?: Audience) => void;
@@ -431,8 +432,44 @@ function ChallengeDetailBody({
 
       <div>
         <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-          Clasificación
+          {new Date(challenge.endDate).getTime() <= countdownNow ? 'Podio' : 'Clasificación'}
         </p>
+        {new Date(challenge.endDate).getTime() <= countdownNow && ranking.length > 0 && (
+          <div className="mb-4">
+            <p className="mb-3 text-center text-[13px] font-semibold text-slate-500">Torneo finalizado</p>
+            <div className="grid grid-cols-3 items-end gap-2">
+              {[
+                { row: ranking[1], order: 1 },
+                { row: ranking[0], order: 2 },
+                { row: ranking[2], order: 0 },
+              ].filter((slot) => slot.row).map((slot) => {
+                const p = slot.row!;
+                const place = ranking.findIndex((row) => row.userId === p.userId);
+                const medal = [
+                  { bg: '#f6c945', fg: '#6b4e00', h: 'h-28' },
+                  { bg: '#d7dee7', fg: '#3d4754', h: 'h-20' },
+                  { bg: '#e09a5a', fg: '#5c3010', h: 'h-16' },
+                ][place] || { bg: '#e2e8f0', fg: '#475569', h: 'h-14' };
+                return (
+                  <motion.div
+                    key={p.userId}
+                    initial={{ opacity: 0, y: 36, scale: 0.92 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    transition={{ type: 'spring', stiffness: 260, damping: 22, delay: 0.15 + slot.order * 0.28 }}
+                    className="flex flex-col items-center text-center"
+                  >
+                    <Avatar src={p.avatar} userId={p.userId} name={p.name} className={cn('rounded-full', place === 0 ? 'h-16 w-16' : 'h-12 w-12')} />
+                    <p className="mt-2 w-full truncate text-[13px] font-semibold text-slate-900 dark:text-slate-100">{p.name}</p>
+                    <p className="text-[12px] font-black tabular-nums text-slate-800 dark:text-slate-100">{Math.round(p.score)} GL</p>
+                    <div className={cn('mt-2 flex w-full items-end justify-center rounded-t-2xl text-[13px] font-black', medal.h)} style={{ background: medal.bg, color: medal.fg }}>
+                      {place + 1}
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+          </div>
+        )}
         <motion.div className="space-y-2" initial="hidden" animate="show" variants={PAGE_ENTER_ROOT}>
           {ranking.map((p, idx) => {
             const rank = idx + 1;
@@ -842,6 +879,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [createTitle, setCreateTitle] = useState('');
   const [createDesc, setCreateDesc] = useState('');
   const [createType, setCreateType] = useState<ChallengeType>('max_reps');
+  const [createMeet, setCreateMeet] = useState(false);
   const [createExerciseDraft, setCreateExerciseDraft] = useState('');
   const [createExercises, setCreateExercises] = useState<string[]>([]);
   const [createPrivate, setCreatePrivate] = useState(false);
@@ -863,6 +901,11 @@ export const SocialView: React.FC<SocialViewProps> = ({
   // Form unirse a torneo
   const [joinValue, setJoinValue] = useState('');
   const [joinLifts, setJoinLifts] = useState<Record<string, string>>({});
+  const [joinAttempts, setJoinAttempts] = useState<{ squat: string[]; bench: string[]; deadlift: string[] }>({
+    squat: ['', '', ''],
+    bench: ['', '', ''],
+    deadlift: ['', '', ''],
+  });
   const [joinPassword, setJoinPassword] = useState('');
   const [joinError, setJoinError] = useState('');
   const [joinSubmitting, setJoinSubmitting] = useState(false);
@@ -1120,6 +1163,13 @@ export const SocialView: React.FC<SocialViewProps> = ({
       setJoinValue(String(mine.value || ''));
     }
     setJoinLifts(lifts);
+    const blank = ['', '', ''];
+    const fill = (xs?: number[]) => [0, 1, 2].map((i) => (xs && xs[i] > 0 ? String(xs[i]) : ''));
+    setJoinAttempts({
+      squat: mine?.attempts ? fill(mine.attempts.squat) : [...blank],
+      bench: mine?.attempts ? fill(mine.attempts.bench) : [...blank],
+      deadlift: mine?.attempts ? fill(mine.attempts.deadlift) : [...blank],
+    });
   }, [user.id]);
 
   const openFriendModal = useCallback((friend: Friend) => {
@@ -1318,7 +1368,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
     createStep === 0
       ? createTitle.trim().length > 0
       : createStep === 1
-        ? createExercises.length > 0 || createExerciseDraft.trim().length > 0
+        ? createMeet || createExercises.length > 0 || createExerciseDraft.trim().length > 0
         : createStep === 2
           ? Boolean(createEndDate) && (!createPrivate || createPassword.trim().length >= 4)
           : true;
@@ -1330,14 +1380,19 @@ export const SocialView: React.FC<SocialViewProps> = ({
       return;
     }
     setCreateError('');
-    setCreateStep((s) => Math.min(3, s + 1));
+    setCreateStep((s) => {
+      if (createMeet && s === 0) return 2;
+      return Math.min(3, s + 1);
+    });
   };
 
   const handleCreateSubmit = async () => {
     const extras = createExerciseDraft.trim() ? [createExerciseDraft.trim()] : [];
-    const exercises = [...createExercises, ...extras].filter(
-      (e, i, arr) => arr.findIndex((x) => x.toLowerCase() === e.toLowerCase()) === i
-    );
+    const exercises = createMeet
+      ? ['Sentadilla', 'Press banca', 'Peso muerto']
+      : [...createExercises, ...extras].filter(
+          (e, i, arr) => arr.findIndex((x) => x.toLowerCase() === e.toLowerCase()) === i
+        );
     if (!createTitle.trim() || exercises.length === 0 || !createEndDate) return;
     if (createPrivate && createPassword.trim().length < 4) {
       setCreateError('La contraseña debe tener al menos 4 caracteres.');
@@ -1349,7 +1404,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
       await onCreateChallenge({
         title: createTitle.trim(),
         description: createDesc.trim() || undefined,
-        type: createType,
+        type: createMeet ? 'weight' : createType,
+        meet: createMeet,
         exercise: exercises.join(' · '),
         exercises,
         endDate: createEndDate,
@@ -1368,6 +1424,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
       setCreateCloseOnly(false);
       setCreatePassword('');
       setCreateEndDate('');
+      setCreateMeet(false);
       setCreateUsePointsSystem(true);
       setCreateBodyWeightScoring(suggestBodyWeightScoring(createType, exercises[0] || ''));
       setCreateEquityOpen(false);
@@ -1383,6 +1440,32 @@ export const SocialView: React.FC<SocialViewProps> = ({
 
   const handleJoinSubmit = async () => {
     if (!showJoinChallengeModal) return;
+    if (showJoinChallengeModal.meet) {
+      const num = (raw: string) => {
+        const n = Number(String(raw).replace(',', '.'));
+        return Number.isFinite(n) && n > 0 ? n : 0;
+      };
+      const attempts = {
+        squat: joinAttempts.squat.map(num),
+        bench: joinAttempts.bench.map(num),
+        deadlift: joinAttempts.deadlift.map(num),
+      };
+      setJoinError('');
+      setJoinSubmitting(true);
+      try {
+        await onJoinChallenge(showJoinChallengeModal.id, {
+          attempts,
+          password: showJoinChallengeModal.isPrivate ? joinPassword : undefined,
+        });
+        setShowJoinChallengeModal(null);
+        onRefreshChallenges?.();
+      } catch (e: any) {
+        setJoinError(e?.message || 'No se pudo guardar la marca.');
+      } finally {
+        setJoinSubmitting(false);
+      }
+      return;
+    }
     const names = challengeExercises(showJoinChallengeModal);
     const lifts = names.map((exercise) => ({
       exercise,
@@ -2340,7 +2423,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
               onClick={() => {
                 if (createStep > 0) {
                   setCreateError('');
-                  setCreateStep((s) => s - 1);
+                  setCreateStep((s) => (createMeet && s === 2 ? 0 : s - 1));
                 } else {
                   setShowCreateChallengeModal(false);
                   setCreateStep(0);
@@ -2451,6 +2534,20 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   onChange={(e) => setCreateDesc(e.target.value)}
                   className="h-11 rounded-2xl border-white/50 bg-white/70 py-0 shadow-none dark:border-white/10 dark:bg-slate-800/70"
                 />
+                <button
+                  type="button"
+                  onClick={() => setCreateMeet((v) => !v)}
+                  className={cn(
+                    'w-full rounded-2xl px-3 py-3 text-left ring-1',
+                    createMeet
+                      ? 'bg-amber-50 ring-amber-300 dark:bg-amber-950/40'
+                      : 'bg-white/70 ring-black/[0.06] dark:bg-slate-800/70'
+                  )}
+                >
+                  <span className="block text-sm font-semibold text-slate-900 dark:text-slate-100">Competición SBD</span>
+                  <span className="mt-0.5 block text-[12px] text-slate-500">Tres intentos de sentadilla, banca y peso muerto. Gana el total en puntos GL.</span>
+                </button>
+                {!createMeet && (
                 <div>
                   <p className="mb-1.5 ml-1 text-[10px] font-black uppercase tracking-widest text-slate-400 dark:text-slate-500">Tipo</p>
                   <div className="grid grid-cols-3 gap-2">
@@ -2488,6 +2585,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                     })}
                   </div>
                 </div>
+                )}
               </div>
             )}
 
@@ -2905,7 +3003,34 @@ export const SocialView: React.FC<SocialViewProps> = ({
       >
         {showJoinChallengeModal && (
           <div className="space-y-3">
-            {challengeExercises(showJoinChallengeModal).length > 1 ? (
+            {showJoinChallengeModal.meet ? (
+              (['squat', 'bench', 'deadlift'] as const).map((lift) => (
+                <div key={lift}>
+                  <p className="mb-1 text-[11px] font-semibold text-slate-500">
+                    {lift === 'squat' ? 'Sentadilla' : lift === 'bench' ? 'Press banca' : 'Peso muerto'}
+                  </p>
+                  <div className="grid grid-cols-3 gap-2">
+                    {joinAttempts[lift].map((value, i) => (
+                      <input
+                        key={i}
+                        inputMode="decimal"
+                        placeholder={`${i + 1}º`}
+                        value={value}
+                        onChange={(e) => {
+                          const next = e.target.value.replace(/[^\d.,]/g, '');
+                          setJoinAttempts((prev) => {
+                            const copy = [...prev[lift]];
+                            copy[i] = next;
+                            return { ...prev, [lift]: copy };
+                          });
+                        }}
+                        className="h-11 w-full rounded-xl bg-white text-center text-sm font-semibold ring-1 ring-black/[0.06] dark:bg-slate-900"
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))
+            ) : challengeExercises(showJoinChallengeModal).length > 1 ? (
               challengeExercises(showJoinChallengeModal).map((ex) => (
                 <div key={ex}>
                   <label className="mb-1 block text-[11px] text-slate-400">{ex}</label>

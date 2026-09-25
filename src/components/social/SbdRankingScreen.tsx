@@ -51,19 +51,23 @@ export function SbdRankingScreen({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [joined, setJoined] = useState(false);
+  const [suggested, setSuggested] = useState({ squat: 0, bench: 0, deadlift: 0 });
 
   const load = () => {
     setLoading(true);
     setError('');
-    return apiGet<{ me: { squat: number; bench: number; deadlift: number }; board: Row[] }>('/api/social/sbd')
+    return apiGet<{ me: { squat: number; bench: number; deadlift: number }; suggested?: { squat: number; bench: number; deadlift: number }; board: Row[] }>('/api/social/sbd')
       .then(data => {
         setBoard(data.board || []);
         const me = data.me;
+        const fromTraining = data.suggested || { squat: 0, bench: 0, deadlift: 0 };
+        setSuggested(fromTraining);
         const has = !!(me && me.squat > 0 && me.bench > 0 && me.deadlift > 0);
         setJoined(has);
-        setSquat(has ? String(me.squat) : '');
-        setBench(has ? String(me.bench) : '');
-        setDeadlift(has ? String(me.deadlift) : '');
+        const pick = (mine: number, hint: number) => (mine > 0 ? String(mine) : hint > 0 ? String(hint) : '');
+        setSquat(pick(me?.squat || 0, fromTraining.squat));
+        setBench(pick(me?.bench || 0, fromTraining.bench));
+        setDeadlift(pick(me?.deadlift || 0, fromTraining.deadlift));
       })
       .catch(() => setError('No se ha podido cargar el ranking.'))
       .finally(() => setLoading(false));
@@ -120,6 +124,19 @@ export function SbdRankingScreen({
               </label>
             ))}
           </div>
+          {suggested.squat > 0 && suggested.bench > 0 && suggested.deadlift > 0 && (
+            <button
+              type="button"
+              className="w-full text-center text-[12px] font-semibold text-indigo-600"
+              onClick={() => {
+                setSquat(String(suggested.squat));
+                setBench(String(suggested.bench));
+                setDeadlift(String(suggested.deadlift));
+              }}
+            >
+              Usar mis máximos ({suggested.squat} / {suggested.bench} / {suggested.deadlift})
+            </button>
+          )}
           <Button variant="primary" className="w-full rounded-2xl" disabled={saving} onClick={() => void save()}>
             {saving ? <Loader2 size={16} className="animate-spin" /> : null}
             {joined ? 'Actualizar marcas' : 'Apuntarme'}

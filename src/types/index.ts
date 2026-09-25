@@ -34,6 +34,8 @@ export interface Challenge {
   exercises?: string[];
   isPrivate?: boolean;
   closeFriendsOnly?: boolean;
+  /** Competición SBD: tres intentos de sentadilla, banca y peso muerto. */
+  meet?: boolean;
   /** true: IPF GL (kg) y puntos por peso/género (reps/seg). false: gana quien tenga mejor marca bruta. */
   usePointsSystem?: boolean;
   /** Solo afecta al cálculo de puntos en reps y segundos. */
@@ -45,6 +47,7 @@ export interface Challenge {
     score: number;
     value: number; // raw value (reps, kg, or seconds) o suma
     lifts?: { exercise: string; value: number }[];
+    attempts?: { squat: number[]; bench: number[]; deadlift: number[] };
     initialValue?: number;
     initialScore?: number;
     initialRank?: number;

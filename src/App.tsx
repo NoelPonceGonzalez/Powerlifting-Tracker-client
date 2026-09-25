@@ -1712,6 +1712,7 @@ export default function App() {
     isPrivate?: boolean;
     closeFriendsOnly?: boolean;
     password?: string;
+    meet?: boolean;
   }) => {
     const created = await apiPost<Challenge>('/api/challenges', data);
     setChallenges(prev => [...prev, created]);
@@ -1720,7 +1721,7 @@ export default function App() {
 
   const handleJoinChallenge = async (
     id: string,
-    payload: { value?: number; lifts?: { exercise: string; value: number }[]; password?: string }
+    payload: { value?: number; lifts?: { exercise: string; value: number }[]; password?: string; attempts?: { squat: number[]; bench: number[]; deadlift: number[] } }
   ) => {
     const updated = await apiPut<Challenge>(`/api/challenges/${id}/join`, payload);
     setChallenges(prev => prev.map(c => c.id === id ? updated : c));

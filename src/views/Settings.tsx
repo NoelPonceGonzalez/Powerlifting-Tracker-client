@@ -48,12 +48,13 @@ function isTestAccount(user: User): boolean {
 }
 
 function applyMobileFrame(on: boolean) {
-  document.documentElement.classList.toggle('mobile-frame', on);
   try {
     localStorage.setItem(MOBILE_FRAME_KEY, on ? '1' : '0');
   } catch {
     /* incógnito */
   }
+  const top = window.top ?? window;
+  top.location.reload();
 }
 
 interface SettingsViewProps {

@@ -67,7 +67,7 @@ function notifIcon(type: string) {
   if (type === 'group_invite' || type === 'chat_request') return <Users size={14} className="text-indigo-500" />;
   if (type === 'coach_request' || type === 'coach_accepted') return <GraduationCap size={14} className="text-amber-600" />;
   if (type === 'new_rm') return <Dumbbell size={14} className="text-emerald-600" />;
-  if (type === 'challenge_invite' || type === 'challenge_join' || type === 'challenge_winner') return <Trophy size={14} className="text-amber-600" />;
+  if (type === 'challenge_invite' || type === 'challenge_join' || type === 'challenge_winner' || type === 'challenge_ending' || type === 'sbd_update') return <Trophy size={14} className="text-amber-600" />;
   if (type === 'gym_checkin') return <MapPin size={14} className="text-emerald-600" />;
   return <Heart size={14} className="text-slate-400" />;
 }
@@ -332,7 +332,7 @@ export const HomeActivitySheet: React.FC<HomeActivitySheetProps> = ({
                           onOpenChat?.(note.relatedUserId);
                           return;
                         }
-                        if (note.type === 'challenge_invite' || note.type === 'challenge_join' || note.type === 'challenge_winner') {
+                        if (note.type === 'challenge_invite' || note.type === 'challenge_join' || note.type === 'challenge_winner' || note.type === 'challenge_ending' || note.type === 'sbd_update') {
                           onGoChallenges?.();
                           return;
                         }
