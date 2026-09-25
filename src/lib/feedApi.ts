@@ -79,7 +79,7 @@ export interface PublicProfile {
   todayPlan?: { name: string; title: string; rest: boolean; lifts: string[]; more: number } | null;
   /** Solo si esa persona me sigue. */
   theyFollowMe?: boolean;
-  challenges?: { title: string; exercise: string }[];
+  challenges?: { title: string; exercise: string; viewerIn?: boolean }[];
   gymPlans?: { gymName: string; time: string }[];
 }
 

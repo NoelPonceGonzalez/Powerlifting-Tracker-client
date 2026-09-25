@@ -1123,13 +1123,11 @@ export const SocialView: React.FC<SocialViewProps> = ({
 
   const now = new Date();
   const activeChallenges = challenges.filter(c => (c.status || (new Date(c.endDate) > now)) && new Date(c.endDate) > now);
-  /** Finalizados: solo torneos a los que te uniste o que tú creaste. */
+  /** Finalizados: solo torneos en los que has participado. */
   const finishedChallenges = challenges.filter(c => {
     const ended = (c.status === 'finished') || new Date(c.endDate) <= now;
     if (!ended) return false;
-    const isParticipant = c.participants.some(p => sameUserId(p.userId, user.id));
-    const isCreator = sameUserId(c.createdBy?.id, user.id);
-    return isParticipant || isCreator;
+    return c.participants.some(p => sameUserId(p.userId, user.id));
   });
   const displayedChallenges =
     challengeSubTab === 'active' ? activeChallenges : challengeSubTab === 'finished' ? finishedChallenges : [];
@@ -2000,6 +1998,9 @@ export const SocialView: React.FC<SocialViewProps> = ({
                       <div className="min-w-0 flex-1">
                         <h3 className="flex items-center gap-1.5 text-[15px] font-semibold leading-snug text-slate-900 dark:text-slate-100">
                           {challenge.isPrivate && <Lock size={13} className="shrink-0 text-slate-400" />}
+                          {!isFinished && isJoined && (
+                            <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" title="Estás dentro" />
+                          )}
                           <span className="truncate">{challenge.title}</span>
                         </h3>
                         <p className="mt-0.5 truncate text-xs text-slate-500">

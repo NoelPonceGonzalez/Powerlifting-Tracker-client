@@ -100,7 +100,7 @@ function ProfilePeek({
 }: {
   title: string;
   kind: 'trophy' | 'pin';
-  rows: { key: string; title: string; subtitle: string }[];
+  rows: { key: string; title: string; subtitle: string; dot?: boolean }[];
   empty: string;
 }) {
   return (
@@ -140,7 +140,10 @@ function ProfilePeek({
                 <MapPin size={15} className="shrink-0 text-emerald-500" />
               )}
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-[12px] font-semibold text-slate-800 dark:text-slate-100">{row.title}</span>
+                <span className="flex items-center gap-1.5 text-[12px] font-semibold text-slate-800 dark:text-slate-100">
+                  {row.dot && <span className="h-2 w-2 shrink-0 rounded-full bg-emerald-500" title="Estás dentro" />}
+                  <span className="truncate">{row.title}</span>
+                </span>
                 <span className="block truncate text-[10px] text-slate-400">{row.subtitle}</span>
               </span>
             </motion.div>
@@ -803,6 +806,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           transition={{ type: 'spring', stiffness: 300, damping: 28, delay: 0.14 }}
           className="grid grid-cols-2 gap-2 max-[360px]:gap-1.5"
         >
+          {(profile.challenges || []).length > 0 && (
           <ProfilePeek
             title="Torneos"
             kind="trophy"
@@ -811,8 +815,10 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               key: `ch-${i}`,
               title: c.title,
               subtitle: c.exercise || 'Torneo',
+              dot: !!c.viewerIn,
             }))}
           />
+          )}
           <ProfilePeek
             title="Avisar que voy"
             kind="pin"
