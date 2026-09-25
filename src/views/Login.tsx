@@ -585,12 +585,13 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
   const isAddAccount = variant === 'addAccount';
 
   return (
-    <div className="flex min-h-dvh items-center justify-center overflow-y-auto bg-slate-50 px-3 py-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] dark:bg-slate-950">
+    <div className="h-dvh max-h-dvh overflow-y-auto overscroll-y-contain bg-slate-50 [-webkit-overflow-scrolling:touch] dark:bg-slate-950">
+      <div className="mx-auto flex min-h-full w-full max-w-md flex-col justify-center px-3 py-[max(1rem,env(safe-area-inset-top))] pb-[max(11rem,calc(env(safe-area-inset-bottom)+9rem))]">
       <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.4, ease: 'easeOut' }}
-        className="my-4 w-full max-w-md rounded-3xl border border-slate-200/80 bg-white p-5 shadow-lg dark:border-slate-800 dark:bg-slate-900 dark:shadow-black/40 sm:p-8"
+        className="my-4 w-full rounded-3xl border border-slate-200/80 bg-white p-5 shadow-lg dark:border-slate-800 dark:bg-slate-900 dark:shadow-black/40 sm:p-8"
       >
         {isAddAccount && onCancel && (
           <div className="mb-4">
@@ -1030,6 +1031,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
           </Card>
         </motion.div>
       </motion.div>
+      </div>
       <AvatarCropModal
         image={cropImage}
         onCancel={() => setCropImage(null)}

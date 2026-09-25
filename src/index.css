@@ -79,6 +79,15 @@
     }
   }
 
+  .install-sheet {
+    bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
+  }
+
+  [data-app-shell] ~ .install-sheet,
+  body:has([data-app-shell]) .install-sheet {
+    bottom: calc(4.75rem + env(safe-area-inset-bottom, 0px));
+  }
+
   body {
     @apply font-sans text-slate-900;
     background-color: var(--app-bg);

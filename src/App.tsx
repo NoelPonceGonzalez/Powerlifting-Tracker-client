@@ -234,7 +234,7 @@ function materializeRoutineWeeksIfNeeded(routine: RoutinePlan): TrainingWeek[] {
   if (rw.length >= 52) return rw;
   const cl = routine.cycleLength ?? 4;
   const tpl = rw.length <= cl ? rw : deriveBaseTemplateFromWeeks(rw, cl);
-  return materialize52WeeksFromFourTemplateWeeks(tpl.length <= cl ? tpl : deriveBaseTemplateFromWeeks(tpl, cl), cl);
+  return materialize52WeeksFromFourTemplateWeeks(tpl.length <= cl ? tpl : deriveBaseTemplateFromWeeks(tpl, cl), cl, routine.cycleAnchorISO);
 }
 
 function getWeeksAt(routine: RoutinePlan, weekNumber: number): TrainingWeek[] {
@@ -252,9 +252,9 @@ function getWeeksAt(routine: RoutinePlan, weekNumber: number): TrainingWeek[] {
   if (!w?.length) return materializeRoutineWeeksIfNeeded(routine);
   /** Ciclo con el que se guardó esa versión: al cambiar de ciclo, las semanas ya pasadas se siguen leyendo igual. */
   const vcl = Math.max(1, Math.min(52, best.cycleLength ?? (w.length < 52 ? w.length : cl)));
-  if (w.length <= vcl) return materialize52WeeksFromFourTemplateWeeks(w, vcl);
+  if (w.length <= vcl) return materialize52WeeksFromFourTemplateWeeks(w, vcl, routine.cycleAnchorISO);
   if (w.length >= 52) return w;
-  return materialize52WeeksFromFourTemplateWeeks(deriveBaseTemplateFromWeeks(w, vcl), vcl);
+  return materialize52WeeksFromFourTemplateWeeks(deriveBaseTemplateFromWeeks(w, vcl), vcl, routine.cycleAnchorISO);
 }
 
 /** Plan completo a guardar en Mongo: la versión más reciente. No usar `getWeeksAt(..., semanaActual)` aquí: si editas una semana futura, eso devolvía una versión vieja y el PUT pisaba series/reps. */
@@ -3937,7 +3937,7 @@ export default function App() {
     // `reducedMotion="user"`: si el móvil tiene activado «reducir movimiento», motion
     // deja solo las opacidades y se salta desplazamientos y escalados.
     <MotionConfig reducedMotion="user">
-    <div className="relative h-dvh max-h-dvh overflow-hidden bg-[var(--app-bg)] font-sans selection:bg-indigo-100 selection:text-indigo-900 dark:selection:bg-indigo-950/80 dark:selection:text-indigo-200">
+    <div data-app-shell className="relative h-dvh max-h-dvh overflow-hidden bg-[var(--app-bg)] font-sans selection:bg-indigo-100 selection:text-indigo-900 dark:selection:bg-indigo-950/80 dark:selection:text-indigo-200">
       {isSwitchingAccount && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/50 backdrop-blur-sm">
           <Spinner size={36} />

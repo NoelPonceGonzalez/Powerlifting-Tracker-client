@@ -3,7 +3,7 @@
  * La API puede devolver solo N semanas; el cliente expande en memoria para no recibir JSON gigante.
  */
 import type { DayType, LogEntry, TrainingWeek, RoutineVersion } from '@/src/types';
-import { getWeekTypeSlot } from '@/src/lib/mesocycleWeek';
+import { addDays, cycleIndexFromAnchor, getWeekTypeSlot, weekOfYearFromDate } from '@/src/lib/mesocycleWeek';
 import { parseRoutineLogsFromMongo } from '@/src/lib/routineLogs';
 
 /**
@@ -85,7 +85,11 @@ export const EMPTY_FOUR_WEEK_TEMPLATE: TrainingWeek[] = createEmptyTemplate(4);
 /** Compat: antes incluía un ejercicio de ejemplo; ahora equivale a plantilla vacía. */
 export const FALLBACK_FOUR_WEEK_TEMPLATE = EMPTY_FOUR_WEEK_TEMPLATE;
 
-export function materialize52WeeksFromTemplateWeeks(templateWeeks: TrainingWeek[], cycleLength = 4): TrainingWeek[] {
+export function materialize52WeeksFromTemplateWeeks(
+  templateWeeks: TrainingWeek[],
+  cycleLength = 4,
+  anchorISO?: string
+): TrainingWeek[] {
   const cl = Math.max(1, cycleLength);
   const slots: Record<number, TrainingWeek> = {};
   for (const tw of templateWeeks) {
@@ -94,9 +98,14 @@ export function materialize52WeeksFromTemplateWeeks(templateWeeks: TrainingWeek[
     slots[slot] = tw;
   }
   const fallback = slots[1] || { id: 'template-empty', number: 1, days: [] };
+  const now = new Date();
+  const nowCivil = weekOfYearFromDate(now, now.getFullYear());
+  const anchor = anchorISO && /^\d{4}-\d{2}-\d{2}/.test(anchorISO) ? anchorISO.slice(0, 10) : '';
   return Array.from({ length: 52 }, (_, i) => {
     const weekNumber = i + 1;
-    const type = getWeekTypeSlot(weekNumber, cl);
+    const type = anchor
+      ? cycleIndexFromAnchor(addDays(now, (weekNumber - nowCivil) * 7), anchor, cl)
+      : getWeekTypeSlot(weekNumber, cl);
     const template = slots[type] || fallback;
     return {
       ...template,
@@ -209,7 +218,7 @@ export function expandRoutineFromApi(raw: {
 
   let weeks52: TrainingWeek[] = [];
   if (derivedBase.length > 0) {
-    weeks52 = materialize52WeeksFromTemplateWeeks(derivedBase, cycleLength);
+    weeks52 = materialize52WeeksFromTemplateWeeks(derivedBase, cycleLength, raw.cycleAnchorISO);
   } else if (raw.weeks && raw.weeks.length >= 52) {
     weeks52 = raw.weeks;
   }
@@ -227,7 +236,7 @@ export function expandRoutineFromApi(raw: {
   const emptyTpl = createEmptyTemplate(cycleLength);
 
   if (outWeeks.length === 0) {
-    outWeeks = materialize52WeeksFromTemplateWeeks(emptyTpl, cycleLength);
+    outWeeks = materialize52WeeksFromTemplateWeeks(emptyTpl, cycleLength, raw.cycleAnchorISO);
     outVersions = [{ effectiveFromWeek: 1, weeks: emptyTpl }];
     baseTemplateOut = emptyTpl;
   } else if (outVersions.length > 0 && outVersions.every((v) => !v.weeks?.length)) {

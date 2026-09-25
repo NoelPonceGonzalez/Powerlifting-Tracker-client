@@ -8,6 +8,7 @@ import {
   UserMinus,
   UserPlus,
   Trophy,
+  Medal,
   MapPin,
   Clock, 
   Plus,
@@ -47,6 +48,7 @@ import { equitySummary, suggestBodyWeightScoring } from '@/src/lib/challengeEqui
 import { GlassModal } from '@/src/components/ui/GlassModal';
 import { CoverSkeleton, LoadingBlock } from '@/src/components/ui/Spinner';
 import { AudienceToggle } from '@/src/components/social/AudienceToggle';
+import { SbdRankingScreen } from '@/src/components/social/SbdRankingScreen';
 import type { Audience } from '@/src/lib/privacyApi';
 import { SlimeScroll } from '@/src/components/ui/SlimeScroll';
 import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
@@ -431,7 +433,7 @@ function ChallengeDetailBody({
         <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
           Clasificación
         </p>
-        <div className="space-y-2">
+        <motion.div className="space-y-2" initial="hidden" animate="show" variants={PAGE_ENTER_ROOT}>
           {ranking.map((p, idx) => {
             const rank = idx + 1;
             const isMe = sameUserId(p.userId, userId);
@@ -439,8 +441,9 @@ function ChallengeDetailBody({
               ? p.lifts.map((l) => `${l.exercise} ${l.value}`).join(' · ')
               : '';
             return (
-              <div
+              <motion.div
                 key={p.userId}
+                variants={PAGE_ENTER_ITEM}
                 className={cn(
                   'flex items-center gap-3 rounded-2xl px-3 py-2.5',
                   rank === 1
@@ -470,7 +473,7 @@ function ChallengeDetailBody({
                   </p>
                 </div>
                 <RankMoveBadge delta={rankMovement(p.initialRank, rank)} />
-              </div>
+              </motion.div>
             );
           })}
           {ranking.length === 0 && (
@@ -478,7 +481,7 @@ function ChallengeDetailBody({
               Nadie se ha unido todavía.
             </p>
           )}
-        </div>
+        </motion.div>
       </div>
     </div>
   );
@@ -757,6 +760,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
   const [acceptRejectLoadingId, setAcceptRejectLoadingId] = useState<string | null>(null);
   const [showCheckInModal, setShowCheckInModal] = useState(false);
   const [showCreateChallengeModal, setShowCreateChallengeModal] = useState(false);
+  const [sbdOpen, setSbdOpen] = useState(false);
+  const [sbdMarksOpen, setSbdMarksOpen] = useState(false);
   const [deleteChallenge, setDeleteChallenge] = useState<Challenge | null>(null);
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
   const countdownNow = useNowTick(1000);
@@ -1471,18 +1476,43 @@ export const SocialView: React.FC<SocialViewProps> = ({
           ) : null}
           <div className="min-w-0 flex-1">
             <h1 className="text-xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">
-              {TAB_LABELS[activeTab]}
+              {activeTab === 'challenges' && sbdOpen ? 'Ranking SBD' : TAB_LABELS[activeTab]}
             </h1>
+            {activeTab === 'challenges' && sbdOpen && (
+              <p className="text-[12px] text-slate-500">Puntos GL con equipación</p>
+            )}
           </div>
-          {activeTab === 'challenges' && (
+          {activeTab === 'challenges' && !sbdOpen && (
             <button
               type="button"
-              onClick={openCreateModal}
-              className="ml-auto inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full bg-indigo-600 px-3.5 text-sm font-semibold text-white"
+              onClick={() => setSbdOpen(true)}
+              className="app-icon-hit ml-auto rounded-full text-slate-900 dark:text-slate-100"
+              aria-label="Ranking SBD"
             >
-              <Plus size={15} />
-              Crear
+              <Medal size={22} />
             </button>
+          )}
+          {activeTab === 'challenges' && sbdOpen && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setSbdMarksOpen(false);
+                  setSbdOpen(false);
+                }}
+                className="app-icon-hit -order-1 rounded-full text-slate-500"
+                aria-label="Volver a torneos"
+              >
+                <ArrowRight className="rotate-180" size={16} />
+              </button>
+              <button
+                type="button"
+                onClick={() => setSbdMarksOpen(true)}
+                className="shrink-0 rounded-full bg-indigo-600 px-3 py-1.5 text-[12px] font-semibold text-white"
+              >
+                Tus marcas
+              </button>
+            </>
           )}
         </div>
         )}
@@ -1536,6 +1566,11 @@ export const SocialView: React.FC<SocialViewProps> = ({
         )}
       </motion.header>
 
+      {sbdOpen && activeTab === 'challenges' ? (
+        <motion.div variants={PAGE_ENTER_ITEM} initial={false}>
+          <SbdRankingScreen marksOpen={sbdMarksOpen} onMarksOpenChange={setSbdMarksOpen} />
+        </motion.div>
+      ) : (
       <motion.div variants={PAGE_ENTER_ITEM} initial={false}>
         <div className={activeTab === 'chat' ? undefined : 'hidden'} aria-hidden={activeTab !== 'chat'}>
             <ChatTab
@@ -1736,8 +1771,14 @@ export const SocialView: React.FC<SocialViewProps> = ({
             </section>
         </div>
 
-        <div className={cn('space-y-6', activeTab !== 'challenges' && 'hidden')} aria-hidden={activeTab !== 'challenges'}>
-            <div className="flex rounded-2xl border border-slate-200/70 bg-slate-100/90 p-1 dark:border-slate-700/70 dark:bg-slate-800/90">
+        <motion.div
+          className={cn('space-y-6', activeTab !== 'challenges' && 'hidden')}
+          aria-hidden={activeTab !== 'challenges'}
+          initial="hidden"
+          animate={activeTab === 'challenges' && !sbdOpen ? 'show' : 'hidden'}
+          variants={PAGE_ENTER_ROOT}
+        >
+            <motion.div variants={PAGE_ENTER_ITEM} className="flex rounded-2xl border border-slate-200/70 bg-slate-100/90 p-1 dark:border-slate-700/70 dark:bg-slate-800/90">
                 {([
                   { id: 'active' as const, label: 'Activos' },
                   { id: 'finished' as const, label: 'Finalizados' },
@@ -1757,9 +1798,10 @@ export const SocialView: React.FC<SocialViewProps> = ({
                     {tab.label}
                   </button>
                 ))}
-            </div>
+            </motion.div>
 
             {challengeSubTab !== 'progress' && (
+            <motion.div variants={PAGE_ENTER_ITEM}>
             <Input 
               placeholder="Buscar por título o ejercicio"
               value={challengeSearch}
@@ -1767,6 +1809,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
               icon={<Search size={16} />}
               className="h-11 rounded-2xl border-slate-200/80 bg-white py-0 shadow-none dark:border-white/10 dark:bg-slate-900"
             />
+            </motion.div>
             )}
 
             {challengeSubTab === 'progress' && (
@@ -1805,8 +1848,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
                       const myMove = isParticipant ? rankMovement(ranking[myIdx]?.initialRank, myIdx + 1) : null;
 
                       return (
+                        <motion.div key={challenge.id} variants={PAGE_ENTER_ITEM}>
                         <ChallengeListCard
-                          key={challenge.id}
                           challenge={challenge}
                           userId={user.id}
                           onOpen={() => setSelectedChallengeDetail(challenge)}
@@ -1845,6 +1888,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
                             )}
                           </div>
                         </ChallengeListCard>
+                        </motion.div>
                       );
                     })}
                   </SlimeScroll>
@@ -1861,8 +1905,8 @@ export const SocialView: React.FC<SocialViewProps> = ({
                 const people = peopleCountLabel(challenge.participants.length);
 
                 return (
+                  <motion.div key={challenge.id} variants={PAGE_ENTER_ITEM}>
                   <ChallengeListCard
-                    key={challenge.id}
                     challenge={challenge}
                     userId={user.id}
                     onOpen={() => setSelectedChallengeDetail(challenge)}
@@ -1894,12 +1938,14 @@ export const SocialView: React.FC<SocialViewProps> = ({
                       )}
                     </div>
                   </ChallengeListCard>
+                  </motion.div>
                 );
               })}
             </SlimeScroll>
             )}
 
             {challengeSubTab !== 'progress' && filteredChallenges.length === 0 && (
+              <motion.div variants={PAGE_ENTER_ITEM}>
               <Card padding="lg" rounded="md" variant="white" className="border-dashed text-center">
                 <div className="mx-auto mb-3 flex justify-center">
                   <ChallengeTrophyIcon />
@@ -1920,8 +1966,9 @@ export const SocialView: React.FC<SocialViewProps> = ({
                   </button>
                 )}
               </Card>
+              </motion.div>
             )}
-        </div>
+        </motion.div>
 
         <div className={cn('space-y-4', activeTab !== 'checkins' && 'hidden')} aria-hidden={activeTab !== 'checkins'}>
             {chatAsks.length > 0 && (
@@ -2207,6 +2254,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
             })()}
         </div>
       </motion.div>
+      )}
 
       <GlassModal
         open={showCheckInModal || !!editingCheckIn}

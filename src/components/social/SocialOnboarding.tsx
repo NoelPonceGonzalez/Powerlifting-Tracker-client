@@ -78,7 +78,7 @@ export function SocialOnboarding({
           Ahora mismo no hay sugerencias. Entra y búscalas cuando quieras.
         </p>
       ) : (
-        <div className="max-h-[min(22rem,50dvh)] space-y-1 overflow-y-auto">
+        <div className="space-y-1">
           {people.map(u => {
             const done = followed.has(u.id);
             return (

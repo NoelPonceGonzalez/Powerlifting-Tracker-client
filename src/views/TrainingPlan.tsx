@@ -37,7 +37,7 @@ import { LoadingBlock } from '@/src/components/ui/Spinner';
 import { useIncrementSignal } from '@/src/lib/useIncrementSignal';
 import { useEscapeClose } from '@/src/lib/useEscapeClose';
 import { applyDaySkips, shiftsForCalendarWeek, type CalendarDayShift } from '@/src/lib/calendarDayShift';
-import { cycleIndexFromCivilWeek, firstWeekOfYearStartingInMonth } from '@/src/lib/mesocycleWeek';
+import { addDays, cycleIndexFromAnchor, firstWeekOfYearStartingInMonth, getMesocycleWeekIndex } from '@/src/lib/mesocycleWeek';
 import { guessLinkedTmId, normalizeExerciseNameKey } from '@/src/lib/normalizeExerciseName';
 import { getTMsForView } from '@/src/lib/historyTm';
 import { dateISOFromYearWeekDay, weekOfYearFromDate } from '@/src/lib/calendarWeekDate';
@@ -628,12 +628,14 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     [sameTemplateAllWeeks, shiftedAtCalendarWeeks, displayWeekNum]
   );
 
-  /** Semana del ciclo (1–N) desde el ancla (cuándo empezó la semana 1), no desde el 1 de enero. */
+  /** Semana del ciclo (1–N) desde el lunes que eligió como semana 1, no desde el 1 de enero. */
   const cycleWeek = useMemo(() => {
     const cl = Math.max(1, cycleLength);
-    const effective = sameTemplateAllWeeks ? displayWeekNum : displayWeekNum - weekShift;
-    return cycleIndexFromCivilWeek(effective, cycleAnchorISO, cl, displayPlanYear);
-  }, [displayWeekNum, cycleLength, weekShift, sameTemplateAllWeeks, cycleAnchorISO, displayPlanYear]);
+    const shift = sameTemplateAllWeeks ? 0 : weekShift;
+    if (!cycleAnchorISO) return getMesocycleWeekIndex(displayWeekNum - shift, cl);
+    const viewed = addDays(new Date(), (displayWeekNum - (currentWeekOfYear ?? displayWeekNum) - shift) * 7);
+    return cycleIndexFromAnchor(viewed, cycleAnchorISO, cl, weekStartsOn ?? 1);
+  }, [displayWeekNum, cycleLength, weekShift, sameTemplateAllWeeks, cycleAnchorISO, currentWeekOfYear, weekStartsOn]);
 
   /**
    * Clave en `skippedWeeks`: en rutina lineal, semana civil; en rutina por bloque, posición del mesociclo (1…N),

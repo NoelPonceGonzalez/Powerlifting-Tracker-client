@@ -220,40 +220,40 @@ export const InstallPrompt: React.FC = () => {
           transition={{ type: 'spring', stiffness: 320, damping: 30 }}
           role="dialog"
           aria-label={copy.label}
-          className="fixed inset-x-2 bottom-[calc(4.75rem+env(safe-area-inset-bottom,0px))] z-[60] mx-auto max-w-md sm:inset-x-3 sm:bottom-28"
+          className="install-sheet fixed inset-x-3 z-[80] mx-auto max-w-md"
         >
-          <div className="relative overflow-hidden rounded-2xl border border-white/20 bg-white/92 px-3 py-2.5 shadow-2xl shadow-black/10 backdrop-blur-2xl dark:border-slate-700/60 dark:bg-slate-950/90 dark:shadow-black/60 sm:rounded-3xl sm:p-5">
-            <div className="flex flex-wrap items-center gap-2 sm:flex-nowrap sm:gap-2.5">
-              <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-white sm:size-12 sm:rounded-2xl">
+          <div className="relative max-h-[min(46dvh,22rem)] overflow-y-auto overscroll-y-contain rounded-2xl border border-white/20 bg-white/95 px-3.5 py-3 shadow-2xl shadow-black/10 backdrop-blur-2xl dark:border-slate-700/60 dark:bg-slate-950/95 dark:shadow-black/60">
+            <div className="flex items-start gap-3">
+              <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-indigo-600 text-white">
                 {copy.icon}
               </div>
-              <div className="min-w-0 flex-1 basis-[8rem]">
-                <h2 className="truncate text-[13px] font-black uppercase tracking-tight text-slate-900 dark:text-slate-100 sm:text-base">
+              <div className="min-w-0 flex-1">
+                <h2 className="text-[13px] font-black uppercase tracking-tight text-slate-900 dark:text-slate-100">
                   {copy.title}
                 </h2>
-                <p className="mt-0.5 text-[11px] leading-snug text-slate-500 dark:text-slate-400 sm:text-xs">
+                <p className="mt-1 text-[12px] leading-snug text-slate-500 dark:text-slate-400">
                   {copy.body}
                 </p>
               </div>
-              <div className="flex shrink-0 items-center gap-1.5">
-                {mode !== 'cameraHelp' && (
-                  <button
-                    type="button"
-                    onClick={close}
-                    className="rounded-xl px-2.5 py-2 text-[10px] font-black uppercase tracking-wider text-slate-500 sm:px-3"
-                  >
-                    Ahora no
-                  </button>
-                )}
+            </div>
+            <div className="mt-3 flex gap-2">
+              {mode !== 'cameraHelp' && (
                 <button
                   type="button"
-                  onClick={copy.onAction}
-                  className="inline-flex items-center gap-1 rounded-xl bg-indigo-600 px-2.5 py-2 text-[10px] font-black uppercase tracking-wider text-white sm:rounded-2xl sm:px-4 sm:py-3 sm:text-xs"
+                  onClick={close}
+                  className="min-h-11 flex-1 rounded-xl px-3 text-[12px] font-bold text-slate-500"
                 >
-                  {copy.actionIcon}
-                  {copy.action}
+                  Ahora no
                 </button>
-              </div>
+              )}
+              <button
+                type="button"
+                onClick={copy.onAction}
+                className="inline-flex min-h-11 flex-1 items-center justify-center gap-1.5 rounded-xl bg-indigo-600 px-3 text-[12px] font-bold text-white"
+              >
+                {copy.actionIcon}
+                {copy.action}
+              </button>
             </div>
 
             {mode === 'install' && (isIOS() || needsManualInstructions) && (
