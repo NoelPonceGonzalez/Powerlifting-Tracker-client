@@ -27,6 +27,14 @@ if (typeof window !== 'undefined') {
   }
 }
 
+try {
+  if (localStorage.getItem('pl-mobile-frame') === '1') {
+    document.documentElement.classList.add('mobile-frame');
+  }
+} catch {
+  /* incógnito */
+}
+
 // Antes de montar React: `beforeinstallprompt` puede dispararse durante la carga inicial.
 initInstallPrompt();
 registerServiceWorker();

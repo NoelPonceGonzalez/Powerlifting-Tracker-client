@@ -6,6 +6,7 @@ export interface User {
   id: string;
   name: string;
   email: string;
+  username?: string;
   avatar: string;
   bodyWeight: number;
   gender?: 'hombre' | 'mujer';

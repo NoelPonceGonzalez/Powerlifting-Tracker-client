@@ -140,38 +140,43 @@ export function SbdRankingScreen({
         <motion.ol className="space-y-3" initial="hidden" animate="show" variants={PAGE_ENTER_ROOT}>
           {board.map((row, i) => {
             const medal = MEDALS[i];
-            const cols = [
-              ['SQ', kg(row.squat), false],
-              ['BP', kg(row.bench), false],
-              ['DL', kg(row.deadlift), false],
-              ['Total', kg(row.total), false],
-              ['GL', kg(row.points), true],
-            ] as const;
             return (
               <motion.li
                 key={row.id}
                 variants={PAGE_ENTER_ITEM}
-                className="grid items-center gap-x-4 rounded-2xl bg-white px-4 py-3.5 dark:bg-slate-900"
-                style={{ gridTemplateColumns: '1.75rem 2rem minmax(4.5rem,1.1fr) repeat(5, minmax(0,1fr))' }}
+                className="rounded-2xl bg-white px-3 py-3 dark:bg-slate-900 min-[400px]:px-3.5"
               >
-                <span
-                  className="flex h-7 w-7 items-center justify-center justify-self-center rounded-full text-[12px] font-black"
-                  style={{ background: medal?.bg || '#e8edf3', color: medal?.fg || '#475569' }}
-                >
-                  {i + 1}
-                </span>
-                <Avatar src={row.avatar} userId={row.id} name={row.name} className="h-8 w-8 justify-self-center rounded-full" />
-                <span className="min-w-0 truncate pr-1 text-[14px] font-semibold text-slate-900 dark:text-slate-100">
-                  {row.name}
-                </span>
-                {cols.map(([label, value, emphasis]) => (
-                  <div key={label} className="min-w-0 text-center">
-                    <p className="text-[10px] font-semibold uppercase leading-none tracking-wide text-slate-400">{label}</p>
-                    <p className={`mt-1.5 truncate text-[14px] tabular-nums leading-none ${emphasis ? 'font-black text-slate-900 dark:text-slate-50' : 'font-semibold text-slate-800 dark:text-slate-100'}`}>
-                      {value}
-                    </p>
+                <div className="flex items-center gap-2.5">
+                  <span
+                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[12px] font-black"
+                    style={{ background: medal?.bg || '#e8edf3', color: medal?.fg || '#475569' }}
+                  >
+                    {i + 1}
+                  </span>
+                  <Avatar src={row.avatar} userId={row.id} name={row.name} className="h-9 w-9 shrink-0 rounded-full" />
+                  <span className="min-w-0 flex-1 truncate text-[clamp(13px,3.8vw,15px)] font-semibold text-slate-900 dark:text-slate-100">
+                    {row.name}
+                  </span>
+                  <div className="shrink-0 pl-2 text-right">
+                    <p className="text-[clamp(14px,4vw,16px)] font-black tabular-nums leading-none text-slate-900 dark:text-slate-50">{kg(row.points)}</p>
+                    <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">GL</p>
                   </div>
-                ))}
+                </div>
+                <div className="mt-3 grid grid-cols-4 gap-1.5 border-t border-slate-100 pt-3 min-[400px]:gap-3 dark:border-white/10">
+                  {(
+                    [
+                      ['SQ', row.squat],
+                      ['BP', row.bench],
+                      ['DL', row.deadlift],
+                      ['Total', row.total],
+                    ] as const
+                  ).map(([label, value]) => (
+                    <div key={label} className="min-w-0 text-center">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{label}</p>
+                      <p className="mt-1 truncate text-[clamp(12px,3.5vw,15px)] font-semibold tabular-nums text-slate-800 dark:text-slate-100">{kg(value)}</p>
+                    </div>
+                  ))}
+                </div>
               </motion.li>
             );
           })}

@@ -651,6 +651,7 @@ export default function App() {
       id: String(u._id || u.id),
       name: u.name || 'Atleta',
       email: u.email,
+      username: typeof u.username === 'string' ? u.username : undefined,
       avatar: u.avatar || '',
       bodyWeight: u.bodyWeight ?? 80,
       gender: u.gender === 'mujer' || u.gender === 'hombre' ? u.gender : undefined,

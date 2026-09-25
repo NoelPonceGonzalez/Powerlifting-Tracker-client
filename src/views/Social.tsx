@@ -1508,7 +1508,7 @@ export const SocialView: React.FC<SocialViewProps> = ({
               <button
                 type="button"
                 onClick={() => setSbdMarksOpen(true)}
-                className="shrink-0 rounded-full bg-indigo-600 px-3 py-1.5 text-[12px] font-semibold text-white"
+                className="shrink-0 rounded-full bg-indigo-600 px-2.5 py-1.5 text-[11px] font-semibold text-white min-[380px]:px-3 min-[380px]:text-[12px]"
               >
                 Tus marcas
               </button>

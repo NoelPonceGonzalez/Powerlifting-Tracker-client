@@ -585,7 +585,7 @@ export const LoginView: React.FC<LoginProps> = ({ onLogin, variant = 'default', 
   const isAddAccount = variant === 'addAccount';
 
   return (
-    <div className="h-dvh max-h-dvh overflow-y-auto overscroll-y-contain bg-slate-50 [-webkit-overflow-scrolling:touch] dark:bg-slate-950">
+    <div className="auth-scroll bg-slate-50 dark:bg-slate-950">
       <div className="mx-auto flex min-h-full w-full max-w-md flex-col justify-center px-3 py-[max(1rem,env(safe-area-inset-top))] pb-[max(11rem,calc(env(safe-area-inset-bottom)+9rem))]">
       <motion.div
         initial={{ opacity: 0, scale: 0.95 }}

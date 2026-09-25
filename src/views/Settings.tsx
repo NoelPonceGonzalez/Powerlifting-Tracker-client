@@ -36,6 +36,25 @@ import { cn } from '@/src/lib/utils';
 import { VIEW_TRANSITION } from '@/src/lib/motionPresets';
 import { hasRealAvatar } from '@/src/lib/avatar';
 import { downscaleForCrop } from '@/src/lib/avatarCrop';
+import { isStandalone } from '@/src/pwa/installPrompt';
+
+const MOBILE_FRAME_KEY = 'pl-mobile-frame';
+
+function isTestAccount(user: User): boolean {
+  const username = (user.username || '').trim().toLowerCase();
+  const name = (user.name || '').trim().toLowerCase();
+  const email = (user.email || '').trim().toLowerCase();
+  return username === 'test' || name === 'test' || email.startsWith('test@');
+}
+
+function applyMobileFrame(on: boolean) {
+  document.documentElement.classList.toggle('mobile-frame', on);
+  try {
+    localStorage.setItem(MOBILE_FRAME_KEY, on ? '1' : '0');
+  } catch {
+    /* incógnito */
+  }
+}
 
 interface SettingsViewProps {
   user: User;
@@ -106,6 +125,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [avatarCam, setAvatarCam] = useState(false);
   const photoMenuRef = React.useRef<HTMLDivElement | null>(null);
   const [photoMenuOpen, setPhotoMenuOpen] = React.useState(false);
+  const [mobileFrame, setMobileFrame] = useState(() => {
+    try {
+      return localStorage.getItem(MOBILE_FRAME_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const showMobilePreview = !isStandalone() && isTestAccount(user);
 
   React.useEffect(() => {
     if (!photoMenuOpen) return;
@@ -509,6 +536,27 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           />
           <SettingsGlass className="p-4 sm:p-5">
             <PwaSettingsSection embedded />
+            {showMobilePreview && (
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !mobileFrame;
+                  setMobileFrame(next);
+                  applyMobileFrame(next);
+                }}
+                className="mt-3 flex min-h-12 w-full items-center gap-3 rounded-2xl bg-slate-50 px-3 text-left dark:bg-slate-800/80"
+              >
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-white text-indigo-600 shadow-sm dark:bg-slate-700">
+                  <Smartphone size={16} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-semibold text-slate-800 dark:text-slate-100">
+                    {mobileFrame ? 'Volver a la versión de escritorio' : 'Ver versión móvil'}
+                  </span>
+                  <span className="block text-xs text-slate-500">Solo en el navegador, para revisar el móvil</span>
+                </span>
+              </button>
+            )}
           </SettingsGlass>
         </section>
 
