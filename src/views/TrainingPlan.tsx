@@ -608,6 +608,8 @@ interface TrainingPlanViewProps {
   openImportSignal?: number;
   /** Dónde empezó el plan importado la última vez en esta rutina. */
   lastCoachImport?: LastCoachImport | null;
+  /** Semana de la rutina en una semana civil: el importador reconoce así las semanas ya puestas. */
+  planWeekAt?: (calendarWeek: number) => TrainingWeek | undefined;
   skippedWeeks?: number[];
   /** Semanas civiles donde «Saltar la semana» desplazó el ciclo (solo block mode). */
   shiftedAtCalendarWeeks?: number[];
@@ -664,6 +666,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   onImportCoachPlan,
   openImportSignal = 0,
   lastCoachImport,
+  planWeekAt,
   skippedWeeks = [],
   shiftedAtCalendarWeeks = [],
   calendarDayShifts = [],
@@ -2097,9 +2100,10 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
       {showImportModal && onImportCoachPlan && (
         <React.Suspense fallback={null}>
           <ImportCoachPlanModal
-            currentWeekNumber={currentWeek?.number ?? viewAsOfWeek ?? 1}
+            currentWeekNumber={currentWeekOfYear}
             planYear={displayPlanYear}
             lastImport={lastCoachImport}
+            planWeekAt={planWeekAt}
             routineName={activeRoutineName}
             routineCycleLength={cycleLength}
             weekStartsOn={weekStartsOn}

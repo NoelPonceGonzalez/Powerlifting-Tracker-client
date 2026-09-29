@@ -36,9 +36,9 @@ export function buildPlanPatchPayload(r: RoutinePlanPatchInput) {
       (latestV?.weeks?.length ? latestV.weeks : null) ||
       (r.baseTemplate?.length ? r.baseTemplate : null) ||
       createEmptyTemplate(cl);
-    fullWeeksForTemplate = materialize52WeeksFromTemplateWeeks(tplWeeks, cl);
+    fullWeeksForTemplate = materialize52WeeksFromTemplateWeeks(tplWeeks, cl, r.cycleAnchorISO);
   }
-  const baseTemplate = deriveBaseTemplateFromWeeks(fullWeeksForTemplate, cl);
+  const baseTemplate = deriveBaseTemplateFromWeeks(fullWeeksForTemplate, cl, r.cycleAnchorISO);
   const weekTypeOverrides = r.weekTypeOverrides || [];
   const versionsPayload =
     r.versions?.length && r.versions.length > 0
@@ -48,7 +48,7 @@ export function buildPlanPatchPayload(r: RoutinePlanPatchInput) {
           return {
             effectiveFromWeek: v.effectiveFromWeek,
             cycleLength: vcl,
-            weeks: v.weeks && v.weeks.length > vcl ? deriveBaseTemplateFromWeeks(v.weeks, vcl) : v.weeks,
+            weeks: v.weeks && v.weeks.length > vcl ? deriveBaseTemplateFromWeeks(v.weeks, vcl, r.cycleAnchorISO) : v.weeks,
           };
         })
       : [{ effectiveFromWeek: 1, cycleLength: cl, weeks: baseTemplate }];

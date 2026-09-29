@@ -1,6 +1,6 @@
 import type { DayType, PlannedExercise, RoutineVersion, TrainingDay, TrainingWeek } from '@/src/types';
 import type { ParsedExercise, ParsedPlan } from '@/src/lib/coachPlan/parseCoachPlan';
-import { getWeekTypeSlot } from '@/src/lib/mesocycleWeek';
+import { addDays, getWeekTypeSlot, parseISODate, startOfWeek, weekOfYearFromDate } from '@/src/lib/mesocycleWeek';
 import {
   deriveBaseTemplateFromWeeks,
   materialize52WeeksFromFourTemplateWeeks,
@@ -184,6 +184,82 @@ export function buildCycleTemplateFromImport(
   });
 }
 
+/** Semana 3 del archivo = posición 3 del ciclo, aunque el calendario ya vaya por otra. */
+export function cycleSlotForPlanWeek(weekNumber: number, cycleLength: number): number {
+  const cl = Math.max(1, cycleLength);
+  return ((Math.max(1, weekNumber) - 1) % cl) + 1;
+}
+
+function writeParsedWeekIntoSlot(
+  shell: TrainingWeek,
+  planWeek: ParsedPlan['weeks'][number],
+  plan: ParsedPlan,
+  clearUntouchedDays: boolean,
+  slot: number
+): TrainingWeek {
+  const weekId = `template-w${slot}`;
+  const days = shell.days.map((day, dayIdx) => {
+    const planDay = planWeek.days.find((d) => d.dayIndex === dayIdx);
+    const dayId = `${weekId}-d${dayIdx}`;
+    if (planDay) {
+      return {
+        ...day,
+        id: dayId,
+        type: 'workout' as DayType,
+        exercises: planDay.exercises.map((pe, k) => toPlannedExercise(pe, weekId, dayId, k)),
+      };
+    }
+    const declaredType = plan.dayTypes[dayIdx];
+    if (!clearUntouchedDays) return declaredType ? { ...day, type: declaredType } : day;
+    return {
+      ...day,
+      id: dayId,
+      type: declaredType ?? ('rest' as DayType),
+      exercises: [],
+    };
+  });
+  return normalizeTemplateWeek({ ...shell, number: slot, days }, slot);
+}
+
+/**
+ * Mete cada semana del archivo en su posición del ciclo (la 1 en la 1, la 3 en la 3).
+ * La semana civil solo dice desde cuándo vale esta versión, no en qué hueco cae.
+ */
+export function placePlanWeeksOnCycle(
+  previousTemplate: TrainingWeek[],
+  plan: ParsedPlan,
+  cycleLength: number,
+  clearUntouchedDays: boolean
+): TrainingWeek[] {
+  const cl = Math.max(1, cycleLength);
+  const bySlot = new Map<number, TrainingWeek>();
+  previousTemplate.forEach((week) => {
+    const slot = week.number >= 1 && week.number <= cl ? week.number : getWeekTypeSlot(week.number, cl);
+    bySlot.set(slot, week);
+  });
+  const shell = previousTemplate.find((w) => w.days?.length) || previousTemplate[0];
+  for (const planWeek of plan.weeks) {
+    const slot = cycleSlotForPlanWeek(planWeek.number, cl);
+    const base = bySlot.get(slot) || shell;
+    if (!base) continue;
+    bySlot.set(slot, writeParsedWeekIntoSlot(base, planWeek, plan, clearUntouchedDays, slot));
+  }
+  return Array.from({ length: cl }, (_, i) => i + 1).map((slot) => {
+    const week = bySlot.get(slot);
+    if (week) return normalizeTemplateWeek(week, slot);
+    if (shell) return normalizeTemplateWeek(restOnlyWeek(shell, plan), slot);
+    return normalizeTemplateWeek({ id: `template-w${slot}`, number: slot, days: [] }, slot);
+  });
+}
+
+/** Semana civil en la que empieza la primera semana del archivo, contando desde el ancla del ciclo. */
+export function civilWeekForPlanWeek(anchorISO: string, planWeekNumber: number): number {
+  const parsed = parseISODate(anchorISO);
+  const anchor = startOfWeek(parsed ?? new Date(), 1);
+  const date = addDays(anchor, (Math.max(1, planWeekNumber) - 1) * 7);
+  return weekOfYearFromDate(date, date.getFullYear() || anchor.getFullYear());
+}
+
 export interface CoachImportMergeInput {
   plan: ParsedPlan;
   startWeekNumber: number;
@@ -232,55 +308,63 @@ export function mergeCoachImportIntoRoutine<T extends CoachImportRoutineSlice>(
   const cycleLength = Math.max(1, Math.min(52, opts.cycleLength || opts.plan.weeks.length || prevCycleLength));
   const cycleChanged =
     cycleLength !== prevCycleLength || (cycleLength === 1) !== (r.sameTemplateAllWeeks === true);
+  const anchorISO = r.cycleAnchorISO || opts.week1ISO || '';
+  const placeOnCycle = !!r.cycleAnchorISO && cycleLength > 1 && opts.plan.weeks.length > 0;
   const endOfPlanWeek = opts.startWeekNumber + opts.plan.weeks.length;
-  const versionFromWeek = opts.appendAfterExisting
-    ? opts.startWeekNumber
-    : opts.continuesPreviousPlan
-      ? Math.max(opts.startWeekNumber, opts.currentWeekOfYear)
-      : opts.startWeekNumber;
+  const versionFromWeek = placeOnCycle
+    ? civilWeekForPlanWeek(r.cycleAnchorISO!, Math.min(...opts.plan.weeks.map((w) => w.number)))
+    : opts.appendAfterExisting
+      ? opts.startWeekNumber
+      : opts.continuesPreviousPlan
+        ? Math.max(opts.startWeekNumber, opts.currentWeekOfYear)
+        : opts.startWeekNumber;
 
   const base = weeksForImport(r);
-  const { weeks, targetWeekNumbers } = applyCoachPlanToWeeks(base, opts.plan, {
-    startWeekNumber: opts.startWeekNumber,
-    clearUntouchedDays: opts.clearUntouchedDays,
-  });
+  const applied = placeOnCycle
+    ? null
+    : applyCoachPlanToWeeks(base, opts.plan, {
+        startWeekNumber: opts.startWeekNumber,
+        clearUntouchedDays: opts.clearUntouchedDays,
+      });
   const previousTemplate = r.baseTemplate?.length
     ? r.baseTemplate
     : deriveBaseTemplateFromWeeks(base, prevCycleLength);
-  const baseTemplate = buildCycleTemplateFromImport(
-    weeks,
-    targetWeekNumbers,
-    cycleLength,
-    previousTemplate,
-    opts.plan
-  );
+  const baseTemplate = placeOnCycle
+    ? placePlanWeeksOnCycle(previousTemplate, opts.plan, cycleLength, opts.clearUntouchedDays)
+    : buildCycleTemplateFromImport(
+        applied!.weeks,
+        applied!.targetWeekNumbers,
+        cycleLength,
+        previousTemplate,
+        opts.plan
+      );
+  const keptVersions = new Map<number, RoutineVersion>();
+  for (const v of r.versions ?? []) {
+    if (v.effectiveFromWeek >= versionFromWeek) continue;
+    keptVersions.set(v.effectiveFromWeek, { ...v, cycleLength: v.cycleLength ?? prevCycleLength });
+  }
+  keptVersions.set(versionFromWeek, { effectiveFromWeek: versionFromWeek, cycleLength, weeks: baseTemplate });
+  if (!opts.repeatAfterPlan && !placeOnCycle && endOfPlanWeek <= 52 && endOfPlanWeek > versionFromWeek) {
+    const shell = applied?.weeks[opts.startWeekNumber - 1] ?? base[0];
+    keptVersions.set(endOfPlanWeek, {
+      effectiveFromWeek: endOfPlanWeek,
+      cycleLength: 1,
+      weeks: buildEmptyWeekTemplate(shell, opts.plan),
+    });
+  }
 
   return {
     ...r,
     cycleLength,
-    cycleAnchorISO: opts.continuesPreviousPlan
-      ? (r.cycleAnchorISO || opts.week1ISO || r.cycleAnchorISO)
-      : (opts.week1ISO || r.cycleAnchorISO),
+    cycleAnchorISO: r.cycleAnchorISO || opts.week1ISO || anchorISO,
     weekStartsOn: opts.continuesPreviousPlan
       ? (r.weekStartsOn ?? opts.weekStartsOn ?? 1)
       : (opts.weekStartsOn ?? r.weekStartsOn ?? 1),
     sameTemplateAllWeeks: cycleLength === 1,
-    weeks: materialize52WeeksFromFourTemplateWeeks(baseTemplate, cycleLength),
+    weeks: materialize52WeeksFromFourTemplateWeeks(baseTemplate, cycleLength, r.cycleAnchorISO || opts.week1ISO),
     baseTemplate,
     weekTypeOverrides: [],
-    versions: [
-      ...(r.versions ?? [])
-        .filter(v => v.effectiveFromWeek < versionFromWeek)
-        .map(v => ({ ...v, cycleLength: v.cycleLength ?? prevCycleLength })),
-      { effectiveFromWeek: versionFromWeek, cycleLength, weeks: baseTemplate },
-      ...(!opts.repeatAfterPlan && endOfPlanWeek <= 52 && endOfPlanWeek > versionFromWeek
-        ? [{
-            effectiveFromWeek: endOfPlanWeek,
-            cycleLength: 1,
-            weeks: buildEmptyWeekTemplate(weeks[opts.startWeekNumber - 1] ?? base[0], opts.plan),
-          }]
-        : []),
-    ],
+    versions: [...keptVersions.values()].sort((a, b) => a.effectiveFromWeek - b.effectiveFromWeek),
     ...(cycleChanged ? { skippedWeeks: [], shiftedAtCalendarWeeks: [] } : {}),
   };
 }

@@ -2539,9 +2539,15 @@ export default function App() {
 
     const importedMax = opts.plan.weeks.reduce((max, week) => Math.max(max, week.number), 0);
     const importMark: LastCoachImport = {
-      startWeekNumber: opts.continuesPreviousPlan ? (lastCoachImport?.startWeekNumber ?? opts.startWeekNumber) : opts.startWeekNumber,
+      startWeekNumber: opts.appendAfterExisting && opts.originWeekNumber
+        ? opts.originWeekNumber
+        : opts.continuesPreviousPlan
+          ? (lastCoachImport?.startWeekNumber ?? opts.startWeekNumber)
+          : opts.startWeekNumber,
       weeks: opts.plan.weeks.length,
-      week1ISO: opts.continuesPreviousPlan ? (lastCoachImport?.week1ISO ?? opts.week1ISO) : opts.week1ISO,
+      week1ISO: opts.appendAfterExisting
+        ? opts.week1ISO
+        : opts.continuesPreviousPlan ? (lastCoachImport?.week1ISO ?? opts.week1ISO) : opts.week1ISO,
       planWeekTo: opts.planWeekTo ?? Math.max(lastCoachImport?.planWeekTo ?? 0, importedMax),
     };
     setLastCoachImport(importMark);
@@ -4086,6 +4092,11 @@ export default function App() {
                 onImportCoachPlan={handleImportCoachPlan}
                 openImportSignal={openImportAfterCreate}
                 lastCoachImport={lastCoachImport}
+                planWeekAt={(n) => {
+                  if (!activeRoutine) return undefined;
+                  const ws = getWeeksAt(activeRoutine, n);
+                  return ws[n - 1] ?? ws.find((w) => w.number === n);
+                }}
                 skippedWeeks={activeRoutine?.skippedWeeks ?? []}
                 shiftedAtCalendarWeeks={activeRoutine?.shiftedAtCalendarWeeks ?? []}
                 calendarDayShifts={activeRoutine?.calendarDayShifts ?? []}

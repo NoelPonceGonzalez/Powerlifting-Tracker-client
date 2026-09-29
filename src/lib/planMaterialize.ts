@@ -3,7 +3,7 @@
  * La API puede devolver solo N semanas; el cliente expande en memoria para no recibir JSON gigante.
  */
 import type { DayType, LogEntry, TrainingWeek, RoutineVersion } from '@/src/types';
-import { addDays, cycleIndexFromAnchor, getWeekTypeSlot, weekOfYearFromDate } from '@/src/lib/mesocycleWeek';
+import { addDays, cycleIndexFromAnchor, cycleIndexFromCivilWeek, getWeekTypeSlot, weekOfYearFromDate } from '@/src/lib/mesocycleWeek';
 import { parseRoutineLogsFromMongo } from '@/src/lib/routineLogs';
 
 /**
@@ -40,11 +40,16 @@ export function normalizeTemplateWeek(week: TrainingWeek, weekType: number): Tra
   };
 }
 
-export function deriveBaseTemplateFromWeeks(weeks: TrainingWeek[], cycleLength = 4): TrainingWeek[] {
+export function deriveBaseTemplateFromWeeks(weeks: TrainingWeek[], cycleLength = 4, anchorISO?: string): TrainingWeek[] {
   const cl = Math.max(1, cycleLength);
   const byType = new Map<number, TrainingWeek>();
   weeks.forEach((week) => {
-    const slot = getWeekTypeSlot(week.number, cl);
+    const slot =
+      week.number >= 1 && week.number <= cl
+        ? week.number
+        : anchorISO
+          ? cycleIndexFromCivilWeek(week.number, anchorISO, cl)
+          : getWeekTypeSlot(week.number, cl);
     byType.set(slot, week);
   });
   const fallback =
