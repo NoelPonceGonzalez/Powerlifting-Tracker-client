@@ -144,11 +144,14 @@ function ExerciseHoldRow({
   onPreview,
   onDrop,
   onDelete,
+  freezeLayout = false,
   children,
 }: {
   exerciseId: string;
   index: number;
   canHold: boolean;
+  /** Al guardar el orden los ids pasan a ser por posición: sin esto la lista animaba hacia atrás y otra vez hacia delante. */
+  freezeLayout?: boolean;
   status?: 'idle' | 'partial' | 'done';
   onOpen: () => void;
   /** Hueco donde caería mientras se arrastra. Solo pinta: no toca la rutina. */
@@ -180,8 +183,11 @@ function ExerciseHoldRow({
   const detach = useRef<(() => void) | null>(null);
   /** La papelera es el + de la barra; si no hay barra, una pastilla propia. */
   const barTrashOn = useRef(false);
+  const dropTimer = useRef<number | null>(null);
   const [pressing, setPressing] = useState(false);
   const [lifted, setLifted] = useState(false);
+  /** La tarjeta vuela a su hueco antes de desaparecer. */
+  const [dropping, setDropping] = useState(false);
   const [armedTrash, setArmedTrash] = useState(false);
   const [barTrash, setBarTrash] = useState(false);
 
@@ -207,6 +213,11 @@ function ExerciseHoldRow({
   /** Deja la fila como estaba. Todas las salidas pasan por aquí para que nada quede flotando. */
   const resetDrag = () => {
     const was = dragging.current;
+    if (dropTimer.current != null) {
+      window.clearTimeout(dropTimer.current);
+      dropTimer.current = null;
+    }
+    setDropping(false);
     dragging.current = false;
     overTrash.current = false;
     start.current = null;
@@ -226,11 +237,42 @@ function ExerciseHoldRow({
   };
 
   const endDrag = (dropOnTrash: boolean) => {
-    if (!resetDrag()) return;
-    // Si se suelta fuera de la fila no llega el click que lo consumía.
-    window.setTimeout(() => { suppressClick.current = false; }, 80);
-    if (dropOnTrash) onDeleteRef.current();
-    else onDropRef.current(target.current);
+    if (dropOnTrash || !dragging.current || !floatRef.current || !rowRef.current) {
+      if (!resetDrag()) return;
+      // Si se suelta fuera de la fila no llega el click que lo consumía.
+      window.setTimeout(() => { suppressClick.current = false; }, 80);
+      if (dropOnTrash) onDeleteRef.current();
+      else onDropRef.current(target.current);
+      return;
+    }
+    // Se deja de escuchar el dedo ya, pero la tarjeta sigue en pantalla mientras aterriza.
+    dragging.current = false;
+    overTrash.current = false;
+    detach.current?.();
+    detach.current = null;
+    stopAutoScroll();
+    releaseDrag(cancelDrag);
+    document.documentElement.classList.remove('exercise-drag');
+    setDragTrash({ active: false, armed: false });
+    setArmedTrash(false);
+
+    const row = rowRef.current;
+    const float = floatRef.current;
+    const layoutTransform = row.style.transform;
+    row.style.transform = 'none';
+    const slot = row.getBoundingClientRect();
+    row.style.transform = layoutTransform;
+    float.style.transition = 'transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1)';
+    float.style.transform = `translate3d(${Math.round(slot.left)}px, ${Math.round(slot.top)}px, 0)`;
+    setDropping(true);
+
+    const to = target.current;
+    dropTimer.current = window.setTimeout(() => {
+      dropTimer.current = null;
+      resetDrag();
+      window.setTimeout(() => { suppressClick.current = false; }, 80);
+      onDropRef.current(to);
+    }, 230);
   };
 
   const cancelRef = useRef<() => void>(() => {});
@@ -376,12 +418,12 @@ function ExerciseHoldRow({
   return (
     <motion.div
       ref={rowRef}
-      layout="position"
+      layout={freezeLayout ? false : 'position'}
       data-ex-row={exerciseId}
       initial={false}
       animate={{ scale: pressing ? 0.97 : 1 }}
       transition={{ layout: SPRING_SNAP, default: { type: 'spring', stiffness: 420, damping: 30 } }}
-      className={cn('origin-center transition-opacity duration-150', lifted && 'relative z-10 opacity-[0.35]')}
+      className={cn('origin-center', lifted && 'relative z-10', lifted && (dropping ? 'opacity-0' : 'opacity-[0.35]'))}
       onClick={() => {
         if (suppressClick.current) {
           suppressClick.current = false;
@@ -390,7 +432,7 @@ function ExerciseHoldRow({
         onOpen();
       }}
       onPointerDown={e => {
-        if (!canHold || e.button !== 0) return;
+        if (!canHold || e.button !== 0 || dropping) return;
         if ((e.target as HTMLElement).closest('input,textarea,button,a')) return;
         resetDrag();
         start.current = { x: e.clientX, y: e.clientY };
@@ -464,14 +506,17 @@ function ExerciseHoldRow({
             <motion.div
               initial={{ scale: 0.94, y: 16, opacity: 0.7 }}
               animate={{
-                scale: armedTrash ? 0.6 : 1.03,
+                scale: dropping ? 1 : armedTrash ? 0.6 : 1.03,
                 y: 0,
                 opacity: armedTrash ? 0.75 : 1,
                 rotate: armedTrash ? -3 : 0,
               }}
-              transition={STICKY}
+              transition={dropping ? { type: 'spring', stiffness: 520, damping: 34 } : STICKY}
               className={cn(
-                'rounded-2xl bg-white shadow-[0_18px_40px_-16px_rgba(15,23,42,0.45)] ring-1 ring-black/5 dark:bg-slate-900 dark:ring-white/10',
+                'rounded-2xl bg-white ring-1 ring-black/5 transition-shadow duration-200 dark:bg-slate-900 dark:ring-white/10',
+                dropping
+                  ? 'shadow-[0_10px_28px_-18px_rgba(15,23,42,0.45)]'
+                  : 'shadow-[0_18px_40px_-16px_rgba(15,23,42,0.45)]',
                 armedTrash && 'ring-2 ring-rose-400'
               )}
             >
@@ -795,6 +840,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   );
   /** Orden provisional mientras se arrastra; la rutina solo cambia al soltar. */
   const [dragOrder, setDragOrder] = useState<{ id: string; to: number } | null>(null);
+  const [freezeRowLayout, setFreezeRowLayout] = useState(false);
   const shownExercises = useMemo(() => {
     if (!dragOrder) return dayExercises;
     const from = dayExercises.findIndex(e => e.id === dragOrder.id);
@@ -1677,11 +1723,14 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                               canHold={!isHistoryMode}
                               status={exStatus}
                               onOpen={() => setLoggingExercise({ weekId: currentWeek.id, dayId: currentDay.id, exercise: ex })}
+                              freezeLayout={freezeRowLayout}
                               onPreview={(to) => setDragOrder({ id: ex.id, to })}
                               onDrop={(to) => {
-                                setDragOrder(null);
                                 const from = dayExercises.findIndex(e => e.id === ex.id);
+                                setFreezeRowLayout(true);
                                 if (from >= 0 && to !== from) onMoveExercise(currentWeek.id, currentDay.id, ex.id, to - from);
+                                setDragOrder(null);
+                                requestAnimationFrame(() => requestAnimationFrame(() => setFreezeRowLayout(false)));
                               }}
                               onDelete={() => {
                                 setDragOrder(null);

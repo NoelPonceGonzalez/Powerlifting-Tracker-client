@@ -935,34 +935,52 @@ export default function App() {
   const dirtyLogKeysByRoutineRef = useRef<Map<string, Set<string>>>(new Map());
   const planBulkSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /** PATCH /plan real. Separado del debounce para poder forzarlo al salir de la pestaña. */
+  /**
+   * Un solo PATCH /plan a la vez. Si llega otro mientras el anterior va por la red,
+   * no se aplica la respuesta vieja: esa respuesta era el plan corto que pisaba el que se veía.
+   */
+  const planSyncQueuedRef = useRef(false);
+  const planSyncPumpRef = useRef<Promise<void> | null>(null);
   const runPlanBulkSync = useCallback(async () => {
-    const r = routineForSyncRef.current;
-    if (!r || (r.id.startsWith('routine-') && r.id.length < 20)) return;
-    try {
-      const body = buildPlanPatchPayload(r);
-      const res = await apiPatch<Record<string, unknown>>(`/api/routines/${r.id}/plan`, body);
-      const plan = expandRoutineFromApi({
-        ...res,
-        progressCheckpointAt:
-          (res as any).progressCheckpointAt ?? r.progressCheckpointAt,
-        progressCheckpointTms:
-          (res as any).progressCheckpointTms ?? r.progressCheckpointTms,
-      });
-      // La respuesta trae los logs de Mongo; las series aún sin sincronizar solo viven
-      // en memoria, así que se conservan para no perderlas al reemplazar la rutina.
-      const dirtyKeys = dirtyLogKeysByRoutineRef.current.get(r.id);
-      if (dirtyKeys?.size) {
-        const preserved: Record<string, LogEntry> = { ...plan.logs };
-        for (const k of dirtyKeys) {
-          const local = r.logs[k];
-          if (local) preserved[k] = local;
+    planSyncQueuedRef.current = true;
+    if (planSyncPumpRef.current) return planSyncPumpRef.current;
+    const pump = (async () => {
+      while (planSyncQueuedRef.current) {
+        planSyncQueuedRef.current = false;
+        const r = routineForSyncRef.current;
+        if (!r || (r.id.startsWith('routine-') && r.id.length < 20)) return;
+        try {
+          const body = buildPlanPatchPayload(r);
+          const res = await apiPatch<Record<string, unknown>>(`/api/routines/${r.id}/plan`, body);
+          if (planSyncQueuedRef.current) continue;
+          const plan = expandRoutineFromApi({
+            ...res,
+            progressCheckpointAt:
+              (res as any).progressCheckpointAt ?? r.progressCheckpointAt,
+            progressCheckpointTms:
+              (res as any).progressCheckpointTms ?? r.progressCheckpointTms,
+          });
+          const dirtyKeys = dirtyLogKeysByRoutineRef.current.get(r.id);
+          if (dirtyKeys?.size) {
+            const preserved: Record<string, LogEntry> = { ...plan.logs };
+            for (const k of dirtyKeys) {
+              const local = r.logs[k];
+              if (local) preserved[k] = local;
+            }
+            plan.logs = preserved;
+          }
+          setRoutines((prev) => prev.map((x) => (x.id === plan.id ? plan : x)));
+        } catch (e) {
+          console.error('[Routine] Error sync plan (fallback):', e);
         }
-        plan.logs = preserved;
       }
-      setRoutines((prev) => prev.map((x) => (x.id === plan.id ? plan : x)));
-    } catch (e) {
-      console.error('[Routine] Error sync plan (fallback):', e);
+    })();
+    planSyncPumpRef.current = pump;
+    try {
+      await pump;
+    } finally {
+      planSyncPumpRef.current = null;
+      if (planSyncQueuedRef.current) void runPlanBulkSync();
     }
   }, []);
 
