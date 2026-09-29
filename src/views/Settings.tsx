@@ -329,7 +329,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                               size="sm"
                               className="rounded-full text-xs"
                               onClick={(e) => { e.stopPropagation(); onSwitchAccount(acc.id); }}
-                              onTouchEnd={(e) => { e.stopPropagation(); e.preventDefault(); onSwitchAccount(acc.id); }}
                             >
                               Usar
                             </Button>

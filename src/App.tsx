@@ -1,7 +1,8 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { flushSync } from 'react-dom';
 import { MotionConfig, motion } from 'motion/react';
-import { User as UserIcon, Users, Dumbbell, Plus, Trophy } from 'lucide-react';
+import { User as UserIcon, Users, Dumbbell, Plus, Trash2, Trophy } from 'lucide-react';
+import { useDragTrash } from '@/src/lib/dragTrash';
 import { ComposeSheet } from '@/src/components/ComposeSheet';
 import { StoryCamera } from '@/src/components/social/StoryCamera';
 import { isStoryUploading } from '@/src/lib/storyUpload';
@@ -706,6 +707,15 @@ export default function App() {
 
   const [storyComposerOpen, setStoryComposerOpen] = useState(false);
   const [composeOpen, setComposeOpen] = useState(false);
+  const dragTrash = useDragTrash();
+  const [tabbarW, setTabbarW] = useState(() =>
+    typeof window === 'undefined' ? 512 : Math.min(512, window.innerWidth - 16)
+  );
+  useEffect(() => {
+    const fit = () => setTabbarW(Math.min(512, window.innerWidth - 16));
+    window.addEventListener('resize', fit);
+    return () => window.removeEventListener('resize', fit);
+  }, []);
   const [checkInIntent, setCheckInIntent] = useState<'now' | 'later' | null>(null);
   const [socialBackTo, setSocialBackTo] = useState<'profile' | 'dashboard' | 'chat'>('dashboard');
   const [socialNavTick, setSocialNavTick] = useState(0);
@@ -2585,19 +2595,25 @@ export default function App() {
     }
   };
 
-  const handleMoveExercise = (weekId: string, dayId: string, exerciseId: string, dir: -1 | 1) => {
+  const handleMoveExercise = (weekId: string, dayId: string, exerciseId: string, delta: number) => {
+    if (!delta) return;
     const routine = routines.find(r => r.id === activeRoutineId);
     if (!routine) return;
     const resolved = resolveWeekDayIndex(routine, weekId, dayId);
     if (!resolved) return;
+    const step: -1 | 1 = delta > 0 ? 1 : -1;
+    const times = Math.min(40, Math.abs(delta));
 
     updateActiveRoutine((r) => {
       const res2 = resolveWeekDayIndex(r, weekId, dayId);
       if (!res2) return r;
-      return applyRoutineChangeWithVersioning(r, res2.weekIdx, res2.dayIdx, (d) => ({
-        ...d,
-        exercises: moveMergedExerciseRow(d.exercises, exerciseId, dir),
-      }), { forwardOnly: false });
+      return applyRoutineChangeWithVersioning(r, res2.weekIdx, res2.dayIdx, (d) => {
+        let exercises = d.exercises;
+        for (let i = 0; i < times; i++) {
+          exercises = moveMergedExerciseRow(exercises, exerciseId, step);
+        }
+        return { ...d, exercises };
+      }, { forwardOnly: false });
     });
 
     if (routine.id && !routine.id.startsWith('routine-')) {
@@ -3331,56 +3347,45 @@ export default function App() {
     setAddAccountMode(false);
   }, [user?.id]);
 
+  const switchLockRef = useRef(false);
   const switchToAccount = useCallback(
     async (userId: string) => {
+      if (switchLockRef.current) return;
       const accounts = loadSavedAccounts();
       const acc = accounts.find((a) => a.id === userId);
-      if (!acc) {
-        return;
-      }
+      if (!acc) return;
+      switchLockRef.current = true;
       setIsSwitchingAccount(true);
       const prevToken = localStorage.getItem('auth_token');
+      const prevAccountId = accounts.find((a) => a.token === prevToken)?.id ?? null;
+      const restore = () => {
+        if (prevToken) localStorage.setItem('auth_token', prevToken);
+        if (prevAccountId) setActiveAccountId(prevAccountId);
+      };
       try {
-        const basePre = getApiBaseUrl() || '';
-        const expoPre =
-          typeof window !== 'undefined'
-            ? (window as unknown as { __EXPO_PUSH_TOKEN__?: string }).__EXPO_PUSH_TOKEN__
-            : undefined;
-        if (prevToken && expoPre?.trim()) {
-          try {
-            await fetch(`${basePre}/api/auth/logout`, {
-              method: 'POST',
-              headers: {
-                Authorization: `Bearer ${prevToken}`,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({ token: expoPre.trim() }),
-            });
-          } catch {
-            /* ignore */
-          }
-        }
-        localStorage.setItem('auth_token', acc.token);
+        const renewed = await silentRefreshToken(acc.token);
+        const nextToken = renewed || acc.token;
+        localStorage.setItem('auth_token', nextToken);
         setActiveAccountId(userId);
         const base = getApiBaseUrl() || '';
         const res = await fetch(`${base}/api/auth/me`, {
-          headers: { Authorization: `Bearer ${acc.token}` },
+          headers: { Authorization: `Bearer ${nextToken}` },
         });
         if (!res.ok) {
-          localStorage.setItem('auth_token', prevToken || '');
-          removeAccount(userId);
-          setSavedAccountsState(loadSavedAccounts());
+          restore();
+          showAppError('No se ha podido entrar en esa cuenta. La sesión actual sigue abierta.');
           return;
         }
         const data = await res.json();
         const u = mapUserFromMePayload(data);
         upsertAccount({
           id: u.id,
-          token: acc.token,
+          token: nextToken,
           email: u.email,
           name: u.name,
           avatar: u.avatar,
         });
+        setActiveAccountId(u.id);
         setSavedAccountsState(loadSavedAccounts());
         setRoutines([]);
         setActiveRoutineId('');
@@ -3397,9 +3402,11 @@ export default function App() {
         setView('dashboard');
         setUser(u);
       } catch (e) {
+        restore();
         console.error('[Account] Error al cambiar de cuenta:', e);
-        showAppError('No se ha podido cambiar de cuenta.', e);
+        showAppError('No se ha podido cambiar de cuenta. La sesión actual sigue abierta.', e);
       } finally {
+        switchLockRef.current = false;
         setIsSwitchingAccount(false);
       }
     },
@@ -4138,11 +4145,27 @@ export default function App() {
         )}
       </div>
       
-      {!chatConversationOpen && !profileSheetOpen && <nav
-        className="app-tabbar fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] left-2 right-2 z-50 mx-auto flex max-w-lg items-center gap-0.5 overflow-visible px-1.5 py-1 max-[360px]:left-1.5 max-[360px]:right-1.5 sm:bottom-6 sm:left-3 sm:right-3 sm:px-2"
+      {!chatConversationOpen && !profileSheetOpen && <motion.nav
+        initial={false}
+        animate={{ maxWidth: dragTrash.active ? 64 : tabbarW }}
+        transition={
+          dragTrash.active
+            ? { type: 'spring', stiffness: 380, damping: 32 }
+            : { type: 'spring', stiffness: 320, damping: 30, delay: 0.14 }
+        }
+        className={cn(
+          'app-tabbar fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] left-2 right-2 z-50 mx-auto flex items-center justify-center gap-0.5 overflow-visible px-1.5 py-1 max-[360px]:left-1.5 max-[360px]:right-1.5 sm:bottom-6 sm:left-3 sm:right-3 sm:px-2',
+          dragTrash.active && 'z-[90] gap-0 sm:px-1.5'
+        )}
         style={{ WebkitTapHighlightColor: 'transparent' }}
+        aria-hidden={dragTrash.active || undefined}
       >
-        <div className="grid min-w-0 flex-1 grid-cols-2">
+        <motion.div
+          initial={false}
+          animate={{ opacity: dragTrash.active ? 0 : 1, scale: dragTrash.active ? 0.6 : 1 }}
+          transition={{ duration: 0.16, delay: dragTrash.active ? 0 : 0.22 }}
+          className={cn('grid min-w-0 flex-1 origin-right grid-cols-2', dragTrash.active && 'pointer-events-none')}
+        >
           <motion.button
             type="button"
             whileTap={SLIME_TAP}
@@ -4176,20 +4199,55 @@ export default function App() {
             <Dumbbell className="size-[17px]" strokeWidth={view === 'program' ? 2.35 : 1.9} />
             <span>Rutina</span>
           </motion.button>
-        </div>
+        </motion.div>
 
         <motion.button
           type="button"
-          whileTap={{ scaleX: 1.12, scaleY: 0.84 }}
-          transition={STICKY}
-          onClick={() => setComposeOpen(true)}
-          className="mx-0.5 mb-px flex size-11 shrink-0 origin-center items-center justify-center rounded-full border border-white/55 bg-indigo-500/90 text-white shadow-[0_10px_28px_rgba(79,70,229,0.28)] outline-none backdrop-blur-xl focus:outline-none focus-visible:outline-none max-[360px]:size-10 sm:size-12 dark:border-white/15 dark:bg-indigo-500/80"
-          aria-label="Publicar o avisar"
+          data-drag-trash
+          initial={false}
+          whileTap={dragTrash.active ? undefined : { scaleX: 1.12, scaleY: 0.84 }}
+          animate={{
+            rotate: dragTrash.active ? 180 : 0,
+            scale: dragTrash.armed ? 1.18 : 1,
+            backgroundColor: dragTrash.active
+              ? dragTrash.armed ? 'rgba(225, 29, 72, 1)' : 'rgba(244, 63, 94, 0.92)'
+              : 'rgba(99, 102, 241, 0.9)',
+          }}
+          transition={{
+            rotate: { type: 'spring', stiffness: 260, damping: 20, delay: dragTrash.active ? 0.16 : 0 },
+            backgroundColor: { duration: 0.2, delay: dragTrash.active ? 0.16 : 0 },
+            default: STICKY,
+          }}
+          onClick={() => {
+            if (!dragTrash.active) setComposeOpen(true);
+          }}
+          className="relative mx-0.5 mb-px flex size-11 shrink-0 origin-center items-center justify-center rounded-full border border-white/55 text-white shadow-[0_10px_28px_rgba(79,70,229,0.28)] outline-none backdrop-blur-xl focus:outline-none focus-visible:outline-none max-[360px]:size-10 sm:size-12 dark:border-white/15"
+          aria-label={dragTrash.active ? 'Suelta aquí para eliminar' : 'Publicar o avisar'}
         >
-          <Plus className="size-5" strokeWidth={2.4} />
+          <motion.span
+            initial={false}
+            animate={{ opacity: dragTrash.active ? 0 : 1, scale: dragTrash.active ? 0.4 : 1 }}
+            transition={{ duration: 0.14, delay: dragTrash.active ? 0.2 : 0 }}
+            className="absolute inset-0 flex items-center justify-center"
+          >
+            <Plus className="size-5" strokeWidth={2.4} />
+          </motion.span>
+          <motion.span
+            initial={false}
+            animate={{ opacity: dragTrash.active ? 1 : 0, scale: dragTrash.active ? 1 : 0.4 }}
+            transition={{ duration: 0.14, delay: dragTrash.active ? 0.24 : 0 }}
+            className="absolute inset-0 flex rotate-180 items-center justify-center"
+          >
+            <Trash2 className="size-5" strokeWidth={2.3} />
+          </motion.span>
         </motion.button>
 
-        <div className="grid min-w-0 flex-1 grid-cols-2 overflow-visible">
+        <motion.div
+          initial={false}
+          animate={{ opacity: dragTrash.active ? 0 : 1, scale: dragTrash.active ? 0.6 : 1 }}
+          transition={{ duration: 0.16, delay: dragTrash.active ? 0 : 0.22 }}
+          className={cn('grid min-w-0 flex-1 origin-left grid-cols-2 overflow-visible', dragTrash.active && 'pointer-events-none')}
+        >
           <motion.button
             type="button"
             whileTap={SLIME_TAP}
@@ -4230,8 +4288,8 @@ export default function App() {
             </span>
             <span>Torneos</span>
           </motion.button>
-        </div>
-      </nav>}
+        </motion.div>
+      </motion.nav>}
       <ComposeSheet
         open={composeOpen}
         onClose={() => setComposeOpen(false)}

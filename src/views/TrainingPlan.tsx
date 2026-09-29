@@ -8,7 +8,6 @@ import {
   Trash2,
   ChevronLeft,
   ChevronRight,
-  ChevronUp,
   ChevronDown,
   Link as LinkIcon,
   Target,
@@ -30,7 +29,8 @@ import { Input } from '@/src/components/ui/Input';
 import { LogEntry, TrainingMax, TrainingWeek, TrainingDay, PlannedExercise, ExerciseMode, DayType, SetLog, InternalExerciseMax, getInternalValueForMode, HistoryEntry } from '@/src/types';
 import { cn } from '@/src/lib/utils';
 import { mediaUrl } from '@/src/lib/api';
-import { EASE_OUT, MODAL_RISE, PAGE_ENTER_ITEM, PAGE_ENTER_ROOT, SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, STICKY } from '@/src/lib/motionPresets';
+import { EASE_OUT, MODAL_RISE, PAGE_ENTER_ITEM, PAGE_ENTER_ROOT, SCREEN_TRANSITION, SLIME_SHEET_IN, SLIME_SHEET_OUT, SLIME_SHEET_SHOW, SPRING_SNAP, STICKY } from '@/src/lib/motionPresets';
+import { claimDrag, dragTrashElement, releaseDrag, setDragTrash } from '@/src/lib/dragTrash';
 import { usePageEnter } from '@/src/lib/usePageEnter';
 import { GlassModal } from '@/src/components/ui/GlassModal';
 import { LoadingBlock } from '@/src/components/ui/Spinner';
@@ -136,41 +136,59 @@ const DayTypeBadge = ({ type, onClick }: DayTypeBadgeProps) => {
 };
 
 function ExerciseHoldRow({
-  highlighted,
+  exerciseId,
+  index,
   canHold,
-  canMoveUp,
-  canMoveDown,
   status = 'idle',
   onOpen,
-  onLongPress,
-  onDismiss,
-  onMoveUp,
-  onMoveDown,
+  onPreview,
+  onDrop,
   onDelete,
   children,
 }: {
-  highlighted: boolean;
+  exerciseId: string;
+  index: number;
   canHold: boolean;
-  canMoveUp: boolean;
-  canMoveDown: boolean;
   status?: 'idle' | 'partial' | 'done';
   onOpen: () => void;
-  onLongPress: () => void;
-  onDismiss: () => void;
-  onMoveUp: () => void;
-  onMoveDown: () => void;
+  /** Hueco donde caería mientras se arrastra. Solo pinta: no toca la rutina. */
+  onPreview: (to: number) => void;
+  /** Al soltar: se guarda el orden una sola vez. */
+  onDrop: (to: number) => void;
   onDelete: () => void;
   children: React.ReactNode;
 }) {
   const hold = useRef<number | null>(null);
-  const held = useRef(false);
+  const suppressClick = useRef(false);
   const start = useRef<{ x: number; y: number } | null>(null);
+  const dragging = useRef(false);
+  const overTrash = useRef(false);
+  const indexRef = useRef(index);
+  const onPreviewRef = useRef(onPreview);
+  const onDropRef = useRef(onDrop);
+  const onDeleteRef = useRef(onDelete);
+  const rowRef = useRef<HTMLDivElement>(null);
+  const trashRef = useRef<HTMLDivElement>(null);
+  const floatRef = useRef<HTMLDivElement>(null);
+  const grab = useRef({ x: 0, y: 0, width: 0 });
+  const lastPoint = useRef({ x: 0, y: 0 });
+  const raf = useRef<number | null>(null);
+  /** Centros de las otras filas al levantar, en coordenadas del scroll: no bailan con la animación. */
+  const slots = useRef<number[]>([]);
+  const scrollerRef = useRef<HTMLElement | null>(null);
+  const target = useRef(index);
+  const detach = useRef<(() => void) | null>(null);
+  /** La papelera es el + de la barra; si no hay barra, una pastilla propia. */
+  const barTrashOn = useRef(false);
   const [pressing, setPressing] = useState(false);
-  const [sure, setSure] = useState(false);
+  const [lifted, setLifted] = useState(false);
+  const [armedTrash, setArmedTrash] = useState(false);
+  const [barTrash, setBarTrash] = useState(false);
 
-  useEffect(() => {
-    if (!highlighted) setSure(false);
-  }, [highlighted]);
+  indexRef.current = index;
+  onPreviewRef.current = onPreview;
+  onDropRef.current = onDrop;
+  onDeleteRef.current = onDelete;
 
   const clearHold = () => {
     if (hold.current != null) {
@@ -179,29 +197,249 @@ function ExerciseHoldRow({
     }
   };
 
-  const startHold = () => {
-    if (!canHold) return;
-    held.current = false;
-    hold.current = window.setTimeout(() => {
-      held.current = true;
-      setPressing(false);
-      onLongPress();
-    }, 380);
+  const stopAutoScroll = () => {
+    if (raf.current != null) {
+      cancelAnimationFrame(raf.current);
+      raf.current = null;
+    }
+  };
+
+  /** Deja la fila como estaba. Todas las salidas pasan por aquí para que nada quede flotando. */
+  const resetDrag = () => {
+    const was = dragging.current;
+    dragging.current = false;
+    overTrash.current = false;
+    start.current = null;
+    detach.current?.();
+    detach.current = null;
+    clearHold();
+    stopAutoScroll();
+    releaseDrag(cancelDrag);
+    if (was) {
+      document.documentElement.classList.remove('exercise-drag');
+      setDragTrash({ active: false, armed: false });
+    }
+    setPressing(false);
+    setLifted(false);
+    setArmedTrash(false);
+    return was;
+  };
+
+  const endDrag = (dropOnTrash: boolean) => {
+    if (!resetDrag()) return;
+    // Si se suelta fuera de la fila no llega el click que lo consumía.
+    window.setTimeout(() => { suppressClick.current = false; }, 80);
+    if (dropOnTrash) onDeleteRef.current();
+    else onDropRef.current(target.current);
+  };
+
+  const cancelRef = useRef<() => void>(() => {});
+  cancelRef.current = () => endDrag(false);
+  const cancelDrag = useRef(() => cancelRef.current()).current;
+
+  useEffect(() => {
+    const blockScroll = (e: TouchEvent) => {
+      if (dragging.current) e.preventDefault();
+    };
+    const abort = () => {
+      if (dragging.current || hold.current != null) cancelDrag();
+    };
+    const onHidden = () => {
+      if (document.visibilityState === 'hidden') abort();
+    };
+    window.addEventListener('touchmove', blockScroll, { passive: false });
+    window.addEventListener('blur', abort);
+    document.addEventListener('visibilitychange', onHidden);
+    return () => {
+      window.removeEventListener('touchmove', blockScroll);
+      window.removeEventListener('blur', abort);
+      document.removeEventListener('visibilitychange', onHidden);
+      // En desarrollo React repite los efectos al mover la fila: solo se corta el arrastre si la fila ya no está.
+      window.setTimeout(() => {
+        if (rowRef.current?.isConnected) return;
+        resetDrag();
+      }, 0);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!lifted) return;
+    placeFloat(lastPoint.current.x, lastPoint.current.y);
+  }, [lifted]);
+
+  const placeFloat = (clientX: number, clientY: number) => {
+    const el = floatRef.current;
+    if (!el) return;
+    const left = Math.round(clientX - grab.current.x);
+    const top = Math.round(clientY - grab.current.y);
+    el.style.transform = `translate3d(${left}px, ${top}px, 0)`;
+  };
+
+  const updateTarget = () => {
+    const y = lastPoint.current.y + (scrollerRef.current?.scrollTop ?? 0);
+    let at = 0;
+    for (const mid of slots.current) if (y > mid) at += 1;
+    if (at !== target.current) {
+      target.current = at;
+      onPreviewRef.current(at);
+    }
+  };
+
+  const pointOnTrash = (clientX: number, clientY: number) => {
+    const trash = barTrashOn.current ? dragTrashElement() : trashRef.current;
+    if (!trash) return false;
+    const r = trash.getBoundingClientRect();
+    const pad = barTrashOn.current ? 36 : 8;
+    return clientX >= r.left - pad && clientX <= r.right + pad && clientY >= r.top - pad && clientY <= r.bottom + pad;
+  };
+
+  const tickScroll = () => {
+    raf.current = null;
+    if (!dragging.current) return;
+    const scroller = scrollerRef.current;
+    const y = lastPoint.current.y;
+    if (scroller && !overTrash.current) {
+      const box = scroller.getBoundingClientRect();
+      const topEdge = box.top + 72;
+      const trashTop = window.innerHeight - 150;
+      const visibleBottom = Math.min(box.bottom, trashTop);
+      const before = scroller.scrollTop;
+      if (y < topEdge) {
+        scroller.scrollTop -= Math.min(22, (topEdge - y) * 0.45);
+      } else if (y > visibleBottom - 72 && y < trashTop) {
+        scroller.scrollTop += Math.min(22, (y - (visibleBottom - 72)) * 0.45);
+      }
+      if (scroller.scrollTop !== before) updateTarget();
+    }
+    raf.current = requestAnimationFrame(tickScroll);
+  };
+
+  const onDragMove = (clientX: number, clientY: number) => {
+    lastPoint.current = { x: clientX, y: clientY };
+    placeFloat(clientX, clientY);
+    const onBin = pointOnTrash(clientX, clientY);
+    if (onBin !== overTrash.current) {
+      overTrash.current = onBin;
+      setArmedTrash(onBin);
+      setDragTrash({ armed: onBin });
+      if (onBin) {
+        try {
+          navigator.vibrate?.(8);
+        } catch {
+          /* iOS no vibra */
+        }
+      }
+    }
+    if (!onBin) updateTarget();
+  };
+
+  const beginDrag = (clientX: number, clientY: number) => {
+    const row = rowRef.current;
+    if (!row?.isConnected) {
+      resetDrag();
+      return;
+    }
+    claimDrag(cancelDrag);
+    const rect = row.getBoundingClientRect();
+    grab.current = { x: clientX - rect.left, y: clientY - rect.top, width: rect.width };
+    const scroller = row.closest('.app-scroll') as HTMLElement | null;
+    scrollerRef.current = scroller;
+    const top = scroller?.scrollTop ?? 0;
+    const list = row.parentElement;
+    slots.current = list
+      ? [...list.querySelectorAll<HTMLElement>('[data-ex-row]')]
+          .filter(el => el.dataset.exRow !== exerciseId)
+          .map(el => {
+            const r = el.getBoundingClientRect();
+            return r.top + r.height / 2 + top;
+          })
+      : [];
+    target.current = indexRef.current;
+    dragging.current = true;
+    suppressClick.current = true;
+    const onBar = !!dragTrashElement();
+    barTrashOn.current = onBar;
+    setBarTrash(onBar);
+    setDragTrash({ active: true, armed: false });
+    setLifted(true);
+    setPressing(false);
+    document.documentElement.classList.add('exercise-drag');
+    try {
+      navigator.vibrate?.(12);
+    } catch {
+      /* iOS no vibra */
+    }
+    requestAnimationFrame(() => placeFloat(clientX, clientY));
+    if (raf.current == null) raf.current = requestAnimationFrame(tickScroll);
   };
 
   return (
     <motion.div
+      ref={rowRef}
       layout="position"
-      animate={{
-        scaleX: pressing ? 1.055 : 1,
-        scaleY: pressing ? 0.9 : 1,
-        borderRadius: pressing || highlighted ? 22 : 16,
+      data-ex-row={exerciseId}
+      initial={false}
+      animate={{ scale: pressing ? 0.97 : 1 }}
+      transition={{ layout: SPRING_SNAP, default: { type: 'spring', stiffness: 420, damping: 30 } }}
+      className={cn('origin-center transition-opacity duration-150', lifted && 'relative z-10 opacity-[0.35]')}
+      onClick={() => {
+        if (suppressClick.current) {
+          suppressClick.current = false;
+          return;
+        }
+        onOpen();
       }}
-      transition={STICKY}
-      className={cn(
-        'origin-center',
-        highlighted && 'relative z-10'
-      )}
+      onPointerDown={e => {
+        if (!canHold || e.button !== 0) return;
+        if ((e.target as HTMLElement).closest('input,textarea,button,a')) return;
+        resetDrag();
+        start.current = { x: e.clientX, y: e.clientY };
+        lastPoint.current = { x: e.clientX, y: e.clientY };
+        setPressing(true);
+        const pointerId = e.pointerId;
+        // Todo el gesto se sigue desde window: soltar o salirse de la fila antes de levantarla la cancela,
+        // y al reordenar la fila cambia de sitio en el DOM y perdería la captura.
+        const move = (ev: PointerEvent) => {
+          if (ev.pointerId !== pointerId) return;
+          if (ev.pointerType === 'mouse' && ev.buttons === 0) {
+            endDrag(false);
+            return;
+          }
+          if (dragging.current) {
+            onDragMove(ev.clientX, ev.clientY);
+            return;
+          }
+          lastPoint.current = { x: ev.clientX, y: ev.clientY };
+          if (!start.current) return;
+          const dx = ev.clientX - start.current.x;
+          const dy = ev.clientY - start.current.y;
+          if (dx * dx + dy * dy > 144) resetDrag();
+        };
+        const up = (ev: PointerEvent) => {
+          if (ev.pointerId !== pointerId) return;
+          if (dragging.current) endDrag(pointOnTrash(ev.clientX, ev.clientY));
+          else resetDrag();
+        };
+        const cancel = (ev: PointerEvent) => {
+          if (ev.pointerId !== pointerId) return;
+          endDrag(false);
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+        window.addEventListener('pointercancel', cancel);
+        detach.current = () => {
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', up);
+          window.removeEventListener('pointercancel', cancel);
+        };
+        hold.current = window.setTimeout(() => {
+          hold.current = null;
+          if (start.current) beginDrag(lastPoint.current.x, lastPoint.current.y);
+        }, 380);
+      }}
+      onContextMenu={e => {
+        if (canHold) e.preventDefault();
+      }}
     >
       <Card
         padding="sm"
@@ -211,111 +449,58 @@ function ExerciseHoldRow({
           status === 'partial' && 'border-indigo-200/80 bg-indigo-50/40 dark:border-indigo-800/50 dark:bg-indigo-950/25',
           status === 'done' && 'border-emerald-200/80 bg-emerald-50/50 dark:border-emerald-800/45 dark:bg-emerald-950/20',
           canHold && 'select-none touch-manipulation',
-          highlighted && 'shadow-[0_10px_28px_-12px_rgba(15,23,42,0.28)] lg:bg-white lg:shadow-[0_10px_28px_-12px_rgba(15,23,42,0.28)] dark:lg:bg-slate-900'
+          lifted && 'shadow-none'
         )}
-        onClick={() => {
-          if (held.current) {
-            held.current = false;
-            return;
-          }
-          if (highlighted) {
-            onDismiss();
-            return;
-          }
-          onOpen();
-        }}
-        onPointerDown={e => {
-          if (!canHold) return;
-          if ((e.target as HTMLElement).closest('input,textarea,button,a')) return;
-          start.current = { x: e.clientX, y: e.clientY };
-          setPressing(true);
-          startHold();
-        }}
-        onPointerMove={e => {
-          if (!start.current) return;
-          const dx = e.clientX - start.current.x;
-          const dy = e.clientY - start.current.y;
-          if (dx * dx + dy * dy > 100) {
-            clearHold();
-            setPressing(false);
-          }
-        }}
-        onPointerUp={() => {
-          clearHold();
-          setPressing(false);
-        }}
-        onPointerCancel={() => {
-          clearHold();
-          setPressing(false);
-        }}
-        onPointerLeave={() => {
-          clearHold();
-          setPressing(false);
-        }}
-        onContextMenu={e => {
-          if (canHold) e.preventDefault();
-        }}
       >
         {children}
-        <AnimatePresence>
-          {highlighted && (
-            <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={STICKY}
-              className="overflow-hidden"
-            >
-              <div className="flex flex-wrap justify-end gap-2 pt-2.5 md:px-4 md:pb-2">
-                <button
-                  type="button"
-                  disabled={!canMoveUp}
-                  onClick={e => {
-                    e.stopPropagation();
-                    onMoveUp();
-                  }}
-                  className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1.5 text-[12px] font-semibold text-slate-700 disabled:opacity-40 dark:bg-slate-700 dark:text-slate-100"
-                >
-                  <ChevronUp size={12} />
-                  Subir
-                </button>
-                <button
-                  type="button"
-                  disabled={!canMoveDown}
-                  onClick={e => {
-                    e.stopPropagation();
-                    onMoveDown();
-                  }}
-                  className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1.5 text-[12px] font-semibold text-slate-700 disabled:opacity-40 dark:bg-slate-700 dark:text-slate-100"
-                >
-                  <ChevronDown size={12} />
-                  Bajar
-                </button>
-                <button
-                  type="button"
-                  onClick={e => {
-                    e.stopPropagation();
-                    if (!sure) {
-                      setSure(true);
-                      return;
-                    }
-                    onDelete();
-                  }}
-                  className={cn(
-                    'inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-[12px] font-semibold',
-                    sure
-                      ? 'bg-rose-600 text-white'
-                      : 'bg-rose-50 text-rose-600 dark:bg-rose-950/50 dark:text-rose-300'
-                  )}
-                >
-                  <Trash2 size={12} />
-                  {sure ? '¿Seguro?' : 'Eliminar'}
-                </button>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
       </Card>
+      {lifted && typeof document !== 'undefined' && createPortal(
+        <>
+          <div
+            ref={floatRef}
+            className="pointer-events-none fixed left-0 top-0 z-[80]"
+            style={{ width: grab.current.width || undefined }}
+          >
+            <motion.div
+              initial={{ scale: 0.94, y: 16, opacity: 0.7 }}
+              animate={{
+                scale: armedTrash ? 0.6 : 1.03,
+                y: 0,
+                opacity: armedTrash ? 0.75 : 1,
+                rotate: armedTrash ? -3 : 0,
+              }}
+              transition={STICKY}
+              className={cn(
+                'rounded-2xl bg-white shadow-[0_18px_40px_-16px_rgba(15,23,42,0.45)] ring-1 ring-black/5 dark:bg-slate-900 dark:ring-white/10',
+                armedTrash && 'ring-2 ring-rose-400'
+              )}
+            >
+              <div className="p-3.5">{children}</div>
+            </motion.div>
+          </div>
+          {!barTrash && <div
+            className="pointer-events-none fixed inset-x-0 z-[70] flex justify-center"
+            style={{ bottom: 'calc(5.5rem + env(safe-area-inset-bottom, 0px))' }}
+          >
+            <motion.div
+              ref={trashRef}
+              initial={{ y: 28, opacity: 0, scale: 0.92 }}
+              animate={{ y: 0, opacity: 1, scale: armedTrash ? 1.06 : 1 }}
+              transition={STICKY}
+              className={cn(
+                'flex items-center gap-2 rounded-full px-5 py-3 text-sm font-semibold shadow-lg',
+                armedTrash
+                  ? 'bg-rose-600 text-white'
+                  : 'bg-white text-rose-600 ring-1 ring-rose-200 dark:bg-slate-900 dark:text-rose-300 dark:ring-rose-900'
+              )}
+            >
+              <Trash2 size={16} />
+              Eliminar
+            </motion.div>
+          </div>}
+        </>,
+        document.body
+      )}
     </motion.div>
   );
 }
@@ -360,7 +545,7 @@ interface TrainingPlanViewProps {
   onRemoveTM: (id: string) => void;
   onAddExercise: (weekId: string, dayId: string, initialValues?: Partial<PlannedExercise>) => void;
   onRemoveExercise: (weekId: string, dayId: string, exerciseId: string) => void;
-  onMoveExercise: (weekId: string, dayId: string, exerciseId: string, dir: -1 | 1) => void;
+  onMoveExercise: (weekId: string, dayId: string, exerciseId: string, delta: number) => void;
   onUpdateExercise: (weekId: string, dayId: string, exerciseId: string, updates: Partial<PlannedExercise>) => void;
   /** Guardar logs en servidor (PATCH /logs); puede ser async para esperar a Mongo antes de cerrar el modal. */
   onRoutinePlanFlush?: () => void | Promise<void>;
@@ -455,7 +640,6 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
   const [viewMode, setViewMode] = useState<'daily' | 'weekly'>('daily');
   const [showMonthSelector, setShowMonthSelector] = useState(false);
   const [expandedExerciseId, setExpandedExerciseId] = useState<string | null>(null);
-  const [heldExerciseId, setHeldExerciseId] = useState<string | null>(null);
   const [showSkipDropdown, setShowSkipDropdown] = useState(false);
   const [planMenuOpen, setPlanMenuOpen] = useState(false);
   const [rmListOpen, setRmListOpen] = useState(false);
@@ -472,7 +656,6 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     setNewExModalError('');
     setShowAddModal(false);
   });
-  useEscapeClose(!!heldExerciseId, () => setHeldExerciseId(null));
   const [loggingExercise, setLoggingExercise] = useState<{ weekId: string, dayId: string, exercise: PlannedExercise } | null>(null);
   const [setMediaViewer, setSetMediaViewer] = useState<{
     title: string;
@@ -564,7 +747,6 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     setSetMediaViewer(null);
     setShowMonthSelector(false);
     setShowSkipDropdown(false);
-    setHeldExerciseId(null);
     setShowImportModal(false);
   }, [pageActive]);
   const pageEnter = usePageEnter(pageActive);
@@ -611,10 +793,17 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     () => mergeAdjacentSameExercises(currentDay?.exercises ?? []),
     [currentDay]
   );
-  useEffect(() => {
-    setHeldExerciseId(null);
-  }, [activeDayIdx, viewMode]);
-
+  /** Orden provisional mientras se arrastra; la rutina solo cambia al soltar. */
+  const [dragOrder, setDragOrder] = useState<{ id: string; to: number } | null>(null);
+  const shownExercises = useMemo(() => {
+    if (!dragOrder) return dayExercises;
+    const from = dayExercises.findIndex(e => e.id === dragOrder.id);
+    if (from < 0) return dayExercises;
+    const next = dayExercises.slice();
+    const [moved] = next.splice(from, 1);
+    next.splice(Math.max(0, Math.min(next.length, dragOrder.to)), 0, moved);
+    return next;
+  }, [dayExercises, dragOrder]);
   const currentMonth = getMonthForWeek(displayWeekNum);
   /** Cuántas semanas se han desplazado por «Saltar la semana» antes de la semana actual (block mode). */
   const weekShift = useMemo(() => {
@@ -671,7 +860,6 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
     }
     const targetIdx = Math.max(0, Math.min(weeks.length - 1, idx));
     setActiveWeekIdx(targetIdx);
-    setHeldExerciseId(null);
   }, [displayWeekNum, weeks.length, weekShift, sameTemplateAllWeeks]);
 
   const viewDateISO = useMemo(
@@ -1444,7 +1632,7 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                     {/* Ejercicios */}
                     <LayoutGroup>
                     <div className="space-y-2.5">
-                      {dayExercises.map((ex, exIdx) => {
+                      {shownExercises.map((ex, exIdx) => {
                         const logId = routineLogKeyFromIds(currentWeek, currentDay, ex);
                         const log = getLogEntryForExercise(logs, currentWeek, currentDay, ex);
                         const effectiveTM = resolveEffectiveTM(ex);
@@ -1484,23 +1672,20 @@ export const TrainingPlanView: React.FC<TrainingPlanViewProps> = ({
                           return (
                             <ExerciseHoldRow
                               key={ex.id}
-                              highlighted={heldExerciseId === ex.id}
+                              exerciseId={ex.id}
+                              index={exIdx}
                               canHold={!isHistoryMode}
                               status={exStatus}
-                              canMoveUp={exIdx > 0}
-                              canMoveDown={exIdx < dayExercises.length - 1}
                               onOpen={() => setLoggingExercise({ weekId: currentWeek.id, dayId: currentDay.id, exercise: ex })}
-                              onLongPress={() => setHeldExerciseId(ex.id)}
-                              onDismiss={() => setHeldExerciseId(null)}
-                              onMoveUp={() => {
-                                onMoveExercise(currentWeek.id, currentDay.id, ex.id, -1);
-                              }}
-                              onMoveDown={() => {
-                                onMoveExercise(currentWeek.id, currentDay.id, ex.id, 1);
+                              onPreview={(to) => setDragOrder({ id: ex.id, to })}
+                              onDrop={(to) => {
+                                setDragOrder(null);
+                                const from = dayExercises.findIndex(e => e.id === ex.id);
+                                if (from >= 0 && to !== from) onMoveExercise(currentWeek.id, currentDay.id, ex.id, to - from);
                               }}
                               onDelete={() => {
+                                setDragOrder(null);
                                 removeExerciseRow(currentWeek.id, currentDay.id, ex);
-                                setHeldExerciseId(null);
                               }}
                             >
                               {/* Mobile Card Layout */}

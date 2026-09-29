@@ -148,6 +148,13 @@
     background: #f2f2f7;
   }
 
+  html.exercise-drag,
+  html.exercise-drag body {
+    overflow: hidden !important;
+    touch-action: none !important;
+    overscroll-behavior: none;
+  }
+
   html.phone-preview,
   html.phone-preview body,
   html.phone-preview #root {
