@@ -2502,16 +2502,19 @@ export default function App() {
         cycleLength,
         clearUntouchedDays: opts.clearUntouchedDays,
         continuesPreviousPlan: opts.continuesPreviousPlan,
+        appendAfterExisting: opts.appendAfterExisting,
         currentWeekOfYear,
         week1ISO: opts.week1ISO,
         weekStartsOn: opts.weekStartsOn,
       })
     );
 
+    const importedMax = opts.plan.weeks.reduce((max, week) => Math.max(max, week.number), 0);
     const importMark: LastCoachImport = {
-      startWeekNumber: opts.startWeekNumber,
+      startWeekNumber: opts.continuesPreviousPlan ? (lastCoachImport?.startWeekNumber ?? opts.startWeekNumber) : opts.startWeekNumber,
       weeks: opts.plan.weeks.length,
-      week1ISO: opts.week1ISO,
+      week1ISO: opts.continuesPreviousPlan ? (lastCoachImport?.week1ISO ?? opts.week1ISO) : opts.week1ISO,
+      planWeekTo: Math.max(lastCoachImport?.planWeekTo ?? 0, importedMax),
     };
     setLastCoachImport(importMark);
     try {

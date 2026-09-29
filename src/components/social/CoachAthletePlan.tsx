@@ -242,6 +242,7 @@ export const CoachAthletePlan: React.FC<CoachAthletePlanProps> = ({ athleteId, a
       cycleLength: cl,
       clearUntouchedDays: opts.clearUntouchedDays,
       continuesPreviousPlan: opts.continuesPreviousPlan,
+      appendAfterExisting: opts.appendAfterExisting,
       currentWeekOfYear: weekOfYearFromDate(new Date(), year),
       week1ISO: opts.week1ISO,
       weekStartsOn: opts.weekStartsOn,

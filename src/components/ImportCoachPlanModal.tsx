@@ -30,6 +30,8 @@ export interface ImportCoachPlanResult {
   importMaxes: boolean;
   /** Es el mismo plan ampliado: las semanas ya vividas se dejan como están. */
   continuesPreviousPlan: boolean;
+  /** El mismo archivo se reescribió con la semana siguiente: se añade detrás y no se pisan las anteriores. */
+  appendAfterExisting?: boolean;
   /** Lunes de la semana 1 del archivo (siempre lun–dom). */
   week1ISO: string;
   /** Primer día con entreno en el documento. */
@@ -41,6 +43,8 @@ export interface LastCoachImport {
   /** Semanas que traía el documento anterior. */
   weeks: number;
   week1ISO?: string;
+  /** Número más alto escrito en el archivo («Semana 3» → 3). Si el mismo Drive se reescribe, la siguiente empieza después. */
+  planWeekTo?: number;
 }
 
 interface ImportCoachPlanModalProps {
@@ -95,6 +99,25 @@ function mondayOf(d: Date) {
   return startOfWeek(d, PLACEMENT_WEEK_STARTS_ON);
 }
 
+function coveredPlanWeek(last: LastCoachImport): number {
+  return last.planWeekTo && last.planWeekTo >= 1 ? last.planWeekTo : last.weeks;
+}
+
+/** El mismo Drive se ha reescrito: ya no trae la semana 1, empieza en una posterior. */
+function isRewrittenNextWeek(plan: ParsedPlan, last: LastCoachImport): boolean {
+  if (plan.weeks.length === 0) return false;
+  const firstLabel = Math.min(...plan.weeks.map((w) => w.number));
+  return firstLabel > coveredPlanWeek(last);
+}
+
+function originMonday(last: LastCoachImport, planYear: number): Date {
+  if (last.week1ISO) {
+    const [y, m, d] = last.week1ISO.split('-').map(Number);
+    return mondayOf(new Date(y, m - 1, d));
+  }
+  return mondayOf(weekStartDateForWeekOfYear(last.startWeekNumber, planYear));
+}
+
 export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
   currentWeekNumber: _currentWeekNumber,
   planYear = new Date().getFullYear(),
@@ -118,7 +141,7 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
     const fromCreate = initialWeek1ISO ? parseISODate(initialWeek1ISO) : null;
     return mondayOf(fromCreate ?? new Date());
   });
-  const [placement, setPlacement] = useState<'this' | 'prev' | 'next' | 'continue' | 'date'>(() => {
+  const [placement, setPlacement] = useState<'this' | 'prev' | 'next' | 'continue' | 'next-slice' | 'date'>(() => {
     if (!initialWeek1ISO) return 'this';
     const fromCreate = parseISODate(initialWeek1ISO);
     if (!fromCreate) return 'this';
@@ -139,10 +162,10 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
   const totalExercises = useMemo(() => (plan ? countPlanExercises(plan) : 0), [plan]);
 
   const knownCycle = routineCycleLength && routineCycleLength >= 1 ? routineCycleLength : 0;
-  const continuingPlan = placement === 'continue' && !!lastImport;
+  const continuingPlan = (placement === 'continue' || placement === 'next-slice') && !!lastImport;
   const startWeekNumber = weekOfYearFromDate(week1Start, week1Start.getFullYear() || planYear);
 
-  const applyPlacement = (id: 'this' | 'prev' | 'next' | 'continue' | 'date', date?: Date) => {
+  const applyPlacement = (id: 'this' | 'prev' | 'next' | 'continue' | 'next-slice' | 'date', date?: Date) => {
     setPlacement(id);
     if (id === 'this') setWeek1Start(thisWeekStart);
     else if (id === 'prev') setWeek1Start(addDays(thisWeekStart, -7));
@@ -150,8 +173,11 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
     else if (id === 'continue' && lastImport?.week1ISO) {
       const [y, m, d] = lastImport.week1ISO.split('-').map(Number);
       setWeek1Start(mondayOf(new Date(y, m - 1, d)));
-    } else if (id === 'continue' && lastImport) {
+    }     else if (id === 'continue' && lastImport) {
       setWeek1Start(mondayOf(weekStartDateForWeekOfYear(lastImport.startWeekNumber, planYear)));
+    } else if (id === 'next-slice' && lastImport && plan) {
+      const firstLabel = Math.min(...plan.weeks.map((w) => w.number));
+      setWeek1Start(addDays(originMonday(lastImport, planYear), (firstLabel - 1) * 7));
     } else if (id === 'date' && date) {
       setWeek1Start(mondayOf(date));
     }
@@ -185,7 +211,9 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
 
   const summary = useMemo(() => {
     if (!plan) return [];
-    const when = continuingPlan
+    const when = placement === 'next-slice'
+      ? `El archivo ahora empieza en la semana ${Math.min(...plan.weeks.map((w) => w.number))}. Se coloca en el ${formatWeekRangeFromDate(week1Start)} y las semanas anteriores se quedan como estaban.`
+      : continuingPlan
       ? `Sigue el plan que ya tenías. La semana 1 del archivo es el ${formatWeekRangeFromDate(week1Start)}`
       : `La semana 1 del archivo es el ${formatWeekRangeFromDate(week1Start)}`;
     const rows = [when, cyclePreview];
@@ -196,7 +224,7 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
       rows.push('Se conserva lo que ya tuvieras en los días que el plan no menciona');
     }
     return rows.filter(Boolean);
-  }, [plan, continuingPlan, week1Start, cyclePreview, importMaxes, clearUntouchedDays]);
+  }, [plan, continuingPlan, placement, week1Start, cyclePreview, importMaxes, clearUntouchedDays]);
 
   const handleFile = useCallback(async (file: File) => {
     setReading(true);
@@ -230,6 +258,11 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
        */
       if (hidePlacement) {
         /* La fecha ya la eligió al crear la rutina. */
+      } else if (lastImport && isRewrittenNextWeek(parsed, lastImport)) {
+        const origin = originMonday(lastImport, planYear);
+        const firstLabel = Math.min(...parsed.weeks.map((w) => w.number));
+        setPlacement('next-slice');
+        setWeek1Start(addDays(origin, (firstLabel - 1) * 7));
       } else if (lastImport && parsed.weeks.length >= lastImport.weeks) {
         setPlacement('continue');
         if (lastImport.week1ISO) {
@@ -261,6 +294,7 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
         clearUntouchedDays,
         importMaxes,
         continuesPreviousPlan: continuingPlan,
+        appendAfterExisting: placement === 'next-slice',
         week1ISO: toISODate(week1Start),
         weekStartsOn: plan.weekStartsOn,
       });
@@ -374,6 +408,11 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
                   <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">
                     ¿A qué semana corresponde la semana 1 del archivo?
                   </p>
+                  {placement === 'next-slice' && plan && (
+                    <p className="rounded-2xl bg-emerald-50 px-3.5 py-3 text-xs leading-relaxed text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">
+                      El mismo documento ahora trae la semana {Math.min(...plan.weeks.map((w) => w.number))} y ya no incluye las anteriores. Esas se mantienen y esta se añade a continuación.
+                    </p>
+                  )}
                   <div className="grid grid-cols-2 gap-2">
                     {lastImport && (
                       <button

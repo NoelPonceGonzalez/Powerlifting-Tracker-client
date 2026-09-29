@@ -191,6 +191,8 @@ export interface CoachImportMergeInput {
   cycleLength: number;
   clearUntouchedDays: boolean;
   continuesPreviousPlan: boolean;
+  /** La semana nueva va justo después de las ya importadas, aunque el calendario ya haya avanzado. */
+  appendAfterExisting?: boolean;
   currentWeekOfYear: number;
   /** Primer día de la semana 1 del archivo. Si no continúa un plan, se guarda como ancla del ciclo. */
   week1ISO?: string;
@@ -231,9 +233,11 @@ export function mergeCoachImportIntoRoutine<T extends CoachImportRoutineSlice>(
   const cycleChanged =
     cycleLength !== prevCycleLength || (cycleLength === 1) !== (r.sameTemplateAllWeeks === true);
   const endOfPlanWeek = opts.startWeekNumber + opts.plan.weeks.length;
-  const versionFromWeek = opts.continuesPreviousPlan
-    ? Math.max(opts.startWeekNumber, opts.currentWeekOfYear)
-    : opts.startWeekNumber;
+  const versionFromWeek = opts.appendAfterExisting
+    ? opts.startWeekNumber
+    : opts.continuesPreviousPlan
+      ? Math.max(opts.startWeekNumber, opts.currentWeekOfYear)
+      : opts.startWeekNumber;
 
   const base = weeksForImport(r);
   const { weeks, targetWeekNumbers } = applyCoachPlanToWeeks(base, opts.plan, {
