@@ -2514,7 +2514,7 @@ export default function App() {
       startWeekNumber: opts.continuesPreviousPlan ? (lastCoachImport?.startWeekNumber ?? opts.startWeekNumber) : opts.startWeekNumber,
       weeks: opts.plan.weeks.length,
       week1ISO: opts.continuesPreviousPlan ? (lastCoachImport?.week1ISO ?? opts.week1ISO) : opts.week1ISO,
-      planWeekTo: Math.max(lastCoachImport?.planWeekTo ?? 0, importedMax),
+      planWeekTo: opts.planWeekTo ?? Math.max(lastCoachImport?.planWeekTo ?? 0, importedMax),
     };
     setLastCoachImport(importMark);
     try {

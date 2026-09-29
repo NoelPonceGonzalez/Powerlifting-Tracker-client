@@ -32,6 +32,8 @@ export interface ImportCoachPlanResult {
   continuesPreviousPlan: boolean;
   /** El mismo archivo se reescribió con la semana siguiente: se añade detrás y no se pisan las anteriores. */
   appendAfterExisting?: boolean;
+  /** Hasta qué semana del plan queda cubierta después de esta importación. */
+  planWeekTo?: number;
   /** Lunes de la semana 1 del archivo (siempre lun–dom). */
   week1ISO: string;
   /** Primer día con entreno en el documento. */
@@ -110,6 +112,22 @@ function isRewrittenNextWeek(plan: ParsedPlan, last: LastCoachImport): boolean {
   return firstLabel > coveredPlanWeek(last);
 }
 
+function describePlanWeeks(startPos: number, count: number, cycle: number): string {
+  const names: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const pos = startPos + i;
+    if (cycle > 1 && pos > cycle) {
+      const slot = ((pos - 1) % cycle) + 1;
+      const lap = Math.floor((pos - 1) / cycle);
+      names.push(lap === 1 ? `la semana ${slot} del siguiente ciclo` : `la semana ${slot} del ciclo ${lap + 1}`);
+    } else {
+      names.push(`la semana ${pos}`);
+    }
+  }
+  if (names.length <= 1) return names[0] ?? '';
+  return `${names.slice(0, -1).join(', ')} y ${names[names.length - 1]}`;
+}
+
 function originMonday(last: LastCoachImport, planYear: number): Date {
   if (last.week1ISO) {
     const [y, m, d] = last.week1ISO.split('-').map(Number);
@@ -156,6 +174,8 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
   const [expandCycle, setExpandCycle] = useState(false);
   const [clearUntouchedDays, setClearUntouchedDays] = useState(true);
   const [importMaxes, setImportMaxes] = useState(true);
+  /** Si ya tienes la 1 y la 2, el archivo que trae 1+2+3 solo añade la 3. */
+  const [countExistingWeeks, setCountExistingWeeks] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
 
@@ -164,6 +184,13 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
   const knownCycle = routineCycleLength && routineCycleLength >= 1 ? routineCycleLength : 0;
   const continuingPlan = (placement === 'continue' || placement === 'next-slice') && !!lastImport;
   const startWeekNumber = weekOfYearFromDate(week1Start, week1Start.getFullYear() || planYear);
+  const coveredWeeks = lastImport ? coveredPlanWeek(lastImport) : 0;
+  const overlapsExisting = !!plan && coveredWeeks > 0 && plan.weeks.some((w) => w.number <= coveredWeeks);
+  const freshWeeks = useMemo(() => {
+    if (!plan || !overlapsExisting) return plan?.weeks ?? [];
+    return [...plan.weeks].filter((w) => w.number > coveredWeeks).sort((a, b) => a.number - b.number);
+  }, [plan, overlapsExisting, coveredWeeks]);
+  const cycleForHint = knownCycle || 4;
 
   const applyPlacement = (id: 'this' | 'prev' | 'next' | 'continue' | 'next-slice' | 'date', date?: Date) => {
     setPlacement(id);
@@ -241,6 +268,7 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
         return;
       }
       setPlan(parsed);
+      setCountExistingWeeks(true);
       const keep = knownCycle;
       if (keep) {
         const grows = parsed.weeks.length > keep;
@@ -284,17 +312,37 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
 
   const handleConfirm = async () => {
     if (!plan) return;
+    let planToSave = plan;
+    let startToSave = startWeekNumber;
+    let append = placement === 'next-slice';
+    let coveredAfter = Math.max(coveredWeeks, ...plan.weeks.map((w) => w.number));
+    if (overlapsExisting && lastImport && countExistingWeeks) {
+      if (freshWeeks.length === 0) return;
+      planToSave = { ...plan, weeks: freshWeeks };
+      const origin = originMonday(lastImport, planYear);
+      const startDate = addDays(origin, (freshWeeks[0].number - 1) * 7);
+      startToSave = weekOfYearFromDate(startDate, startDate.getFullYear() || planYear);
+      append = true;
+      coveredAfter = Math.max(coveredWeeks, ...freshWeeks.map((w) => w.number));
+    } else if (overlapsExisting && lastImport && !countExistingWeeks) {
+      const origin = originMonday(lastImport, planYear);
+      const startDate = addDays(origin, coveredWeeks * 7);
+      startToSave = weekOfYearFromDate(startDate, startDate.getFullYear() || planYear);
+      append = true;
+      coveredAfter = coveredWeeks + plan.weeks.length;
+    }
     setSaving(true);
     try {
       await onConfirm({
-        plan,
-        startWeekNumber,
+        plan: planToSave,
+        startWeekNumber: startToSave,
         repeatAfterPlan,
-        cycleLength: repeatAfterPlan ? resolvedCycle : plan.weeks.length,
+        cycleLength: repeatAfterPlan ? resolvedCycle : planToSave.weeks.length,
         clearUntouchedDays,
         importMaxes,
-        continuesPreviousPlan: continuingPlan,
-        appendAfterExisting: placement === 'next-slice',
+        continuesPreviousPlan: continuingPlan || append,
+        appendAfterExisting: append,
+        planWeekTo: coveredAfter,
         week1ISO: toISODate(week1Start),
         weekStartsOn: plan.weekStartsOn,
       });
@@ -403,6 +451,29 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
                     )}
                   </p>
                 </div>
+
+                {overlapsExisting && (
+                  <label className="flex cursor-pointer items-start gap-3 rounded-2xl bg-white px-3.5 py-3 shadow-sm dark:bg-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={countExistingWeeks}
+                      onChange={(e) => setCountExistingWeeks(e.target.checked)}
+                      className="mt-0.5 h-5 w-5 shrink-0 accent-indigo-600"
+                    />
+                    <span>
+                      <span className="block text-sm font-semibold text-slate-800 dark:text-slate-100">
+                        Contar las semanas que ya tengo
+                      </span>
+                      <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">
+                        {countExistingWeeks
+                          ? freshWeeks.length === 0
+                            ? `Ya tienes hasta la semana ${coveredWeeks} y este archivo no trae ninguna nueva.`
+                            : `Ya tienes hasta la semana ${coveredWeeks}. Solo se ${freshWeeks.length === 1 ? 'añade' : 'añaden'} ${describePlanWeeks(freshWeeks[0].number, freshWeeks.length, cycleForHint)}.`
+                          : `No se cuentan. Se añaden ${describePlanWeeks(coveredWeeks + 1, plan.weeks.length, cycleForHint)} detrás de lo que ya tienes.`}
+                      </span>
+                    </span>
+                  </label>
+                )}
 
                 {!hidePlacement && <div className="space-y-2">
                   <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">
@@ -713,7 +784,7 @@ export const ImportCoachPlanModal: React.FC<ImportCoachPlanModalProps> = ({
             <Button
               variant="primary"
               className={cn('flex-1', !plan && 'opacity-50')}
-              disabled={!plan || saving || !startWeekNumber}
+              disabled={!plan || saving || !startWeekNumber || (overlapsExisting && countExistingWeeks && freshWeeks.length === 0)}
               onClick={handleConfirm}
             >
               {saving ? <Loader2 size={16} className="mr-2 animate-spin" /> : null}
